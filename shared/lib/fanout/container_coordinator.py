@@ -45,6 +45,8 @@ def _read_scope_material(controller, value, *, canonical=True):
 
 def _scope_context(controller, ref, spec, inputs_digest, source, permit):
     context = read_evidence(controller, "container-coordinator-context", *ref)
+    if context.get("schema_version") == "fanout-quality-container-context-v1":
+        return _quality_scope_context(controller, context, spec, inputs_digest, source, permit)
     if (context["schema_version"] != "fanout-container-coordinator-context-v1"
             or context["release_source_binding"] != source
             or context["inputs_digest"] != inputs_digest
@@ -56,6 +58,73 @@ def _scope_context(controller, ref, spec, inputs_digest, source, permit):
             or permit.route != ("resume" if context["request"]["resume"] else "initial")
             or permit.upstream_route_digest is None):
         raise ValueError("exact lifecycle turn context")
+    return context
+
+
+def _scope_epoch(context):
+    if context["schema_version"] == "fanout-quality-container-context-v1":
+        return context["row"]["epoch"]
+    return (context["attempt"] - 1) * 3 + context["round"]
+
+
+def _quality_scope_context(controller, context, spec, inputs_digest, source, permit):
+    from .container_certification import _read_owned_json
+    from .container_broker import PermitLedger
+    from .container_transfer_transport import admitted_request_digest
+    from .diagnostic import _QUALITY_REQUEST_CONTROLS, _read_quality_request_json, _read_quality_request_artifact
+    from .providers import ExecutorProfile, ProviderRegistry, ProviderRequest
+    from .quality_case import _read_quality_backend_attachment
+    fields = {"schema_version", "run_id", "task_id", "target_id", "seat_id", "inputs_digest",
+        "release_source_binding", "request", "request_material", "request_digest", "task_packet_sha256",
+        "backend_attachment", "allocation", "bindings", "registration", "store", "row"}
+    if (set(context) != fields or context["release_source_binding"] != source
+            or context["inputs_digest"] != inputs_digest or type(context["request"]) is not dict
+            or set(context["request"]) != _QUALITY_REQUEST_CONTROLS
+            or tuple(context[key] for key in ("run_id", "task_id", "target_id", "seat_id")) != (
+                spec.run_id, spec.task_id, spec.target_id, spec.seat_id)
+            or type(context["task_packet_sha256"]) is not str or len(context["task_packet_sha256"]) != 64):
+        raise ValueError("exact quality lifecycle context")
+    row = context["row"]
+    with ArtifactStore.open_existing(Path(context["store"])) as store:
+        attachment = _read_quality_backend_attachment(controller, store, tuple(context["backend_attachment"]),
+            authority=tuple(context["allocation"]), bindings=context["bindings"], row=row)
+        descriptor = _read_quality_request_json(store, ArtifactRef(**context["request_material"]))
+        if (set(descriptor) != {"schema", "controls", "prompt", "profile"}
+                or descriptor["schema"] != "fanout-quality-request-v1"
+                or descriptor["controls"] != context["request"]):
+            raise ValueError("original quality lifecycle request")
+        profile = ExecutorProfile.from_dict(_read_quality_request_json(store, ArtifactRef(**descriptor["profile"])),
+            adapter=ProviderRegistry.default().require(permit.provider))
+        request = ProviderRequest(**descriptor["controls"], profile=profile,
+            prompt=_read_quality_request_artifact(store, ArtifactRef(**descriptor["prompt"]), 1024 * 1024),
+            artifact_store=store)
+        if (admitted_request_digest(request) != context["request_digest"]
+                or request.execution_class != "read-only" or request.retries != 0
+                or request.profile.digest != row["profile"] or request.timeout != row["process_seconds"]
+                or any(getattr(request, key) != getattr(permit, key) for key in
+                       ("run_id", "task_id", "target_id", "seat_id", "inputs_digest", "session_id"))
+                or request.executor_id != permit.provider or request.profile.requested_model != permit.model
+                or permit.route != ("resume" if request.resume else "initial") or permit.upstream_route_digest is None
+                or spec.image_digest != attachment["container"]["image_digest"]
+                or spec.cli_digest != attachment["container"]["cli_digests"][permit.provider]):
+            raise ValueError("quality lifecycle identity, profile or guest differs")
+    claim = {"allocation": context["allocation"][1], "row": row}
+    digest = _sha(canonical_json(claim))
+    actual, _ = _read_owned_json(controller_directory(controller, "locks") / ("quality-row-" + digest))
+    pointer, _ = _read_owned_json(controller_directory(controller, "locks") / ("quality-registration-" + digest))
+    registration = read_evidence(controller, "quality-permit-registration", *context["registration"])
+    if (actual != claim or pointer != {"authority": context["registration"]}
+            or set(registration) != {"allocation", "row", "permit_id", "epoch", "permit", "initial_receipt", "backend_attachment"}
+            or registration["allocation"] != claim["allocation"] or registration["row"] != row
+            or registration["epoch"] != row["epoch"] or registration["permit"] != asdict(permit)
+            or registration["backend_attachment"] != context["backend_attachment"]):
+        raise ValueError("original quality lifecycle registration")
+    ledger = PermitLedger(controller_directory(controller, "locks") / "spend", controller)
+    with ledger._locked() as state:
+        entry = state["permits"].get(registration["permit_id"])
+        if (entry is None or entry["epoch"] != row["epoch"]
+                or entry["permit_digest"] != _sha(canonical_json(asdict(permit)))):
+            raise ValueError("original quality lifecycle permit")
     return context
 
 
@@ -74,7 +143,8 @@ def _read_scope_member(controller, ref, opening_ref, opening):
     context = _scope_context(controller, member["context"], spec, opening["inputs_digest"],
                              opening["release_source_binding"], permit)
     launch = read_evidence(controller, "container-seat-launch", *member["launch"])
-    recovery = decode_launch_record(launch, spec, handle, recover=context["request"]["resume"])
+    recovery = decode_launch_record(launch, spec, handle, recover=context["request"]["resume"],
+        handoff=context["schema_version"] == "fanout-quality-container-context-v1" and launch["route"] == "quality-handoff")
     authenticate_launch_record(controller, launch, spec, handle, inputs_digest=opening["inputs_digest"])
     lease = member["lease"]
     expected_lease = controller_directory(controller, "locks") / (
@@ -83,7 +153,7 @@ def _read_scope_member(controller, ref, opening_ref, opening):
             or lease["path"] != str(expected_lease)
             or any(type(lease[field]) is not int or lease[field] <= 0 for field in ("device", "inode"))
             or type(member["permit_epoch"]) is not int
-            or member["permit_epoch"] != (context["attempt"] - 1) * 3 + context["round"]
+            or member["permit_epoch"] != _scope_epoch(context)
             or len(member["permit_id"]) != 64
             or any(char not in "0123456789abcdef" for char in member["permit_id"])):
         raise ValueError("original lifecycle lease association")
@@ -208,7 +278,7 @@ class _CoordinatorLifecycle:
             ContainerLauncher._validate_spec(spec)
             context = _scope_context(self.controller, context_ref, spec, self.journal.inputs.digest, self.source, permit)
             if (ledger.controller is not self.controller or ledger.root != self.controller.root / "locks/spend"
-                    or epoch != (context["attempt"] - 1) * 3 + context["round"]):
+                    or epoch != _scope_epoch(context)):
                 raise CollaborationDurabilityError("exact lifecycle permit epoch changed")
             if len(self.active) + len(self.pending) >= _MAX_ACTIVE_SEATS:
                 raise CollaborationDurabilityError("current container lifecycle seat budget exceeded")
@@ -222,6 +292,61 @@ class _CoordinatorLifecycle:
                 raise
             self.pending[(permit_id, epoch)] = spec, tuple(context_ref), permit, ledger
             return permit_id
+
+    def reserve_registered(self, context_ref, spec, ledger, permit, epoch):
+        from .container_runtime import ContainerLauncher, _MAX_ACTIVE_SEATS
+        from .container_broker import PermitLedger
+        with self.guard:
+            self.authorize()
+            ContainerLauncher._validate_spec(spec)
+            context = _scope_context(self.controller, context_ref, spec,
+                self.journal.inputs.digest, self.source, permit)
+            if (context["schema_version"] != "fanout-quality-container-context-v1"
+                    or type(ledger) is not PermitLedger or ledger.controller is not self.controller
+                    or ledger.root != self.controller.root / "locks/spend"
+                    or type(epoch) is not int or epoch != _scope_epoch(context)
+                    or len(self.active) + len(self.pending) >= _MAX_ACTIVE_SEATS
+                    or any(entry["spec"] == spec for entry in self.active.values())
+                    or any(entry[0] == spec for entry in self.pending.values())):
+                raise CollaborationDurabilityError("quality lifecycle registered row differs")
+            registration = read_evidence(self.controller, "quality-permit-registration", *context["registration"])
+            permit_id = registration["permit_id"]
+            ledger.require_permit(permit_id, epoch, permit)
+            if (permit_id, epoch) in self.pending or ledger.attempt_counts(permit_id, epoch) != (0, 0):
+                raise CollaborationDurabilityError("quality lifecycle row is already active or spent")
+            if ledger.request_records(permit_id, epoch):
+                raise CollaborationDurabilityError("quality lifecycle row already has requests")
+            self.pending[(permit_id, epoch)] = spec, tuple(context_ref), permit, ledger
+            return permit_id
+
+    def complete_handoff(self, transport, request, admission, preparation):
+        from .container_boundary import PinnedDockerTransport, ContainerAdmission
+        from .container_transfer_transport import _reopen_quality_handoff_preparation, _quality_zero
+        with self.guard:
+            self.authorize()
+            if (type(transport) is not PinnedDockerTransport or type(admission) is not ContainerAdmission
+                    or transport.controller is not self.controller or transport.spec.workspace_readonly is not False):
+                raise CollaborationDurabilityError("quality lifecycle handoff importer differs")
+            entry = self.active.get(transport.handle.container_id)
+            if entry is None or entry["transport"] is not transport or transport.stop_evidence is None:
+                raise CollaborationDurabilityError("quality lifecycle handoff lacks its registered stop")
+            context = _scope_context(self.controller, entry["member"]["context"], transport.spec,
+                self.journal.inputs.digest, self.source, admission.broker_permit)
+            _, receipt, _, original_spec, _, _, stopped = _reopen_quality_handoff_preparation(
+                self.controller, request, preparation)
+            if (context["schema_version"] != "fanout-quality-container-context-v1"
+                    or original_spec != transport.spec or receipt.original_handle != transport.handle
+                    or entry["member"]["permit_id"] != admission.permit_id
+                    or entry["member"]["permit_epoch"] != admission.epoch):
+                raise CollaborationDurabilityError("quality lifecycle handoff original row differs")
+            _quality_zero(self.controller, request, admission)
+            observed = _completed_scope_member(self.controller, entry["ref"], transport.stop_evidence,
+                self.opening_ref, self.opening)
+            if observed != stopped:
+                raise CollaborationDurabilityError("quality lifecycle handoff stopped observation differs")
+            self.completed[observed[0]] = {"ref": entry["ref"], "stop": transport.stop_evidence,
+                                         "digest": observed[1]}
+            del self.active[observed[0]]
 
     def _control(self, spec, context_ref, control):
         from .container_boundary import HostSessionLease, PinnedSSHSeatControl
@@ -363,7 +488,7 @@ class _CoordinatorLifecycle:
                 context_ref = entry["member"]["context"]
             context = _scope_context(self.controller, context_ref, spec, self.journal.inputs.digest,
                                      self.source, control.broker.permit)
-            if (control.epoch != (context["attempt"] - 1) * 3 + context["round"]
+            if (control.epoch != _scope_epoch(context)
                     or type(context.get("request_digest")) is not str
                     or len(context["request_digest"]) != 64
                     or any(char not in "0123456789abcdef" for char in context["request_digest"])):
@@ -422,6 +547,58 @@ def _coordinator_lifecycle(coordinator):
             raise CollaborationDurabilityError("journal already has another container lifecycle owner")
         scope.authorize()
         return scope
+
+
+def bind_quality_turn_context(runner, request, row, permit_id):
+    from .quality_case import (QualityCaseRunner, _quality_row_seat, _quality_case_request,
+        _require_quality_case_request, _read_quality_backend_attachment)
+    from .diagnostic import _retain_quality_request, quality_row_identity
+    from .container_certification import _read_owned_json
+    from .container_transfer_transport import admitted_request_digest
+    from .container_source import release_source_binding
+    if type(runner) is not QualityCaseRunner:
+        raise CollaborationDurabilityError("quality lifecycle requires its fixed installed runner")
+    service = runner._service
+    service._authorize_command(service.coordinator.owner)
+    value, (task, preparation, allocation, _) = runner._context()
+    if row not in allocation["rows"]:
+        raise CollaborationDurabilityError("quality lifecycle row differs from its original case")
+    seat = _quality_row_seat(value, preparation, row)
+    peer, sources = None, None
+    state = service._execution_state(task.id)
+    if row["role"] == "owner-synthesis":
+        if len(state.barriers) != 2:
+            raise CollaborationDurabilityError("quality lifecycle owner lacks final barriers")
+        barrier = service._restore_barrier(state.barriers[-1], preparation.packet)
+        sources = {terminal.seat_id: terminal.answer_ref for terminal in barrier.valid_terminals}
+    elif row["phase"] == "resume":
+        if len(state.barriers) != 1:
+            raise CollaborationDurabilityError("quality lifecycle resume lacks first peer barrier")
+        barrier = service._restore_barrier(state.barriers[0], preparation.packet)
+        peer = service.coordinator.build_peer_packet(preparation.packet, barrier, target_seat_id=seat.seat_id)
+    expected = _quality_case_request(service, value, preparation, seat, row, peer=peer, sources=sources)
+    _require_quality_case_request(request, expected)
+    attachment = (runner._attachment.name, runner._attachment.digest)
+    _read_quality_backend_attachment(service.lifecycle_controller, service.artifacts, attachment,
+        authority=tuple(value["allocation"]), bindings=value["bindings"], row=row)
+    claim = {"allocation": value["allocation"][1], "row": row}
+    digest = _sha(canonical_json(claim))
+    pointer, _ = _read_owned_json(controller_directory(service.lifecycle_controller, "locks") /
+        ("quality-registration-" + digest))
+    registration = read_evidence(service.lifecycle_controller, "quality-permit-registration", *pointer["authority"])
+    if registration["permit_id"] != permit_id:
+        raise CollaborationDurabilityError("quality lifecycle original permit changed")
+    retained = _retain_quality_request(service.artifacts, request,
+        "quality/container-context/" + quality_row_identity(row))
+    descriptor = service.artifacts.read_json(retained)
+    return write_evidence(service.lifecycle_controller, "container-coordinator-context", {
+        "schema_version": "fanout-quality-container-context-v1",
+        **{key: getattr(request, key) for key in ("run_id", "task_id", "target_id", "seat_id", "inputs_digest")},
+        "release_source_binding": release_source_binding().to_dict(), "request": descriptor["controls"],
+        "request_material": asdict(retained), "request_digest": admitted_request_digest(request),
+        "task_packet_sha256": _sha(canonical_json(preparation.packet.to_dict())),
+        "backend_attachment": list(attachment), "allocation": value["allocation"], "bindings": value["bindings"],
+        "registration": pointer["authority"], "store": str(service.artifacts.root), "row": row})
 
 
 def authenticate_inputs(coordinator, packet):
@@ -575,17 +752,24 @@ def bind_turn_context(coordinator, packet, seat, round, request, peer):
         raise CollaborationDurabilityError("container turn context authority changed") from error
 
 
-def stage_input_material(coordinator, packet, seat, request, handle):
+def stage_input_material(coordinator, packet, seat, request, handle, *, quality=None):
     from .collaboration import build_verified_dependency_context, MAX_DEPENDENCY_BYTES, _delivery_evidence_bytes
     try:
-        inputs, baseline = authenticate_inputs(coordinator, packet)
+        if quality is None:
+            inputs, baseline = authenticate_inputs(coordinator, packet)
+            identity = TransferIdentity(packet.run_id, packet.task_id, packet.target_binding.spec.id,
+                                        seat.seat_id, inputs.digest)
+            quality_files = {}
+        else:
+            from .quality_case import QualityCaseRunner
+            if type(quality) is not QualityCaseRunner or quality._service.coordinator is not coordinator:
+                raise ValueError("fixed quality material authority")
+            inputs, baseline, identity, quality_files = quality._material_context(packet, seat, request)
         coordinator._verify_staged_seat(seat, packet)
         if coordinator.artifacts.read_bytes(seat.delivery_evidence_ref) != _delivery_evidence_bytes(seat.admission.engine_evidence):
             raise ValueError("skill delivery")
         validate_seat_workspace_baseline(baseline, coordinator.lifecycle_controller,
                                          seat.workspace_verification)
-        identity = TransferIdentity(packet.run_id, packet.task_id, packet.target_binding.spec.id,
-                                    seat.seat_id, inputs.digest)
         if (request.run_id, request.task_id, request.target_id, request.seat_id, request.inputs_digest) != (
                 identity.run_id, identity.task_id, identity.target_id, identity.seat_id, identity.inputs_digest):
             raise ValueError("request identity")
@@ -602,6 +786,7 @@ def stage_input_material(coordinator, packet, seat, request, handle):
             "skill-delivery.json": coordinator.artifacts.read_bytes(seat.delivery_evidence_ref),
             "dependencies.json": dependencies,
         }
+        files.update(quality_files)
         source = controller_directory(coordinator.lifecycle_controller, "quarantine") / (
             "input-" + _sha(canonical_json(asdict(identity))))
         fresh = not source.exists()

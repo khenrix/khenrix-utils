@@ -57,6 +57,7 @@ services:
       - /root:rw,nosuid,nodev,noexec,mode=0700,size=67108864
     environment:
       OPENAI_API_KEY: ${MAKA_JUDGE_DECOY:?}
+      MAKA_JUDGE_CAPTURE_ID: ${MAKA_JUDGE_CAPTURE_ID:-}
       MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS: "120000"
       HTTP_PROXY: http://maka-eval-mitmproxy:8080
       HTTPS_PROXY: http://maka-eval-mitmproxy:8080

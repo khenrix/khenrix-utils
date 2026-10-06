@@ -134,6 +134,21 @@ def _source_paths(root: Path) -> list[str]:
         selected.add("components/skills/skillctl.py")
     for relative in ("shared/lib/fanout", "components/fanout-container"):
         selected.update(_owned_files(root, relative))
+    maka = root / 'components/maka'
+    if maka.exists() or maka.is_symlink():
+        manifest = _read_source(root, 'components/maka/install-files.txt', 65536)
+        try:
+            maka_names = [line for line in manifest.decode('utf-8').splitlines() if line and not line.startswith('#')]
+        except UnicodeError as error:
+            raise SourceClosureError('Maka source manifest is invalid') from error
+        if (len(maka_names) > _MAX_FILES or len(maka_names) != len(set(maka_names))
+                or any(name.startswith('/') or any(part in {'', '.', '..'} for part in name.split('/'))
+                       for name in maka_names)
+                or not {'install-files.txt', 'scripts/harbor_judge_capture.py', 'scripts/component_doctor.py',
+                        'scripts/install_component.py', 'scripts/apply_gpt6_compat.py',
+                        'controller/harbor_judge.mjs', 'wrapper/maka.in'} <= set(maka_names)):
+            raise SourceClosureError('Maka source manifest is invalid or incomplete')
+        selected.update('components/maka/' + name for name in maka_names)
     required = {
         "capabilities.toml",
         "scripts/lib/checks.py",

@@ -44,7 +44,9 @@ from shared.lib.fanout.container_boundary import (
     ContainerAdmission, PinnedDockerTransport, SessionStore,
     issue_container_boundary, run_container_turn,
 )
-from shared.lib.fanout.container_broker import FrameStream, HostRelay, PermitLedger, _digest, attempt_limit
+from shared.lib.fanout.container_broker import (
+    FrameStream, HostRelay, PermitLedger, _digest, attempt_limit, auxiliary_attempt_limit,
+)
 from shared.lib.fanout.container_credentials import HostCredentialSource, RouteCredentialError
 from shared.lib.fanout.container_certification import (
     CertificationRejected, PrivateProbeDecision, read_private_route_evidence,
@@ -278,6 +280,8 @@ def _broker_evidence_valid(provider: str, cell: Mapping[str, object]) -> bool:
     return (type(cell.get("broker_request_count")) is int
             and cell["broker_request_count"] == len(records)
             and type(auxiliary) is int and auxiliary >= 0
+            and auxiliary <= auxiliary_attempt_limit({
+                "provider": provider, "model": cell.get("requested_model")})
             and (provider == "agy" or auxiliary == 0)
             and type(cell.get("broker_auxiliary_refusal_count")) is int
             and cell["broker_auxiliary_refusal_count"] == min(1, auxiliary)
@@ -856,10 +860,14 @@ def _quality_run(root: Path, *, allow_paid: bool,
         raise CertificationRejected("quality attempt is already reserved") from None
     for name in _LEGACY_KEY_ENVS:
         os.environ.pop(name, None)
-    maka = HarborMakaTransport(
-        launcher=launcher, no_tools_characterization_sha256=boundary_sha256,
-        paid_authorized=True)
-    quality = _judge_quality(receipt, maka, answers)
+    try:
+        maka = HarborMakaTransport(
+            launcher=launcher, no_tools_characterization_sha256=boundary_sha256,
+            paid_authorized=True, quality_run_root=private)
+        quality = _judge_quality(receipt, maka, answers)
+        captures_sha256 = maka.finish_captures()
+    except Exception:
+        raise CertificationRejected('Maka original complete capture is unproven; no retry') from None
     if release_source_binding().to_dict() != source_binding.to_dict():
         raise CertificationRejected("release source changed during Maka quality judgment")
     result = {
@@ -872,6 +880,7 @@ def _quality_run(root: Path, *, allow_paid: bool,
         "isolation_passed": quality.isolation_passed,
         "ballot_digest": quality.ballot_digest,
         "ballots": list(quality.ballots),
+        "capture_inventory_sha256": captures_sha256,
     }
     result["completion_evidence_name"], result["completion_evidence_digest"] = write_evidence(
         _quality_controller(private), "container-maka-quality-complete", {

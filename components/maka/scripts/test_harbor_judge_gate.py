@@ -190,8 +190,12 @@ maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b91488
 set -euo pipefail
 probe_writer_pid=
 writer_pid=
+association_reader_pid=
+capture_path=
 request_fifo=/synthetic/request.fifo
 probe_fifo=/synthetic/probe.fifo
+association_fifo=/synthetic/association.fifo
+association_ack_fifo=/synthetic/association-ack.fifo
 staged_receipt=/synthetic/install-receipt.json
 request_dir=/synthetic/request
 secret_volume_created=true

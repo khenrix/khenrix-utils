@@ -148,6 +148,61 @@ def _reopen_quality_request(store, ref, request):
     return original
 
 
+def _read_quality_container_request(store, ref):
+    """Recover only retained bytes and controls; command readers prove their authority."""
+    from .providers import ExecutorProfile
+    try:
+        value = _read_quality_request_json(store, ref)
+        if (type(value) is not dict or set(value) != {"schema", "controls", "prompt", "profile"}
+                or value["schema"] != "fanout-quality-request-v1"
+                or type(value["controls"]) is not dict
+                or set(value["controls"]) != _QUALITY_REQUEST_CONTROLS):
+            raise ValueError("retained request fields")
+        provider = value["controls"]["executor_id"]
+        profile = ExecutorProfile.from_dict(_read_quality_request_json(store, ArtifactRef(**value["profile"])),
+            adapter=ProviderRegistry.default().require(provider))
+        request = ProviderRequest(**value["controls"], profile=profile, artifact_store=store,
+            prompt=_read_quality_request_artifact(store, ArtifactRef(**value["prompt"]), 1024 * 1024))
+        pinned = ProviderRegistry.default().select(provider, "read-only", profile.quality_tier)
+        if (request.execution_class != "read-only" or request.retries != 0 or profile.digest != pinned.digest
+                or not request.resume and provider != "claude" and request.session_id is not None):
+            raise ValueError("retained quality controls")
+        return request
+    except Exception as error:
+        raise ProviderRequestError("quality retained container request differs") from error
+
+
+def _read_quality_container_turn(controller, store, proof, *, authority, bindings,
+                                 backend_attachment, request=None):
+    from .quality_case import _read_quality_backend_attachment
+    try:
+        value = read_evidence(controller, "quality-readonly-turn", *proof)
+        if (value.get("schema") != "fanout-quality-container-readonly-turn-v1"
+                or value.get("backend_attachment") != list(backend_attachment)):
+            raise ValueError("explicit original container backend")
+        command = read_evidence(controller, "quality-container-command", *value["command"])
+        registration = command["registration"]
+        row = registration["row"]
+        if (command["allocation"] != list(authority) or command["store"] != str(store.root)
+                or command["bindings"] != bindings
+                or command["backend_attachment"] != list(backend_attachment)
+                or registration["backend_attachment"] != list(backend_attachment)):
+            raise ValueError("original allocated command")
+        _read_quality_backend_attachment(controller, store, backend_attachment,
+            authority=authority, bindings=bindings, row=row)
+        if request is None:
+            request = _read_quality_container_request(store, ArtifactRef(**value["request"]))
+        from .container_boundary import validate_quality_container_readonly_turn
+        actual = validate_quality_container_readonly_turn(controller, store, request, tuple(proof),
+            backend_attachment=backend_attachment)
+        if actual != value:
+            raise ValueError("original container turn")
+        terminal = read_evidence(controller, "quality-container-terminal", *actual["terminal"])
+        return request, actual, command, terminal
+    except Exception as error:
+        raise ProviderRequestError("quality original container completion differs") from error
+
+
 @dataclass(frozen=True, slots=True)
 class QualityPredecessor:
     """Pointers to existing authority, reauthenticated on every quality-only use."""
@@ -159,9 +214,24 @@ class QualityPredecessor:
     session_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class QualityContainerPredecessor:
+    """Original container pointers, never a native boundary or in-memory result."""
+
+    quality_proof: tuple[str, str]
+    backend_attachment: tuple[str, str]
+    row_digest: str
+    session_id: str
+
+
 def reopen_quality_predecessor(controller, store, request, proof, *, verification,
-                               authority, bindings, initial_digest) -> QualityPredecessor:
+                               authority, bindings, initial_digest,
+                               backend_attachment=None) -> QualityPredecessor | QualityContainerPredecessor:
     """Reopen an allocated original without recreating a result, boundary or listener."""
+    if backend_attachment is not None:
+        return _reopen_quality_container_predecessor(controller, store, request, proof,
+            verification=verification, authority=authority, bindings=bindings,
+            initial_digest=initial_digest, backend_attachment=backend_attachment)
     from .native_boundary import _require_broker_initial
     from .repo import validate_seat_workspace
     # Cold reopening must load the same fixed quality command builder as issuance.
@@ -213,6 +283,50 @@ def reopen_quality_predecessor(controller, store, request, proof, *, verificatio
         return QualityPredecessor(tuple(proof), *terminal_ref, initial_digest, parsed.session_id)
     except Exception as error:
         raise ProviderRequestError("quality predecessor authority or original completion differs") from error
+
+
+def _reopen_quality_container_predecessor(controller, store, request, proof, *, verification,
+                                          authority, bindings, initial_digest, backend_attachment):
+    from .repo import validate_seat_workspace
+    try:
+        if (type(store) is not ArtifactStore or type(request) is not ProviderRequest
+                or not request.resume or request.execution_class != "read-only" or request.retries != 0
+                or any(getattr(request, key) is not None for key in
+                    ("native_boundary", "native_controller", "native_verification", "container_boundary", "canary_capture"))
+                or request.certificate_roots or type(verification) is not SeatWorkspaceVerification):
+            raise ValueError("exact admitted container resume")
+        validate_seat_workspace(controller, verification)
+        if (Path(request.cwd) != verification.workspace.root
+                or request.seat_id != verification.workspace.seat_id):
+            raise ValueError("same original admitted container workspace")
+        value = read_evidence(controller, "quality-readonly-turn", *proof)
+        original = _reopen_quality_request(store, ArtifactRef(**value["request"]), request)
+        _, value, command, terminal = _read_quality_container_turn(controller, store, proof,
+            authority=authority, bindings=bindings, backend_attachment=backend_attachment, request=original)
+        registration = command["registration"]
+        row = registration["row"]
+        parsed = ProviderRegistry((original.profile,)).require(original.executor_id).parse(
+            _read_quality_request_artifact(store, ArtifactRef(**value["stdout"]), 8 * 1024 * 1024))
+        if (row["role"] != "candidate-seat" or row["phase"] != "initial"
+                or row["initial"] is not None or registration["initial_receipt"] is not None
+                or quality_row_identity(row) != initial_digest or not parsed.final or parsed.error is not None
+                or not parsed.session_id or parsed.session_id != request.session_id
+                or terminal["session_id"] != parsed.session_id):
+            raise ValueError("actual original row and raw own session")
+        return QualityContainerPredecessor(tuple(proof), backend_attachment, initial_digest, parsed.session_id)
+    except Exception as error:
+        raise ProviderRequestError("quality container predecessor authority or original completion differs") from error
+
+
+def reopen_quality_container_delivery_turn(controller, store, request, proof, *, authority,
+                                            bindings, row, backend_attachment):
+    """Join a reconstructed service request to its genuine stopped container chain."""
+    _, value, command, terminal = _read_quality_container_turn(controller, store, proof,
+        authority=authority, bindings=bindings, backend_attachment=backend_attachment, request=request)
+    if (command["registration"]["row"] != row or request.resume != (row["initial"] is not None)
+            or row["role"] not in {"candidate-seat", "owner-synthesis"}):
+        raise ProviderRequestError("quality delivered container row differs from the admitted request")
+    return value, command, terminal
 
 
 def quality_row_identity(row):
@@ -403,7 +517,7 @@ def reopen_quality_allocation(controller: LifecycleController, store: ArtifactSt
 
 def register_quality_permit(controller, store, authority, ledger, *, role, phase,
                             condition, permit, epoch, bindings, blocker=None,
-                            initial=None) -> str:
+                            initial=None, backend_attachment=None) -> str:
     """Consume a frozen row before registering, including known-unstarted failures."""
     value = reopen_quality_allocation(controller, store, authority, bindings=bindings)
     rows = [row for row in value["rows"] if (row["role"], row["phase"],
@@ -413,9 +527,26 @@ def register_quality_permit(controller, store, authority, ledger, *, role, phase
             or len(rows) != 1 or rows[0]["blocker"] != blocker):
         raise ProviderRequestError("quality allocation dispatch differs")
     row = rows[0]
-    resolved = _quality_resolved_permit(controller, store, authority, value, row, initial)
+    resolved = _quality_resolved_permit(controller, store, authority, value, row, initial,
+                                      backend_attachment=backend_attachment)
     if asdict(resolved) != asdict(permit):
         raise ProviderRequestError("quality allocation resolved permit differs")
+    if backend_attachment is not None:
+        from .quality_case import _read_quality_backend_attachment
+        from .container_boundary import (quality_docker_runner, _quality_docker_lock,
+            _quality_docker_consumed, _quality_docker_remaining)
+        attachment = _read_quality_backend_attachment(controller, store, backend_attachment,
+            authority=authority, bindings=bindings, row=row)
+        controls = tuple(attachment["container"]["docker_controls"])
+        original = read_evidence(controller, "quality-docker-controls", *controls)
+        limits = original["limits"]
+        quality_docker_runner(controller, allocation_digest=authority[1],
+            max_commands=limits["max_commands"], command_seconds=limits["command_seconds"],
+            outer_seconds=limits["outer_seconds"], original_controls=controls)
+        with _quality_docker_lock(controller, authority[1], identity=original["marker_identity"]) as (_, descriptor):
+            if _quality_docker_consumed(controller, descriptor, original, controls) >= limits["max_commands"]:
+                raise ProviderRequestError("quality Docker original command allocation is exhausted")
+            _quality_docker_remaining(original)
     # Only an original controller-authenticated blocker can unlock a reserved fix.
     if blocker is not None:
         proof = read_evidence(controller, "quality-original-blocker", f"{blocker}.json", blocker)
@@ -439,18 +570,38 @@ def register_quality_permit(controller, store, authority, ledger, *, role, phase
     finally:
         os.close(parent_fd)
     permit_id = ledger.register(permit, epoch)
-    registered = write_evidence(controller, "quality-permit-registration", {
-        **claim, "permit_id": permit_id, "epoch": epoch, "permit": asdict(permit),
-        "initial_receipt": None if initial is None else list(initial)})
-    fd = os.open(path.with_name(f"quality-registration-{digest}"),
-                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(canonical_json({"authority": list(registered)}))
-        handle.flush(); os.fsync(handle.fileno())
+    try:
+        registration = {
+            **claim, "permit_id": permit_id, "epoch": epoch, "permit": asdict(permit),
+            "initial_receipt": None if initial is None else list(initial)}
+        if backend_attachment is not None:
+            registration["backend_attachment"] = list(backend_attachment)
+        registered = write_evidence(controller, "quality-permit-registration", registration)
+        fd = os.open(path.with_name(f"quality-registration-{digest}"),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(canonical_json({"authority": list(registered)}))
+            handle.flush(); os.fsync(handle.fileno())
+    except BaseException as error:
+        if backend_attachment is not None:
+            try:
+                ledger.fence_epoch(permit_id, epoch)
+            except BaseException:
+                error.add_note("quality original permit fencing also failed")
+        raise
     return permit_id
 
 
-def _quality_resolved_permit(controller, store, authority, allocation, row, initial):
+def _quality_resolved_permit(controller, store, authority, allocation, row, initial,
+                             *, backend_attachment=None):
+    if backend_attachment is not None:
+        if (row["condition"] != "candidate" or row["blocker"] is not None
+                or row["role"] not in {"candidate-seat", "owner-synthesis"}
+                or row["phase"] not in ({"initial", "resume"} if row["role"] == "candidate-seat" else {"initial"})):
+            raise ProviderRequestError("quality container backend requires an original admitted work row")
+        from .quality_case import _read_quality_backend_attachment
+        _read_quality_backend_attachment(controller, store, backend_attachment,
+            authority=authority, bindings=allocation["bindings"], row=row)
     if row["initial"] is None:
         if initial is not None:
             raise ProviderRequestError("quality initial row cannot consume a predecessor")
@@ -458,6 +609,19 @@ def _quality_resolved_permit(controller, store, authority, allocation, row, init
     try:
         if not isinstance(initial, (tuple, list)) or len(initial) != 2:
             raise ValueError("completed predecessor")
+        if backend_attachment is not None:
+            request, _, command, terminal = _read_quality_container_turn(controller, store, initial,
+                authority=authority, bindings=allocation["bindings"], backend_attachment=backend_attachment)
+            registration = command["registration"]
+            original = registration["row"]
+            session = terminal["session_id"]
+            if (request.resume or original["initial"] is not None
+                    or original["phase"] != "initial" or original["role"] != row["role"]
+                    or registration["initial_receipt"] is not None
+                    or quality_row_identity(original) != row["initial"]
+                    or row["permit"]["session_id"] is not None and row["permit"]["session_id"] != session):
+                raise ValueError("completed original container row")
+            return _quality_row_permit(row, session)
         prior = read_evidence(controller, "quality-readonly-turn", *initial)
         command = read_evidence(controller, "quality-native-command", *prior["command"])
         registration = command["registration"]
@@ -686,7 +850,8 @@ def reopen_quality_native_command(controller, request, proof):
                 bindings=value["bindings"])
             registration = value["registration"]
             row = registration["row"]
-            if (row not in allocation["rows"] or registration["allocation"] != value["allocation"][1]
+            if (set(registration) != {"allocation", "row", "permit_id", "epoch", "permit", "initial_receipt"}
+                    or row not in allocation["rows"] or registration["allocation"] != value["allocation"][1]
                     or registration["epoch"] != row["epoch"] or request.timeout != row["process_seconds"]
                     or request.retries != 0 or request.execution_class != "read-only"
                     or row["profile"] != request.profile.digest
@@ -752,7 +917,8 @@ def validate_quality_prior_command(controller, request, proof):
         row = registration["row"]
         permit = registration["permit"]
         _require_quality_loaded_sources(value["loaded"])
-        if (row not in allocation["rows"] or permit["route"] != "initial"
+        if (set(registration) != {"allocation", "row", "permit_id", "epoch", "permit", "initial_receipt"}
+                or row not in allocation["rows"] or permit["route"] != "initial"
                 or runtime_source_digest() != value["bindings"]["source"]
                 or any(permit[name] != getattr(request, name) for name in
                        ("run_id", "task_id", "target_id", "seat_id", "inputs_digest"))

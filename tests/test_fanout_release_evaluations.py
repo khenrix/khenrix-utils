@@ -17,6 +17,8 @@ from test_fanout_readonly_canaries import canaries, _forbid_reopen_sends_and_pro
 from test_fanout_container_upstream import connection_factory  # noqa: F401
 from test_fanout_container_certify import (certifier, company_manifest, complete_receipt,
     _completed_quality_root)
+from test_fanout_maka_admission import installed
+from test_fanout_maka_quality import quality_root, live_route
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,7 +43,14 @@ def release_root(tmp_path, monkeypatch):
                      "shared/skills/llm-fanout-plan", "shared/skills/llm-fanout-execute"):
         shutil.copytree(ROOT / relative, checkout / relative,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for relative in ("Makefile", "scripts/lib/checks.py", "scripts/render.py",
+    for name in (ROOT / "components/maka/install-files.txt").read_text().splitlines():
+        if not name or name.startswith("#"):
+            continue
+        relative = Path("components/maka") / name
+        path = checkout / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, path)
+    for relative in ("Makefile", "scripts/lib/checks.py", "scripts/render.py", "components/skills/skillctl.py",
                      "capabilities.toml", "mise.toml", "mise.lock",
                      *(path.relative_to(ROOT).as_posix() for path in ROOT.glob("scripts/fanout_*.py"))):
         path = checkout / relative
@@ -414,25 +423,15 @@ def test_actual_failed_or_incomplete_gate_result_is_retained_but_refused(
 
 
 @pytest.mark.parametrize("damage", [None, "ballot", "missing-ballots", "boundary", "source"])
+@pytest.mark.parametrize("live_route", ["cli"], indirect=True)
 def test_complete_maka_producer_proof_reopens_answers_and_all_six_ballots(
-    certifier, complete_receipt, tmp_path, monkeypatch, damage,
+    certifier, quality_root, installed, live_route, monkeypatch, damage,
 ):
     helper = _helper()
-    root, _, _ = _completed_quality_root(certifier, complete_receipt, tmp_path, monkeypatch)
-
-    class Maka:
-        target_id = "maka"
-        no_tools_characterization_sha256 = "e" * 64
-        def __init__(self, **_):
-            pass
-        def judge(self, request):
-            return {"winner": "tie", "auth_route": request.auth_route,
-                "requested_model": request.requested_model, "observed_model": request.requested_model,
-                "effort": request.effort, "tool_calls": 0, "tool_boundary_sha256": "e" * 64}
-
-    monkeypatch.setattr(certifier, "HarborMakaTransport", Maka)
-    certifier._quality_run(root, allow_paid=True, approval_reference="synthetic-owner-123",
-        observation_date="2026-09-30", launcher=tmp_path / "never-executed", boundary_sha256="e" * 64)
+    root = quality_root
+    _, layout, _, _, _ = installed
+    certifier._quality_run(root, allow_paid=True, approval_reference="synthetic-approved",
+        observation_date="2026-09-30", launcher=layout.wrapper, boundary_sha256="b" * 64)
     # The helper uses the exact production module, not a replay transport.
     monkeypatch.setattr(helper, "probe", certifier)
     proof = helper.maka_evidence(root)
@@ -451,28 +450,18 @@ def test_complete_maka_producer_proof_reopens_answers_and_all_six_ballots(
         helper.validate_maka_evidence(proof, helper.release_source_binding())
 
 
+@pytest.mark.parametrize("live_route", ["cli"], indirect=True)
 def test_all_five_release_dependencies_reopen_complete_original_proofs(
-    release_root, canaries, certifier, complete_receipt, tmp_path, monkeypatch,
+    release_root, canaries, certifier, quality_root, installed, live_route, tmp_path, monkeypatch,
 ):
     helper, root, controller, store = release_root
     canary_helper, (standard, deep) = canaries
     _forbid_reopen_sends_and_probes(canary_helper, monkeypatch)
-    maka_root, _, _ = _completed_quality_root(certifier, complete_receipt, tmp_path, monkeypatch)
-
-    class Maka:
-        target_id = "maka"
-        no_tools_characterization_sha256 = "e" * 64
-        def __init__(self, **_):
-            pass
-        def judge(self, request):
-            return {"winner": "tie", "auth_route": request.auth_route,
-                "requested_model": request.requested_model, "observed_model": request.requested_model,
-                "effort": request.effort, "tool_calls": 0, "tool_boundary_sha256": "e" * 64}
-
-    monkeypatch.setattr(certifier, "HarborMakaTransport", Maka)
+    maka_root = quality_root
+    _, layout, _, _, _ = installed
     monkeypatch.setattr(helper, "probe", certifier)
-    certifier._quality_run(maka_root, allow_paid=True, approval_reference="synthetic-owner-123",
-        observation_date="2026-09-30", launcher=tmp_path / "never-executed", boundary_sha256="e" * 64)
+    certifier._quality_run(maka_root, allow_paid=True, approval_reference="synthetic-approved",
+        observation_date="2026-09-30", launcher=layout.wrapper, boundary_sha256="b" * 64)
     summary = canary_helper.summarize_readonly_canaries(standard, deep)
     values = {"maka": helper.maka_evidence(maka_root)}
     for tier, receipt in (("standard", standard), ("deep", deep)):

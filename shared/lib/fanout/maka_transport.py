@@ -14,6 +14,8 @@ def _invoke(
     launcher: Path, command: str, payload: dict[str, str], *,
     timeout: int, environment: dict[str, str] | None = None,
 ) -> Mapping[str, object]:
+    if command == 'judge-harbor':
+        raise JudgeTransportError('Harbor requires a fixed native capture allocation')
     with tempfile.TemporaryDirectory(prefix="maka-judge-") as workdir:
         try:
             result = subprocess.run(
@@ -102,12 +104,23 @@ class HarborMakaTransport(InteractiveMakaTransport):
     def __init__(
         self, *, launcher: Path, no_tools_characterization_sha256: str,
         paid_authorized: bool = False,
+        quality_run_root: Path | None = None,
     ) -> None:
-        super().__init__(
-            launcher=launcher,
-            no_tools_characterization_sha256=no_tools_characterization_sha256,
-        )
+        if not _digest(no_tools_characterization_sha256):
+            raise JudgeTransportError('Maka no-tools transport is not characterized')
+        self._launcher = Path(launcher)
+        self.no_tools_characterization_sha256 = no_tools_characterization_sha256
         self._paid_authorized = paid_authorized is True
+        self._captures = None
+        if self._paid_authorized:
+            if quality_run_root is None:
+                raise JudgeTransportError('Harbor requires the original quality capture root')
+            from .maka_quality import QualityCaptures
+            try:
+                self._captures = QualityCaptures(quality_run_root, self._launcher,
+                                                no_tools_characterization_sha256)
+            except Exception:
+                raise JudgeTransportError('Harbor installed admission or original allocation is unproven') from None
 
     def judge(self, request: PresentedJudgeRequest) -> Mapping[str, object]:
         if not isinstance(request, PresentedJudgeRequest) or request.panel_id != "harbor":
@@ -127,15 +140,20 @@ class HarborMakaTransport(InteractiveMakaTransport):
         }
         if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 131072:
             raise JudgeTransportError("Harbor ballot exceeds the managed request limit")
-        response = _invoke(
-            self._launcher, "judge-harbor", payload, timeout=600,
-            environment={
-                "PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C",
-                "MAKA_JUDGE_PAID_RUN": "1",
-            },
-        )
+        try:
+            response = self._captures.judge(request.case_id, payload)
+        except Exception:
+            raise JudgeTransportError('Harbor complete native capture is unproven; no retry') from None
         _validate_response(
             response, auth_route="harbor-lab", model="gpt-6.1-sol",
             boundary=self.no_tools_characterization_sha256,
         )
         return response
+
+    def finish_captures(self) -> str:
+        if not self._paid_authorized or self._captures is None:
+            raise JudgeTransportError('Harbor complete native capture inventory is unavailable')
+        try:
+            return self._captures.finish()
+        except Exception:
+            raise JudgeTransportError('Harbor complete native capture inventory is unproven') from None

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import ast
+import hashlib
 import json
 import posixpath
 import stat
@@ -1357,6 +1358,269 @@ def test_start_uses_explicit_context_and_fixed_seat_constraints(spec, fake_docke
         f"type=bind,src={SOCKET},dst=/run/fanout/broker.sock,readonly",
     ]
     assert fake_docker.events.index("volume-create") < fake_docker.events.index("create") < fake_docker.events.index("start")
+
+
+def _workspace_readonly_docker(spec):
+    readonly = replace(spec, workspace_readonly=True)
+    docker = FakeDocker(readonly)
+    docker.inspect["HostConfig"]["Mounts"][0]["ReadOnly"] = True
+    docker.inspect["Mounts"][0]["RW"] = False
+    return readonly, docker
+
+
+def test_workspace_readonly_create_and_running_attestation(spec, attestor):
+    readonly, docker = _workspace_readonly_docker(spec)
+    launcher = _launcher(docker, attestor)
+    handle = launcher.start(readonly)
+    assert launcher.attest_running(readonly, handle) == handle
+    create = next(argv for argv in docker.calls if argv[3] == "create")
+    mounts = [create[index + 1] for index, arg in enumerate(create) if arg == "--mount"]
+    assert mounts == [
+        f"type=volume,src={WORKSPACE},dst=/workspace,readonly",
+        f"type=volume,src={SESSION},dst=/session",
+        f"type=bind,src={SOCKET},dst=/run/fanout/broker.sock,readonly",
+    ]
+    assert ContainerLauncher._mount_args(spec)[1] == f"type=volume,src={WORKSPACE},dst=/workspace"
+    assert "--read-only" in create
+    assert create[create.index("--network") + 1] == "none"
+    with pytest.raises(ProviderRequestError, match="launch association"):
+        launcher.attest_running(spec, handle)
+
+
+@pytest.mark.parametrize("view", ["host", "inventory"])
+@pytest.mark.parametrize("phase", ["created", "running"])
+def test_workspace_readonly_refuses_writable_mount_substitution(spec, attestor, view, phase):
+    readonly, docker = _workspace_readonly_docker(spec)
+    launcher = _launcher(docker, attestor)
+    handle = launcher.start(readonly) if phase == "running" else None
+    if view == "host":
+        docker.inspect["HostConfig"]["Mounts"][0]["ReadOnly"] = False
+    else:
+        docker.inspect["Mounts"][0]["RW"] = True
+    with pytest.raises(ProviderRequestError, match="mount"):
+        if phase == "created":
+            launcher.start(readonly)
+        else:
+            launcher.attest_running(readonly, handle)
+    assert _has_start(docker) is (phase == "running")
+
+
+@pytest.mark.parametrize("view,index,value", [
+    ("host", 1, True), ("inventory", 1, False),
+    ("host", 2, False), ("inventory", 2, True),
+])
+def test_workspace_readonly_preserves_session_and_socket_mount_policy(spec, attestor, view, index, value):
+    readonly, docker = _workspace_readonly_docker(spec)
+    if view == "host":
+        docker.inspect["HostConfig"]["Mounts"][index]["ReadOnly"] = value
+    else:
+        docker.inspect["Mounts"][index]["RW"] = value
+    with pytest.raises(ProviderRequestError, match="mount"):
+        _launcher(docker, attestor).start(readonly)
+    assert not _has_start(docker)
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])
+def test_workspace_readonly_requires_a_bool_before_docker(spec, fake_docker, attestor, value):
+    invalid = replace(spec, workspace_readonly=value)
+    with pytest.raises(ProviderRequestError, match="workspace mount policy"):
+        _launcher(fake_docker, attestor).start(invalid)
+    assert fake_docker.calls == []
+
+
+def test_workspace_readonly_sealed_launch_and_stop_reopen_without_policy_substitution(spec, attestor, tmp_path):
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport
+    from shared.lib.fanout.container_transfer_transport import authenticate_launch_record, reopen_stopped_seat
+    from shared.lib.fanout.controller import create_lifecycle_controller, read_evidence
+
+    readonly, docker = _workspace_readonly_docker(spec)
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    transport = PinnedDockerTransport.start(controller, readonly,
+        launcher=_launcher(docker, attestor), socket_attestor=attestor,
+        vm_attestor=lambda: pytest.fail("VM operation"),
+        image_attestor=lambda: pytest.fail("image operation"),
+        cli_attestor=lambda _: pytest.fail("CLI operation"),
+        process_runner=lambda _: pytest.fail("provider process"))
+    launch = read_evidence(controller, "container-seat-launch",
+        transport.handle_evidence_name, transport.handle_evidence_digest)
+    assert launch["spec"]["workspace_readonly"] is True
+    authenticate_launch_record(controller, launch, readonly, transport.handle)
+    fresh = ContainerLauncher(docker, guest_socket_attestor=attestor)
+    fresh.restore_launch(launch, readonly, transport.handle, recover=False)
+    assert fresh.attest_running(readonly, transport.handle) == transport.handle
+    with pytest.raises(ProviderRequestError, match="launch association"):
+        fresh.restore_launch(launch, spec, transport.handle, recover=False)
+    transport.close()
+    stopped = read_evidence(controller, "container-seat-stopped", *transport.stop_evidence)
+    assert stopped["spec"]["workspace_readonly"] is True
+    before = len(docker.calls)
+    reopen_stopped_seat(controller, transport.stop_evidence, spec=readonly, handle=transport.handle)
+    with pytest.raises(ProviderRequestError, match="stopped-seat authentication"):
+        reopen_stopped_seat(controller, transport.stop_evidence, spec=spec, handle=transport.handle)
+    assert len(docker.calls) == before
+
+
+@pytest.mark.parametrize("value", [False, None, 0, 1, "true", "omitted"])
+def test_workspace_readonly_launch_decoder_refuses_foreign_serialized_policy(spec, attestor, value):
+    from dataclasses import asdict
+    from shared.lib.fanout.container_runtime import decode_launch_record
+
+    readonly, docker = _workspace_readonly_docker(spec)
+    launcher = _launcher(docker, attestor)
+    handle = launcher.start(readonly)
+    launch = {"spec": asdict(readonly), "handle": asdict(handle), "route": "start",
+              "volumes": copy.deepcopy(docker.original_volumes)}
+    if value == "omitted":
+        launch["spec"].pop("workspace_readonly")
+    else:
+        launch["spec"]["workspace_readonly"] = value
+    with pytest.raises(ProviderRequestError, match="launch association"):
+        decode_launch_record(launch, readonly, handle, recover=False)
+
+
+def test_workspace_readonly_recovery_decoder_refuses_numeric_policy(spec, attestor):
+    from dataclasses import asdict
+    from shared.lib.fanout.container_runtime import decode_launch_record
+
+    readonly, docker = _workspace_readonly_docker(spec)
+    launcher = _launcher(docker, attestor)
+    handle = launcher.recover(readonly)
+    assert launcher.attest_running(readonly, handle) == handle
+    launch = {"spec": asdict(readonly), "handle": asdict(handle), "route": "recover",
+        "volumes": copy.deepcopy(docker.original_volumes),
+        "original_input": ["f" * 64 + ".json", "f" * 64],
+        "recovery": json.loads(json.dumps(asdict(launcher._recovery)))}
+    assert decode_launch_record(launch, readonly, handle, recover=True).spec == readonly
+    launch["recovery"]["spec"]["workspace_readonly"] = 1
+    with pytest.raises(ProviderRequestError, match="recovery association"):
+        decode_launch_record(launch, readonly, handle, recover=True)
+
+
+@pytest.mark.parametrize("output,status", [(b"", 1), (b"not-a-container-id\n", 0)])
+def test_workspace_readonly_ambiguous_create_fences_exact_owned_seat(spec, attestor, output, status):
+    readonly, docker = _workspace_readonly_docker(spec)
+    docker.create_output, docker.create_returncode = output, status
+    with pytest.raises(ProviderRequestError, match="Docker (created an invalid|create operation failed)"):
+        _launcher(docker, attestor).start(readonly)
+    assert "disable-restart-new" in docker.events
+    assert "stop-new" not in docker.events
+    assert not _has_start(docker)
+    assert docker.inspect["State"]["Running"] is False
+    assert not any(argv[3:5] == ("volume", "rm") for argv in docker.calls)
+
+
+def test_workspace_readonly_failed_start_fences_exact_owned_seat(spec, attestor):
+    readonly, docker = _workspace_readonly_docker(spec)
+    docker.start_returncode = 1
+    with pytest.raises(ProviderRequestError, match="Docker start operation failed"):
+        _launcher(docker, attestor).start(readonly)
+    assert docker.inspect["State"]["Running"] is False
+    assert docker.events.index("start") < docker.events.index("disable-restart-new") < docker.events.index("stop-new")
+    assert not any(argv[3:5] == ("volume", "rm") for argv in docker.calls)
+
+
+@pytest.mark.parametrize("view", ["host", "inventory"])
+def test_workspace_readonly_failed_start_does_not_stop_a_different_mount_policy(spec, attestor, view):
+    readonly, docker = _workspace_readonly_docker(spec)
+    docker.start_returncode = 1
+    def substitute(item):
+        if view == "host":
+            item["HostConfig"]["Mounts"][0]["ReadOnly"] = False
+        else:
+            item["Mounts"][0]["RW"] = True
+    docker.mutate_after_failed_start = substitute
+    with pytest.raises(ProviderRequestError, match="Docker start operation failed") as caught:
+        _launcher(docker, attestor).start(readonly)
+    assert docker.inspect["State"]["Running"] is True
+    assert "disable-restart-new" not in docker.events
+    assert "stop-new" not in docker.events
+    assert any("retained" in note for note in caught.value.__notes__)
+
+
+@pytest.fixture(params=[False, True])
+def workspace_readonly_stopped(spec, attestor, tmp_path, request):
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport
+    from shared.lib.fanout.controller import create_lifecycle_controller, read_evidence
+
+    selected, docker = _workspace_readonly_docker(spec) if request.param else (spec, FakeDocker(spec))
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    transport = PinnedDockerTransport.start(controller, selected,
+        launcher=_launcher(docker, attestor), socket_attestor=attestor,
+        vm_attestor=lambda: pytest.fail("VM operation"),
+        image_attestor=lambda: pytest.fail("image operation"),
+        cli_attestor=lambda _: pytest.fail("CLI operation"),
+        process_runner=lambda _: pytest.fail("provider process"))
+    transport.close()
+    stopped = read_evidence(controller, "container-seat-stopped", *transport.stop_evidence)
+    return controller, transport, docker, stopped
+
+
+@pytest.mark.parametrize("value", [0, 1, None, "true", "omitted"])
+def test_workspace_readonly_stopped_reader_refuses_nonbool_policy(workspace_readonly_stopped, value):
+    from shared.lib.fanout.container_transfer_transport import reopen_stopped_seat
+    from shared.lib.fanout.controller import write_evidence
+
+    controller, transport, docker, stopped = workspace_readonly_stopped
+    reopen_stopped_seat(controller, transport.stop_evidence, spec=transport.spec, handle=transport.handle)
+    if value == "omitted":
+        stopped["spec"].pop("workspace_readonly")
+    else:
+        stopped["spec"]["workspace_readonly"] = value
+    resigned = write_evidence(controller, "container-seat-stopped", stopped)
+    before = len(docker.calls)
+    with pytest.raises(ProviderRequestError, match="stopped-seat authentication"):
+        reopen_stopped_seat(controller, resigned, spec=transport.spec, handle=transport.handle)
+    assert len(docker.calls) == before
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_workspace_readonly_stopped_reader_validates_spec_before_evidence(workspace_readonly_stopped, value):
+    from shared.lib.fanout.container_transfer_transport import reopen_stopped_seat
+
+    controller, transport, _, _ = workspace_readonly_stopped
+    with pytest.raises(ProviderRequestError, match="workspace mount policy"):
+        reopen_stopped_seat(controller, ("absent.json", "0" * 64),
+            spec=replace(transport.spec, workspace_readonly=value), handle=transport.handle)
+
+
+@pytest.mark.parametrize("view,index,change", [
+    ("host", 0, "flip"), ("inventory", 0, "flip"),
+    ("host", 1, "flip"), ("inventory", 1, "flip"),
+    ("host", 2, "flip"), ("inventory", 2, "flip"),
+    ("host", 0, "numeric"), ("inventory", 0, "numeric"),
+    ("host", 0, "extra"), ("inventory", 0, "extra"),
+    ("host", 0, "missing"), ("inventory", 0, "missing"),
+    ("host", 0, "source"),
+])
+def test_workspace_readonly_stopped_reader_refuses_authenticated_mount_drift(
+        workspace_readonly_stopped, view, index, change):
+    from shared.lib.fanout.container_transfer_transport import reopen_stopped_seat
+    from shared.lib.fanout.controller import write_evidence
+
+    controller, transport, docker, stopped = workspace_readonly_stopped
+    reopen_stopped_seat(controller, transport.stop_evidence, spec=transport.spec, handle=transport.handle)
+    path = controller.root / "quarantine/runtime-proofs" / stopped["raw_inspect"]["path"]
+    raw = json.loads(path.read_bytes())
+    mounts = raw[0]["HostConfig"]["Mounts"] if view == "host" else raw[0]["Mounts"]
+    field = "ReadOnly" if view == "host" else "RW"
+    if change == "flip":
+        mounts[index][field] = not mounts[index].get(field, False)
+    elif change == "numeric":
+        mounts[index][field] = int(mounts[index].get(field, False))
+    elif change == "extra":
+        mounts.append(copy.deepcopy(mounts[0]))
+    elif change == "missing":
+        mounts.pop(index)
+    else:
+        mounts[index]["Source"] = "foreign-volume"
+    wire = json.dumps(raw).encode()
+    path.write_bytes(wire)
+    stopped["raw_inspect"].update(digest=hashlib.sha256(wire).hexdigest(), size=len(wire))
+    resigned = write_evidence(controller, "container-seat-stopped", stopped)
+    before = len(docker.calls)
+    with pytest.raises(ProviderRequestError, match="stopped-seat authentication"):
+        reopen_stopped_seat(controller, resigned, spec=transport.spec, handle=transport.handle)
+    assert len(docker.calls) == before
 
 
 def test_launch_without_authenticated_guest_attestor_fails_before_docker(spec, fake_docker):

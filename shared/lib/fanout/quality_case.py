@@ -44,6 +44,91 @@ _FIELDS = {"schema", "case_id", "run_id", "task_id", "target_id", "condition",
     "seats", "installation"}
 
 
+def _quality_backend(value):
+    if type(value) is not dict:
+        raise ProviderRequestError("quality attachment backend fields differ")
+    if value.get("schema") == "fanout-quality-installed-case-attachment-v1" and set(value) == _FIELDS:
+        return "native"
+    if (value.get("schema") != "fanout-quality-installed-case-attachment-v2"
+            or set(value) != _FIELDS | {"backend", "container"}
+            or value["backend"] != "container-read-only"):
+        raise ProviderRequestError("quality attachment backend fields differ")
+    container = value["container"]
+    if (type(container) is not dict or set(container) != {"image_digest", "cli_digests", "docker_controls"}
+            or type(container["cli_digests"]) is not dict
+            or set(container["cli_digests"]) != _PROVIDERS
+            or type(container["docker_controls"]) is not list or len(container["docker_controls"]) != 2):
+        raise ProviderRequestError("quality attachment container fields differ")
+    from .container_runtime import ContainerSpec
+    from .container_boundary import _require_sha
+    for digest in container["cli_digests"].values():
+        _require_sha(digest, "quality guest CLI")
+    _require_sha(container["docker_controls"][1], "quality Docker controls")
+    if container["docker_controls"][0] != container["docker_controls"][1] + ".json":
+        raise ProviderRequestError("quality attachment Docker controls pointer differs")
+    if type(container["image_digest"]) is not str:
+        raise ProviderRequestError("quality attachment image differs")
+    # The ordinary fixed image parser also checks the exact digest-qualified image grammar.
+    from .container_runtime import ContainerLauncher, private_volume_names, seat_socket_path
+    volumes = private_volume_names(value["run_id"], value["task_id"], value["target_id"], "quality-image-check")
+    ContainerLauncher._validate_spec(ContainerSpec(value["run_id"], value["task_id"], value["target_id"],
+        "quality-image-check", container["image_digest"], *volumes, seat_socket_path("quality-image-check"),
+        container["cli_digests"]["codex"], workspace_readonly=True))
+    return "container-read-only"
+
+
+def _quality_request_seat_id(value, seat, row):
+    if (value.get("schema") == "fanout-quality-installed-case-attachment-v2"
+            and value.get("backend") == "container-read-only" and row["role"] == "owner-synthesis"):
+        expected = seat.seat_id + "-quality-owner"
+        if row["permit"]["seat_id"] != expected:
+            raise ProviderRequestError("quality container owner needs its frozen separate identity")
+        return expected
+    return seat.seat_id
+
+
+def _quality_row_seat(value, preparation, row):
+    for seat in preparation.seats:
+        if (seat.executor_id == row["permit"]["provider"]
+                and _quality_request_seat_id(value, seat, row) == row["permit"]["seat_id"]):
+            return seat
+    raise ProviderRequestError("quality allocated row has no admitted workspace")
+
+
+def _quality_input_projection(value):
+    projection = {"case_input": value["case_input"], "catalog": value["catalog"]}
+    if _quality_backend(value) == "container-read-only":
+        projection["backend"] = {"kind": value["backend"],
+            "image_digest": value["container"]["image_digest"],
+            "cli_digests": value["container"]["cli_digests"]}
+    return projection
+
+
+def _read_quality_backend_attachment(controller, store, pointer, *, authority, bindings, row):
+    if type(pointer) is not tuple or len(pointer) != 2:
+        raise ProviderRequestError("quality container requires its original backend attachment")
+    value = read_evidence(controller, _CATEGORY, *pointer)
+    allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+    if (_quality_backend(value) != "container-read-only"
+            or value["allocation"] != list(authority) or value["bindings"] != bindings
+            or row not in allocation["rows"]
+            or bindings["source"] != runtime_source_digest()
+            or bindings["projection"] != hashlib.sha256(canonical_json(_quality_input_projection(value))).hexdigest()
+            or value["inputs_digest"] != bindings["inputs"]
+            or any(row["permit"][key] != value[key] for key in
+                   ("run_id", "task_id", "target_id", "inputs_digest"))
+            or value["condition"] != row["condition"] or value["execution_class"] != "read-only"):
+        raise ProviderRequestError("quality container backend allocation differs")
+    provider = row["permit"]["provider"]
+    selected = value["seats"].get(provider)
+    if type(selected) is not dict or set(selected) != {"seat_id", "workspace_digest", "profile_digest", "route_id"}:
+        raise ProviderRequestError("quality container backend source seat differs")
+    expected_seat = selected["seat_id"] + ("-quality-owner" if row["role"] == "owner-synthesis" else "")
+    if row["permit"]["seat_id"] != expected_seat or row["profile"] != selected["profile_digest"]:
+        raise ProviderRequestError("quality container backend row identity differs")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class QualityCaseAttachment:
     """Only an existing controller evidence pointer, never a serialized capability."""
@@ -109,10 +194,9 @@ def _candidate_work_rows(allocation):
 
 
 def _case(service, value, *, helper, runtime_digest):
+    backend = _quality_backend(value)
     if (type(service) is not ExecutionService or type(service.artifacts) is not ArtifactStore
-            or type(value) is not dict or set(value) != _FIELDS
             or len(canonical_json(value)) > 64 * 1024
-            or value["schema"] != "fanout-quality-installed-case-attachment-v1"
             or value["condition"] != "candidate" or value["execution_class"] != "read-only"
             or value["run_id"] != service.inputs.run_id
             or value["inputs_digest"] != service.inputs.digest
@@ -152,7 +236,7 @@ def _case(service, value, *, helper, runtime_digest):
         raise ProviderRequestError("quality compiled question differs from the admitted original")
     require_quality_question(service, preparation, prompt, selected["mode"])
     _reopen_quality_catalog(store, value["catalog"])
-    projection = {"case_input": value["case_input"], "catalog": value["catalog"]}
+    projection = _quality_input_projection(value)
     if bindings["projection"] != hashlib.sha256(canonical_json(projection)).hexdigest():
         raise ProviderRequestError("quality accepted input/catalog projection differs")
     manifest = read_machine_routes(Path(value["manifest"]), Path(value["policy"]))
@@ -184,7 +268,7 @@ def _case(service, value, *, helper, runtime_digest):
     for row in rows:
         permit = row["permit"]
         provider = permit["provider"]
-        seat = next((seat for seat in preparation.seats if seat.seat_id == permit["seat_id"]), None)
+        seat = _quality_row_seat(value, preparation, row)
         route = routes.get(provider)
         if seat is None or seat.executor_id != provider or route is None:
             raise ProviderRequestError("quality allocated row has no admitted workspace")
@@ -293,7 +377,7 @@ def _quality_case_request(service, value, preparation, seat, row, *, peer=None, 
         staged_skill_admission=seat.admission, skill_delivery_ref=seat.delivery_evidence_ref,
         skill_delivery_sha256=seat.delivery_evidence_sha256, agy_guard=seat.agy_guard,
         run_id=value["run_id"], task_id=value["task_id"], target_id=value["target_id"],
-        inputs_digest=value["inputs_digest"], seat_id=seat.seat_id)
+        inputs_digest=value["inputs_digest"], seat_id=_quality_request_seat_id(value, seat, row))
 
 
 def _require_quality_case_request(request, expected):
@@ -356,6 +440,43 @@ class QualityCaseRunner:
         return reopen_quality_case(self._service, self._attachment,
             helper=self._helper, runtime_digest=self._runtime_digest)
 
+    def _material_context(self, packet, seat, request):
+        from .container_transfer import TransferIdentity
+        service = self._service
+        service._authorize_command(service.coordinator.owner)
+        value, (task, preparation, allocation, _) = self._context()
+        if (_quality_backend(value) != "container-read-only" or packet is not preparation.packet
+                or not any(seat is assigned for assigned in preparation.seats)
+                or request.resume):
+            raise ProviderRequestError("quality material requires its exact initial preparation")
+        rows = [row for row in _candidate_work_rows(allocation) if row["phase"] == "initial"
+                and row["permit"]["seat_id"] == request.seat_id]
+        if len(rows) != 1 or _quality_row_seat(value, preparation, rows[0]) is not seat:
+            raise ProviderRequestError("quality material row differs from its source workspace")
+        row = rows[0]
+        sources = None
+        if row["role"] == "owner-synthesis":
+            state = service._execution_state(task.id)
+            if len(state.barriers) != 2:
+                raise ProviderRequestError("quality owner material lacks complete peer barriers")
+            barrier = service._restore_barrier(state.barriers[-1], preparation.packet)
+            sources = {terminal.seat_id: terminal.answer_ref for terminal in barrier.valid_terminals}
+        expected = _quality_case_request(service, value, preparation, seat, row, sources=sources)
+        _require_quality_case_request(request, expected)
+        _read_quality_backend_attachment(service.lifecycle_controller, service.artifacts,
+            (self._attachment.name, self._attachment.digest), authority=tuple(value["allocation"]),
+            bindings=value["bindings"], row=row)
+        files = {"quality-attachment.json": canonical_json(value),
+                 "quality-case-input.json": _read_quality_request_artifact(service.artifacts,
+                    _ref(value["case_input"], 1024 * 1024), 1024 * 1024)}
+        if request.executor_id == "codex":
+            _reopen_quality_catalog(service.artifacts, value["catalog"])
+            files["quality-catalog.json"] = _read_quality_request_artifact(service.artifacts,
+                _ref(value["catalog"]["projected"], 2 * 1024 * 1024), 2 * 1024 * 1024)
+        identity = TransferIdentity(request.run_id, request.task_id, request.target_id,
+                                    request.seat_id, request.inputs_digest)
+        return service.inputs, service.baseline, identity, files
+
     def __call__(self, request, *, registry):
         value, (task, preparation, allocation, routes) = self._context()
         if registry is not self._service.coordinator.registry:
@@ -399,7 +520,9 @@ class QualityCaseRunner:
             proof = tuple(pointer["proof"])
             initial = reopen_quality_predecessor(self._service.lifecycle_controller, self._service.artifacts,
                 request, proof, verification=seat.workspace_verification,
-                authority=tuple(value["allocation"]), bindings=value["bindings"], initial_digest=row["initial"])
+                authority=tuple(value["allocation"]), bindings=value["bindings"], initial_digest=row["initial"],
+                **({"backend_attachment": (self._attachment.name, self._attachment.digest)}
+                   if _quality_backend(value) == "container-read-only" else {}))
         terminal, proof = self._turn(request, value, row, routes, seat, initial, proof)
         pointer = write_evidence(self._service.lifecycle_controller, "quality-installed-seat-turn", {
             "attachment": [self._attachment.name, self._attachment.digest], "seat_id": seat.seat_id,
@@ -422,6 +545,7 @@ class QualityCaseRunner:
         return tuple(value["pointer"])
 
     def _turn(self, request, value, row, routes, seat, initial=None, proof=None):
+        backend = _quality_backend(value)
         service = self._service
         route = routes[request.executor_id]
         permit = _quality_row_permit(row, request.session_id if request.resume else None)
@@ -431,6 +555,8 @@ class QualityCaseRunner:
             raise ProviderRequestError("quality row already consumed; no credential load or replay")
         # The existing native command validator repeats all request/row checks before launch.
         service.coordinator.registry.assert_installed_version(request.profile)
+        if backend == "container-read-only":
+            return self._container_turn(request, value, row, route, seat, initial, proof)
         credential = HostCredentialSource(route.profile).load()
         return run_quality_readonly_turn(request, controller=service.lifecycle_controller,
             store=service.artifacts, authority=tuple(value["allocation"]),
@@ -441,6 +567,119 @@ class QualityCaseRunner:
             denied_owner_roots=(service.baseline.repository,),
             catalog=value["catalog"] if request.executor_id == "codex" else None,
             initial=initial, initial_digest=row["initial"], initial_proof=proof)
+
+    def _container_turn(self, request, value, row, route, seat, initial, proof):
+        service = self._service
+        service._authorize_command(service.coordinator.owner)
+        current, (_, preparation, allocation, _) = self._context()
+        attachment = (self._attachment.name, self._attachment.digest)
+        if (canonical_json(current) != canonical_json(value)
+                or _quality_row_seat(value, preparation, row) is not seat):
+            raise ProviderRequestError("quality container fixed runner context differs")
+        _read_quality_backend_attachment(service.lifecycle_controller, service.artifacts, attachment,
+            authority=tuple(value["allocation"]), bindings=value["bindings"], row=row)
+        from .broker import Broker
+        from .container_boundary import (ContainerAdmission, PinnedDockerTransport, SessionStore,
+            quality_docker_runner, run_quality_container_readonly_turn, reopen_quality_container_transport)
+        from .container_coordinator import (_coordinator_lifecycle, bind_quality_turn_context,
+            stage_input_material)
+        from .container_runtime import ContainerSpec, private_volume_names, seat_socket_path
+        from .container_transfer_transport import QualityProvisioning, issue_input_source_grant
+        from .diagnostic import register_quality_permit
+        controller, store = service.lifecycle_controller, service.artifacts
+        authority = tuple(value["allocation"])
+        controls = tuple(value["container"]["docker_controls"])
+        limits = read_evidence(controller, "quality-docker-controls", *controls)["limits"]
+        docker = quality_docker_runner(controller, allocation_digest=authority[1],
+            max_commands=limits["max_commands"], command_seconds=limits["command_seconds"],
+            outer_seconds=limits["outer_seconds"], original_controls=controls)
+        workspace, session = private_volume_names(request.run_id, request.task_id, request.target_id, request.seat_id)
+        spec = ContainerSpec(request.run_id, request.task_id, request.target_id, request.seat_id,
+            value["container"]["image_digest"], workspace, session, seat_socket_path(request.seat_id),
+            value["container"]["cli_digests"][request.executor_id], workspace_readonly=request.resume)
+        sessions = SessionStore(controller, request.run_id, request.task_id, request.target_id, request.seat_id, session)
+        permit = _quality_row_permit(row, request.session_id if request.resume else None)
+        ledger = PermitLedger(controller.root / "locks/spend", controller)
+        scope = _coordinator_lifecycle(service.coordinator)
+        permit_id = transport = None
+        primary = None
+        try:
+            # First prepare fences abandoned registrations under this same owner lock.
+            with scope.guard:
+                scope.authorize()
+                permit_id = register_quality_permit(controller, store, authority, ledger,
+                    role=row["role"], phase=row["phase"], condition=row["condition"],
+                    permit=permit, epoch=row["epoch"], bindings=value["bindings"],
+                    initial=proof, backend_attachment=attachment)
+                context = bind_quality_turn_context(self, request, row, permit_id)
+                scope.reserve_registered(context, spec, ledger, permit, row["epoch"])
+            credential = HostCredentialSource(route.profile).load()
+            def before_model_binding(*_args):
+                raise ProviderRequestError("quality provisioning cannot send a model request")
+            broker = Broker(permit, credential=credential, send=before_model_binding)
+            if request.resume:
+                original_turn = read_evidence(controller, "quality-readonly-turn", *proof)
+                command = read_evidence(controller, "quality-container-command", *original_turn["command"])
+                original_row = command["registration"]["row"]
+                if (original_row not in allocation["rows"] or quality_row_identity(original_row) != row["initial"]):
+                    raise ProviderRequestError("quality container original source row differs")
+                original_request = _reopen_quality_case_request(service, value, preparation, seat,
+                    original_row, original_turn)
+                handoff = tuple(command["handoff"])
+                admission = reopen_quality_container_transport(request, controller=controller, store=store,
+                    authority=authority, ledger=ledger, permit=permit, permit_id=permit_id,
+                    epoch=row["epoch"], session_store=sessions, broker=broker,
+                    backend_attachment=attachment, handoff=handoff, original_request=original_request,
+                    predecessor=initial, bindings=value["bindings"], lifecycle_scope=scope, context_ref=context)
+                transport = admission.transport
+            else:
+                original_request = request
+                transport = PinnedDockerTransport.start_live(controller, spec, ledger=ledger,
+                    broker=broker, permit_id=permit_id, epoch=row["epoch"], lifecycle_scope=scope,
+                    context_ref=context, request=request, quality_docker=docker)
+                admission = ContainerAdmission(permit, permit_id, row["epoch"], ledger,
+                    spec.image_digest, spec.cli_digest, transport.attest_socket(), transport, sessions,
+                    transport.handle_evidence_name, transport.handle_evidence_digest,
+                    quality_provisioning=QualityProvisioning(store.root, authority, value["bindings"],
+                        row["role"], row["phase"], row["condition"],
+                        value["catalog"] if request.executor_id == "codex" else None, attachment))
+                source, name, digest = stage_input_material(service.coordinator, preparation.packet,
+                    seat, request, transport.handle, quality=self)
+                grant = issue_input_source_grant(controller, request, transport, admission, source, name, digest)
+                admission = replace(admission, input_receipt=transport.stage_inputs(request, grant))
+                transport = transport.handoff_quality_inputs(request, admission)
+                handoff = transport.handoff_evidence
+                admission = replace(admission, transport=transport, socket_attestation=transport.attest_socket(),
+                    handle_evidence_name=transport.handle_evidence_name,
+                    handle_evidence_digest=transport.handle_evidence_digest, quality_provisioning=None)
+            return run_quality_container_readonly_turn(request, controller=controller, store=store,
+                authority=authority, admission=admission, backend_attachment=attachment,
+                handoff=handoff, original_request=original_request, bindings=value["bindings"],
+                role=row["role"], phase=row["phase"], condition=row["condition"], route=route,
+                credential=credential, catalog=value["catalog"] if request.executor_id == "codex" else None,
+                predecessor=initial)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            cleanup = None
+            if transport is not None and (transport.stop_evidence is None or getattr(transport, "_control", None) is not None):
+                try:
+                    transport.close()
+                except BaseException as error:
+                    cleanup = error
+            if permit_id is not None:
+                try:
+                    ledger.fence_epoch(permit_id, row["epoch"])
+                except BaseException as error:
+                    if cleanup is None:
+                        cleanup = error
+                    else:
+                        cleanup.add_note(f"Quality permit fence also failed: {type(error).__name__}")
+            if cleanup is not None:
+                if primary is None:
+                    raise cleanup
+                primary.add_note(f"Quality container cleanup also failed: {type(cleanup).__name__}")
 
     def synthesize_and_submit(self, owner):
         """Use the reserved row and exact final sources, then ordinary fresh verification."""
@@ -457,7 +696,7 @@ class QualityCaseRunner:
         if len(sources) < 2 or any(ref is None for ref in sources.values()):
             raise ProviderRequestError("quality synthesis final sources are incomplete")
         row = next(row for row in allocation["rows"] if row["condition"] == "candidate" and row["role"] == "owner-synthesis")
-        seat = next(seat for seat in preparation.seats if seat.seat_id == row["permit"]["seat_id"])
+        seat = _quality_row_seat(value, preparation, row)
         request = _quality_case_request(service, value, preparation, seat, row, sources=sources)
         terminal, proof = self._turn(request, value, row, routes, seat)
         verification = service.verify_read_only_synthesis(task.id, source_seat_ids=tuple(sorted(sources)),
@@ -483,9 +722,27 @@ class QualityCaseRunner:
         return delivery
 
 
+def _quality_delivery_records(controller, proof, backend):
+    if backend == "native":
+        schema, command_kind, terminal_kind = (
+            "fanout-quality-readonly-turn-v1", "quality-native-command", "brokered-provider-diagnostic")
+    elif backend == "container-read-only":
+        schema, command_kind, terminal_kind = (
+            "fanout-quality-container-readonly-turn-v1", "quality-container-command", "quality-container-terminal")
+    else:
+        raise ProviderRequestError("quality delivery backend is unsupported")
+    turn = read_evidence(controller, "quality-readonly-turn", *proof)
+    if turn.get("schema") != schema:
+        raise ProviderRequestError("quality delivery turn backend differs")
+    command = read_evidence(controller, command_kind, *turn["command"])
+    terminal = read_evidence(controller, terminal_kind, *turn["terminal"])
+    return turn, command, terminal
+
+
 def reopen_quality_delivery(service, attachment, proof, *, helper, runtime_digest):
     value, (task, preparation, allocation, _) = reopen_quality_case(service, attachment,
         helper=helper, runtime_digest=runtime_digest)
+    backend = _quality_backend(value)
     record = read_evidence(service.lifecycle_controller, "quality-installed-case-delivery", *proof)
     if record.keys() != {"schema", "attachment", "run_id", "task_id", "inputs_digest",
             "plan_digest", "plan_revision", "barriers", "sources", "turns", "synthesis_turn", "final", "verification"}:
@@ -517,8 +774,8 @@ def reopen_quality_delivery(service, attachment, proof, *, helper, runtime_diges
     turns = record["turns"] + [{"proof": record["synthesis_turn"]}]
     seen = set()
     for index, turn in enumerate(turns):
-        native = read_evidence(service.lifecycle_controller, "quality-readonly-turn", *turn["proof"])
-        command = read_evidence(service.lifecycle_controller, "quality-native-command", *native["command"])
+        native, command, terminal = _quality_delivery_records(
+            service.lifecycle_controller, turn["proof"], backend)
         row = command["registration"]["row"]
         identity = quality_row_identity(row)
         if (command["allocation"] != value["allocation"] or command["bindings"] != value["bindings"]
@@ -529,14 +786,22 @@ def reopen_quality_delivery(service, attachment, proof, *, helper, runtime_diges
                 "seat_id": row["permit"]["seat_id"], "phase": row["phase"], "proof": turn["proof"]}:
             raise ProviderRequestError("quality delivered seat turn attachment differs")
         seen.add(identity)
-        seat = next((seat for seat in preparation.seats if seat.seat_id == row["permit"]["seat_id"]), None)
+        seat = _quality_row_seat(value, preparation, row)
         if seat is None:
             raise ProviderRequestError("quality delivered request has no admitted seat")
         request = _reopen_quality_case_request(service, value, preparation, seat, row, native,
             sources=sources if row["role"] == "owner-synthesis" else None)
-        validate_quality_readonly_turn(service.lifecycle_controller, service.artifacts, request, tuple(turn["proof"]))
-        _require_turn_chain(service, value, request, native, command, seat)
-        terminal = read_evidence(service.lifecycle_controller, "brokered-provider-diagnostic", *native["terminal"])
+        if backend == "container-read-only":
+            from .diagnostic import reopen_quality_container_delivery_turn
+            reopened = reopen_quality_container_delivery_turn(
+                service.lifecycle_controller, service.artifacts, request, tuple(turn["proof"]),
+                authority=tuple(value["allocation"]), bindings=value["bindings"], row=row,
+                backend_attachment=(attachment.name, attachment.digest))
+            if reopened != (native, command, terminal):
+                raise ProviderRequestError("quality delivered container records differ")
+        else:
+            validate_quality_readonly_turn(service.lifecycle_controller, service.artifacts, request, tuple(turn["proof"]))
+            _require_turn_chain(service, value, request, native, command, seat)
         if row["role"] == "candidate-seat":
             round = 1 if row["phase"] == "initial" else 2
             actual_barrier = service._restore_barrier(state.barriers[round - 1], preparation.packet)

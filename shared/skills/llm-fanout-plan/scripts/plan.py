@@ -48,9 +48,18 @@ def _runtime():
         _require_import_path(source_root, path, directory=path.is_dir())
     if runtime_root != candidates[2]:
         _require_import_path(source_root, source_root / "scripts", directory=True)
-        for name, root in (("shared", runtime_root.parents[1]),
-                           ("shared.lib", runtime_root.parent),
-                           ("scripts", runtime_root.parents[2] / "scripts")):
+        parents = (("shared", runtime_root.parents[1]), ("shared.lib", runtime_root.parent),
+                   ("scripts", source_root / "scripts"))
+        maka = source_root / "components/maka"
+        if maka.exists() or maka.is_symlink():
+            for relative in ("components", "components/maka", "components/maka/scripts"):
+                _require_import_path(source_root, source_root / relative, directory=True)
+            for filename in ("harbor_judge_capture.py", "component_doctor.py",
+                             "install_component.py", "apply_gpt6_compat.py"):
+                _require_import_path(source_root, maka / "scripts" / filename)
+            parents += (("components", source_root / "components"),
+                        ("components.maka", maka), ("components.maka.scripts", maka / "scripts"))
+        for name, root in parents:
             parent = sys.modules.get(name)
             if parent is None:
                 parent = ModuleType(name)

@@ -186,7 +186,11 @@ def quality_session_command(request, *, catalog_path=None) -> ProcessCommand:
         argv = ("agy", "--conversation", request.session_id) if request.resume else ("agy", "--new-project")
         argv += ("--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json",
                  "--model", model, "--effort", effort, "--agent", "eval-no-tools", "--disable-slash-commands")
-        stdin = (json.dumps({"event": "user", "message": {"content": request.prompt}},
+        try:
+            prompt = request.prompt_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ProcessValidationError("quality agy prompt must be UTF-8") from error
+        stdin = (json.dumps({"event": "user", "message": {"content": prompt}},
                             ensure_ascii=False) + "\n").encode()
     return ProcessCommand(argv, stdin, cwd=request.cwd, timeout=request.timeout)
 

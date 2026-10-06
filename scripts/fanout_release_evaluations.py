@@ -318,6 +318,9 @@ def validate_maka_evidence(value: Mapping, source_binding: ReleaseSourceBinding)
         if any(attempt[name] != quality[name] for name in (
             "approval_reference", "observation_date", "source_receipt_sha256", "boundary_sha256")):
             raise ValueError("Maka original attempt changed")
+        from shared.lib.fanout.maka_quality import reopen_quality_captures
+        if reopen_quality_captures(root, quality['boundary_sha256'], quality['ballots']) != quality['capture_inventory_sha256']:
+            raise ValueError('Maka retained complete capture changed')
         ballots = quality["ballots"]
         if (not isinstance(ballots, list) or len(ballots) != 6 or set(answers) != set(probe.PROVIDERS)
                 or quality["ballot_digest"] != _sha(canonical_json(ballots))):

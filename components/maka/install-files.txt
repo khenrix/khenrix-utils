@@ -3,6 +3,8 @@
 .mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/aube-lock.yaml
 .mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/package.json
 README.md
+test_native_capture_join.py
+test_native_capture_runtime.mjs
 THIRD_PARTY_NOTICES.md
 benchmark/SHA256SUMS
 benchmark/fix-git.bundle
@@ -92,6 +94,7 @@ scripts/harbor-smoke.sh
 scripts/harbor-judge.sh
 scripts/harbor_judge_audit.py
 scripts/harbor_judge_input.py
+scripts/harbor_judge_capture.py
 scripts/harden_python_runtime.py
 scripts/import-smoke.sh
 scripts/install_component.py

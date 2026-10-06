@@ -42,7 +42,21 @@ REQUIRED = (
     "scripts/fanout_container_certify.py",
     "scripts/fanout_route_doctor.py",
     "scripts/lib/checks.py",
+    "components/maka/install-files.txt",
+    "components/maka/scripts/harbor_judge_capture.py",
+    "components/maka/scripts/component_doctor.py",
+    "components/maka/scripts/install_component.py",
+    "components/maka/scripts/apply_gpt6_compat.py",
+    "components/maka/controller/harbor_judge.mjs",
+    "components/maka/wrapper/maka.in",
 )
+
+
+def _source_bytes(name):
+    if name == 'components/maka/install-files.txt':
+        return ''.join(item.removeprefix('components/maka/') + '\n'
+                       for item in REQUIRED if item.startswith('components/maka/')).encode()
+    return (name + '\n').encode()
 
 
 @pytest.fixture
@@ -61,7 +75,7 @@ def source_root(tmp_path):
     for name in REQUIRED:
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((name + "\n").encode())
+        path.write_bytes(_source_bytes(name))
     return tmp_path
 
 
@@ -69,7 +83,7 @@ def source_root(tmp_path):
 def test_required_source_byte_changes_digest(source_module, source_root, name):
     before = source_module.runtime_source_digest(source_root)
     path = source_root / name
-    path.write_bytes(path.read_bytes() + b"changed\n")
+    path.write_bytes(path.read_bytes() + (b'# changed\n' if name.endswith('install-files.txt') else b'changed\n'))
     assert source_module.runtime_source_digest(source_root) != before
 
 
@@ -98,7 +112,7 @@ def test_source_digest_is_independent_of_creation_order_and_excludes_evidence(
     for name in reversed(REQUIRED):
         path = other / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((name + "\n").encode())
+        path.write_bytes(_source_bytes(name))
     assert source_module.runtime_source_digest(other) == before
     for name in ("scripts/nested/fanout_future.py", "scripts/receipt.json",
                  "shared/lib/fanout/__pycache__/broker.py", "private/receipt.json"):
@@ -106,6 +120,17 @@ def test_source_digest_is_independent_of_creation_order_and_excludes_evidence(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"untrusted evidence")
     assert source_module.runtime_source_digest(source_root) == before
+
+
+def test_maka_manifest_membership_bytes_are_owned_and_bounded(source_module, source_root):
+    before = source_module.runtime_source_digest(source_root)
+    source = source_root / 'components/maka/scripts/harbor_judge_capture.py'
+    source.write_bytes(source.read_bytes() + b'changed native join\n')
+    assert source_module.runtime_source_digest(source_root) != before
+    manifest = source_root / 'components/maka/install-files.txt'
+    manifest.write_bytes(manifest.read_bytes() + b'../../../outside\n')
+    with pytest.raises(ValueError):
+        source_module.runtime_source_digest(source_root)
 
 
 @pytest.mark.parametrize("name", (
@@ -391,7 +416,7 @@ def test_memory_component_drift_changes_release_without_changing_runtime(
 def test_release_runtime_component_preserves_the_old_framed_encoding(source_module, release_root):
     expected = hashlib.sha256()
     for name in sorted(REQUIRED):
-        path_bytes, content = name.encode(), (name + "\n").encode()
+        path_bytes, content = name.encode(), _source_bytes(name)
         expected.update(len(path_bytes).to_bytes(4, "big") + path_bytes)
         expected.update(len(content).to_bytes(8, "big") + content)
     binding = _release(source_module, release_root)

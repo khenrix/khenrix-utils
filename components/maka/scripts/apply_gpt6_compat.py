@@ -14,7 +14,10 @@ import os
 import pathlib
 import tempfile
 
-from install_component import PACKAGE_NAME, PACKAGE_VERSION
+if __package__:
+    from .install_component import PACKAGE_NAME, PACKAGE_VERSION
+else:
+    from install_component import PACKAGE_NAME, PACKAGE_VERSION
 
 
 class OverlayError(RuntimeError):

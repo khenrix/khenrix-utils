@@ -8,8 +8,13 @@ KHENRIX_MAKA_PACKAGE_ROOT="$package_root" node --test \
   "$LAB_ROOT/interactive/test_configure_maka_subscription.mjs" \
   "$LAB_ROOT/interactive/test_maka_judge.mjs" \
   "$LAB_ROOT/interactive/test_maka_skill_routing.mjs" \
-  "$LAB_ROOT/controller/test_harbor_judge.mjs"
+  "$LAB_ROOT/controller/test_harbor_judge.mjs" \
+  "$LAB_ROOT/test_native_capture_runtime.mjs"
 node "$LAB_ROOT/interactive/inspect_maka_runtime.mjs" --self-test
+(
+  cd "$LAB_ROOT"
+  python -m unittest test_native_capture_join
+)
 (
   cd "$LAB_ROOT/interactive"
   python -m unittest discover -p 'test_*.py'

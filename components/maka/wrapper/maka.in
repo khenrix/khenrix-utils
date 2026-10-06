@@ -76,9 +76,15 @@ if test "${1:-}" = judge-harbor-boundary; then
 fi
 
 if test "${1:-}" = judge-harbor; then
-  if test "$#" -ne 2 || test "$2" != -; then
+  if { test "$#" -ne 2 && { test "$#" -ne 4 || test "$3" != --capture-destination; }; } || test "$2" != -; then
     echo 'maka judge-harbor: expected one JSON request on stdin' >&2
     exit 64
+  fi
+  if test "$#" -eq 4; then
+    test -n "$4"
+    set -- --live - --capture-destination "$4"
+  else
+    set -- --live -
   fi
   if test "${MAKA_JUDGE_PAID_RUN:-}" != 1; then
     echo 'maka judge-harbor: explicit paid run selector is required' >&2
@@ -88,7 +94,7 @@ if test "${1:-}" = judge-harbor; then
     HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
     PATH="$isolated_path" LANG=C LC_ALL=C MAKA_JUDGE_PAID_RUN=1 \
     "$mise_bin" -C "$maka_lab_root" exec -- \
-    bash "$maka_lab_root/scripts/harbor-judge.sh" --live -
+    bash "$maka_lab_root/scripts/harbor-judge.sh" "$@"
 fi
 
 if ! maka_auth_mode=$(/usr/bin/env -i \

@@ -1016,8 +1016,13 @@ def test_campaign_held_out_probe_uses_sealed_policy_without_oracle_in_candidate_
     fixtures.run_held_out("forge-01", workspace, FIXTURES, boundary=boundary)
     assert len(launched) == 1
     oracle_argv, oracle_kwargs = launched.pop()
-    assert oracle_argv[:2] == [sys.executable, str(FIXTURES / "held-out" / "forge-01.py")]
-    assert oracle_argv[2] == str(workspace)
+    assert oracle_argv[:5] == [sys.executable, "-I", fixtures.__file__, "--oracle", "forge-01"]
+    assert oracle_argv[5] == str(workspace)
+    selected = json.loads(oracle_argv[6])
+    assert selected["root"] == str(FIXTURES)
+    assert selected["casebook"] == str(CASEBOOK)
+    assert selected["casebook_sha256"] == hashlib.sha256(CASEBOOK.read_bytes()).hexdigest()
+    assert "PYTHONPATH" not in oracle_kwargs["env"]
     for key, value in oracle_kwargs["env"].items():
         monkeypatch.setenv(key, value)
     fixtures.probe_observation("forge-01", workspace, FIXTURES)
@@ -1028,6 +1033,7 @@ def test_campaign_held_out_probe_uses_sealed_policy_without_oracle_in_candidate_
     for root in boundary.protected_roots:
         assert f'(allow file-read* (subpath {json.dumps(str(root))}))' not in probe_argv[2]
     assert str(FIXTURES / "held-out" / "forge-01.py") not in probe_argv
+    assert str(CASEBOOK) not in probe_argv
     assert probe_kwargs["cwd"] == workspace
 
 

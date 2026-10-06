@@ -1,11 +1,30 @@
 """Semantic request joins; synthetic context/native fixtures are not installed proof."""
 from dataclasses import asdict, replace
 import importlib
+import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from test_fanout_quality_case import _dormant_service
+
+
+def test_delivery_records_keep_actual_native_backend_and_refuse_reinterpretation(tmp_path, monkeypatch):
+    from shared.lib.fanout import quality_case as module
+    from test_fanout_quality_predecessor import _fixture
+    f = _fixture(tmp_path, monkeypatch)
+    try:
+        outer, command, terminal = module._quality_delivery_records(f.controller, f.proof, "native")
+        assert outer["schema"] == "fanout-quality-readonly-turn-v1"
+        assert command["registration"]["row"]["role"] == "candidate-seat"
+        assert command["registration"]["row"]["phase"] == "initial"
+        assert terminal["valid"] is True and terminal["process_status"] == "exit"
+        assert terminal["session_id"] == f.request.session_id
+        with pytest.raises(module.ProviderRequestError, match="backend"):
+            module._quality_delivery_records(f.controller, f.proof, "container-read-only")
+    finally:
+        f.store.close()
 
 
 def _context(tmp_path):
@@ -15,6 +34,99 @@ def _context(tmp_path):
     row = {"role": "candidate-seat", "phase": "initial", "initial": None,
         "permit": {"session_id": "fd6f840b-4b79-4fd2-91d0-14d3d8fba655"}}
     return module, runtime, opened, value, preparation, seat, row
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_agy_quality_command_preserves_text_and_utf8_byte_prompt_semantics(tmp_path, resume):
+    from shared.lib import fanout
+    from shared.lib.fanout.eval_provider import quality_session_command
+    text = 'Räkna € först, sedan "税".\nDo not change rounding.'
+    profile = fanout.ProviderRegistry.default().select("agy", "read-only", "standard")
+    request = fanout.ProviderRequest("agy", text, cwd=tmp_path, profile=profile, timeout=30,
+        resume=resume, session_id="actual-own-session" if resume else None)
+    command = quality_session_command(request)
+    encoded = quality_session_command(replace(request, prompt=text.encode("utf-8")))
+    assert encoded == command
+    assert json.loads(encoded.stdin) == {"event": "user", "message": {"content": text}}
+    assert "--effort" in command.argv and command.argv[command.argv.index("--effort") + 1] == profile.requested_effort
+    assert command.stdin.endswith(b"\n") and "€".encode() in command.stdin
+
+
+def test_agy_quality_command_refuses_invalid_utf8_before_command_creation(tmp_path):
+    from shared.lib import fanout
+    from shared.lib.fanout.eval_provider import quality_session_command
+    from shared.lib.fanout.errors import ProcessValidationError
+    request = fanout.ProviderRequest("agy", b"invalid \xff prompt", cwd=tmp_path, timeout=30,
+        profile=fanout.ProviderRegistry.default().select("agy", "read-only", "standard"))
+    with pytest.raises(ProcessValidationError, match="UTF-8"):
+        quality_session_command(request)
+
+
+def test_actual_coordinator_agy_byte_prompt_issues_and_reopens_allocated_command(tmp_path, monkeypatch):
+    from test_fanout_container_upstream import _route
+    from test_fanout_execute_skill import fanout
+    guard_module = importlib.import_module(fanout.__name__ + ".agy_guard")
+    binary = tmp_path / "version-only-agy"
+    binary.write_bytes(b"synthetic version-only guard fixture\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(guard_module, "_BINARY", binary)
+    monkeypatch.setattr(guard_module, "default_claude_adc_path", lambda: tmp_path / "unused-adc-reference")
+    monkeypatch.setenv("AGY_ADC_AUTH", "true")
+    real_run = subprocess.run
+
+    def version_only(argv, *args, **kwargs):
+        if argv[0] == str(binary):
+            assert tuple(argv) == (str(binary), "--version")
+            return subprocess.CompletedProcess(argv, 0, b"1.2.13\n", b"")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(guard_module.subprocess, "run", version_only)
+    _, module, runtime, opened, value = _dormant_service(tmp_path)
+    diagnostic = importlib.import_module(runtime.__name__ + ".diagnostic")
+    BrokerPermit = importlib.import_module(runtime.__name__ + ".broker").BrokerPermit
+    PermitLedger = importlib.import_module(runtime.__name__ + ".container_broker").PermitLedger
+    runtime_source_digest = importlib.import_module(runtime.__name__ + ".container_source").runtime_source_digest
+    admitted_request_digest = importlib.import_module(runtime.__name__ + ".container_transfer_transport").admitted_request_digest
+    monkeypatch.setattr(module.HostCredentialSource, "load", lambda *_args: pytest.fail("credential load"))
+    with opened:
+        service = opened.service
+        preparation = next(iter(service.preparations.values()))
+        seat = next(seat for seat in preparation.seats if seat.executor_id == "agy")
+        request = module._quality_case_request(service, value, preparation, seat,
+            {"role": "candidate-seat", "phase": "initial", "permit": {"session_id": None}})
+        assert type(request.prompt) is bytes
+        assert b"Which invoice rounding order is correct?" in request.prompt_bytes
+        route = _route("agy")
+        permit = BrokerPermit("agy", value["run_id"], value["task_id"], value["target_id"], seat.seat_id,
+            "initial", request.profile.requested_model, "disposable-placeholder", 1, 1024 * 1024,
+            1024 * 1024, 8192, inputs_digest=value["inputs_digest"],
+            upstream_route_digest=route.digest, upstream_origin=route.profile.origin,
+            upstream_model=route.profile.effective_model,
+            upstream_path="/v1/projects/fictional-project/locations/europe-west1/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse")
+        bindings = {key: "a" * 64 for key in ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+        bindings.update(source=runtime_source_digest(), inputs=value["inputs_digest"])
+        row = {"role": "candidate-seat", "phase": "initial", "condition": "candidate", "epoch": 1,
+            "permit": asdict(permit), "blocker": None, "initial": None, "profile": request.profile.digest,
+            "catalog": None, "process_seconds": request.timeout, "outer_seconds": request.timeout + 60}
+        ref = service.artifacts.write_json("byte-prompt-allocation.json", {
+            "schema": "fanout-quality-case-allocation-v1", "case_id": "normal-01",
+            "controller_id": service.lifecycle_controller.controller_id, "bindings": bindings,
+            "maka_output_tokens": 8192, "rows": [row]})
+        authority = diagnostic.seal_quality_allocation(service.lifecycle_controller, service.artifacts, ref, bindings=bindings)
+        ledger = PermitLedger(service.lifecycle_controller.root / "locks/spend", service.lifecycle_controller)
+        permit_id = diagnostic.register_quality_permit(service.lifecycle_controller, service.artifacts, authority, ledger,
+            role="candidate-seat", phase="initial", condition="candidate", permit=permit, epoch=1, bindings=bindings)
+        proof = diagnostic.issue_quality_native_command(service.lifecycle_controller, service.artifacts, authority,
+            request=request, ledger=ledger, permit=permit, epoch=1, bindings=bindings,
+            role="candidate-seat", phase="initial", condition="candidate")
+        command, registration = diagnostic.reopen_quality_native_command(service.lifecycle_controller, request, proof)
+        authenticated = module.read_evidence(service.lifecycle_controller, "quality-native-command", *proof)
+        assert authenticated["request"] == admitted_request_digest(request)
+        assert registration["permit_id"] == permit_id and registration["row"] == row
+        assert module.json.loads(command.stdin)["message"]["content"] == request.prompt_bytes.decode("utf-8")
+        assert command.argv[0] == str(importlib.import_module(runtime.__name__ + ".native_boundary")._AGY_DIRECT_BINARY)
+        assert ledger.attempt_counts(permit_id, 1) == (0, 0)
+        assert not service.journal.state.seat_phases
 
 
 @pytest.mark.parametrize("change", ["prompt", "slot", "prefix", "context", "identity"])

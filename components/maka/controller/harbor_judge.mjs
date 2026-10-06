@@ -398,6 +398,33 @@ export function judgeEnvelope(ballot, relayReceipt, boundary) {
   };
 }
 
+export function captureRuntimeRecord({ invocationId, rawInput, before, after,
+  sessionId, prompt, responseAnswerSha256 }) {
+  if (!/^[0-9a-f]{32}$/u.test(invocationId) || !SESSION.test(sessionId) ||
+      !DIGEST.test(before) || before !== after || !DIGEST.test(responseAnswerSha256) ||
+      typeof rawInput !== 'string' || Buffer.byteLength(rawInput) > 131072 ||
+      typeof prompt !== 'string' || Buffer.byteLength(prompt) > PROMPT_LIMIT) {
+    throw new Error('Harbor judge capture association is invalid');
+  }
+  return {
+    schema: 'khenrix-maka-harbor-capture-runtime-v1', invocation_id: invocationId,
+    input_sha256: sha256(rawInput), boundary_before: before, boundary_after: after,
+    session_id: sessionId, prompt_sha256: sha256(prompt), response_answer_sha256: responseAnswerSha256,
+  };
+}
+
+export async function readJudgeInput(stream) {
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.from(chunk);
+    length += bytes.length;
+    if (length > 131072) throw new Error('Harbor judge input is too large');
+    chunks.push(bytes);
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+}
+
 export async function readJudgeReceipt(root, sessionId, prompt, relaySourceHash) {
   if (!SESSION.test(sessionId) || !DIGEST.test(relaySourceHash)) {
     throw new Error('Harbor judge receipt identity is invalid');
@@ -770,13 +797,7 @@ async function main() {
     return;
   }
   const receiptRoot = resolve(process.argv[11]);
-  let raw = '';
-  for await (const chunk of process.stdin) {
-    raw += chunk;
-    if (Buffer.byteLength(raw) > 128 * 1024) {
-      throw new Error('Harbor judge input is too large');
-    }
-  }
+  const raw = await readJudgeInput(process.stdin);
   const input = JSON.parse(raw);
   requireInput(input);
   failureStage = 'source-boundary';
@@ -858,12 +879,19 @@ async function main() {
     failureStage = 'relay-receipt';
     const relayReceipt = await readJudgeReceipt(receiptRoot, sessionId, prompt, relayHash);
     failureStage = 'post-boundary';
-    if (await runtimeBoundaryDigest(runtimeRoot, packageRoot, componentRoot,
-      installReceipt, images) !== before) {
+    const after = await runtimeBoundaryDigest(runtimeRoot, packageRoot, componentRoot,
+      installReceipt, images);
+    if (after !== before) {
       throw new Error('Harbor judge source changed during the turn');
     }
     failureStage = 'output';
-    process.stdout.write(`${JSON.stringify(judgeEnvelope(ballot, relayReceipt, before))}\n`);
+    const envelope = judgeEnvelope(ballot, relayReceipt, before);
+    if (process.env.MAKA_JUDGE_CAPTURE_ID) {
+      envelope.capture = captureRuntimeRecord({ invocationId: process.env.MAKA_JUDGE_CAPTURE_ID,
+        rawInput: raw, before, after, sessionId, prompt,
+        responseAnswerSha256: ballot.response_answer_sha256 });
+    }
+    process.stdout.write(`${JSON.stringify(envelope)}\n`);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

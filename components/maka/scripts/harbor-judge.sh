@@ -5,9 +5,15 @@ ulimit -S -c 0
 ulimit -H -c 0
 
 boundary_only=false
+capture_path=
 if test "$#" -eq 1 && test "$1" = --boundary; then
   boundary_only=true
-elif test "$#" -eq 2 && test "$1" = --live && test "$2" = -; then
+elif { test "$#" -eq 2 || { test "$#" -eq 4 && test "$3" = --capture-destination; }; } \
+    && test "$1" = --live && test "$2" = -; then
+  if test "$#" -eq 4; then
+    capture_path=$4
+    test -n "$capture_path"
+  fi
   if test "${MAKA_JUDGE_PAID_RUN:-}" != 1; then
     echo 'Harbor judge requires MAKA_JUDGE_PAID_RUN=1 for a paid run' >&2
     exit 78
@@ -66,18 +72,36 @@ install -d -m 0700 "$LAB_ROOT/controller/.build"
 request_b64=$(python "$LAB_ROOT/scripts/harbor_judge_input.py" capture)
 request_hash=$(printf '%s' "$request_b64" | python "$LAB_ROOT/scripts/harbor_judge_input.py" digest)
 request_boundary=$(printf '%s' "$request_b64" | python "$LAB_ROOT/scripts/harbor_judge_input.py" boundary)
+capture_id=
+capture_docker_args=()
+if test -n "$capture_path"; then
+  actual_boundary=$(node "$LAB_ROOT/controller/harbor_judge.mjs" --boundary \
+    --runtime-root "$runtime_root" --install-receipt "$install_receipt" \
+    --controller-image-id "$controller_image_id" --egress-image-id "$egress_image_id")
+  test "$actual_boundary" = "$request_boundary"
+  capture_id=$(python "$LAB_ROOT/scripts/harbor_judge_input.py" capture-native-context \
+    "$capture_path" "$LAB_ROOT" "$runtime_root" "$install_receipt" "$HOME/.local/bin/maka" \
+    "$actual_boundary" "$controller_image_id" "$egress_image_id" "$request_hash")
+fi
 request_dir=$(mktemp -d "$LAB_ROOT/controller/.build/harbor-judge-XXXXXX")
 request_fifo="$request_dir/input.fifo"
 probe_fifo="$request_dir/probe.fifo"
+association_fifo="$request_dir/association.fifo"
+association_ack_fifo="$request_dir/association-ack.fifo"
 staged_receipt="$request_dir/install-receipt.json"
 writer_pid=
 probe_writer_pid=
+association_reader_pid=
 secret_volume="maka-judge-secret-$(date -u +%Y%m%d%H%M%S)-$$-$RANDOM"
 secret_volume_created=false
 evidence_dir=
 finish() {
   status=$?
   trap - EXIT INT TERM
+  if test -n "$association_reader_pid"; then
+    kill "$association_reader_pid" 2>/dev/null || true
+    wait "$association_reader_pid" 2>/dev/null || true
+  fi
   if test -n "$probe_writer_pid"; then
     kill "$probe_writer_pid" 2>/dev/null || true
     wait "$probe_writer_pid" 2>/dev/null || true
@@ -89,10 +113,16 @@ finish() {
   if test "$secret_volume_created" = true; then
     cleanup_secret_volume "$secret_volume" || status=70
   fi
-  rm -f "$request_fifo" "$probe_fifo" "$staged_receipt" || status=70
+  rm -f "$request_fifo" "$probe_fifo" "$staged_receipt" "$association_fifo" "$association_ack_fifo" || status=70
   rmdir "$request_dir" || status=70
   if test -n "$evidence_dir" && test -d "$evidence_dir"; then
+    if test -n "$capture_path" && test "$status" -eq 0; then
+      python "$LAB_ROOT/scripts/harbor_judge_input.py" capture-native-cleanup "$capture_path" || status=70
+    fi
     finalize_evidence "$evidence_dir" || status=70
+    if test -n "$capture_path" && test "$status" -eq 0; then
+      python "$LAB_ROOT/scripts/harbor_judge_input.py" capture-native-sealed "$capture_path" "$evidence_dir" || status=70
+    fi
   fi
   exit "$status"
 }
@@ -131,6 +161,18 @@ printf '%s\n%s\n' "$controller_image_id" "$egress_image_id" \
 docker volume create --label io.maka.lab.secret-broker=true \
   --label "io.maka.lab.run=$secret_volume" "$secret_volume" >/dev/null
 secret_volume_created=true
+if test -n "$capture_path"; then
+  mkfifo -m 0600 "$association_fifo" "$association_ack_fifo"
+  python "$LAB_ROOT/scripts/harbor_judge_input.py" capture-native-receive \
+    "$capture_path" "$evidence_dir" "$request_dir" "$request_fifo" "$staged_receipt" \
+    "$association_fifo" "$association_ack_fifo" &
+  association_reader_pid=$!
+  capture_docker_args=(--name "maka-capture-$capture_id" \
+    --env "MAKA_JUDGE_CAPTURE_ID=$capture_id" \
+    --env "MAKA_JUDGE_CAPTURE_CONTROLLER_NAME=maka-capture-$capture_id" \
+    --env "MAKA_JUDGE_CAPTURE_CHANNEL=$association_fifo" \
+    --env "MAKA_JUDGE_CAPTURE_ACK=$association_ack_fifo")
+fi
 /usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
   /usr/bin/python3 -I -S -B "$LAB_ROOT/scripts/harden_python_runtime.py" verify >/dev/null
 
@@ -141,6 +183,7 @@ set +e
 result_payload=$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C \
   /usr/bin/python3 -I -S -B "$LAB_ROOT/scripts/run_hardened_python.py" key-export \
   | docker run --rm -i --ulimit core=0 \
+      "${capture_docker_args[@]}" \
       --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
       --mount "type=bind,source=$LAB_ROOT,target=$LAB_ROOT" \
       --mount "type=volume,source=$secret_volume,target=/run/maka-secret" \
@@ -168,6 +211,10 @@ if test "$run_status" -ne 0; then
 fi
 wait "$writer_pid"
 writer_pid=
+if test -n "$association_reader_pid"; then
+  wait "$association_reader_pid"
+  association_reader_pid=
+fi
 test "$run_status" -eq 0
 printf '%s\n' "$result_payload" | jq -e '.auth_route == "harbor-lab" and .tool_calls == 0' >/dev/null
 printf '%s\n' "$result_payload"

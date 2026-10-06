@@ -36,9 +36,11 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_native_boundary.py tests/test_fanout_provider_diagnostic.py \
                 tests/test_fanout_quality_predecessor_route.py \
                 tests/test_fanout_quality_predecessor.py \
+                tests/test_fanout_quality_container_predecessor.py \
                 tests/test_fanout_quality_agy_private_agent.py \
                 tests/test_fanout_quality_case.py \
                 tests/test_fanout_quality_delivery_requests.py \
+                tests/test_fanout_quality_container_turn.py \
                 tests/test_fanout_process.py \
                 tests/test_fanout_preparation.py \
                 tests/test_fanout_providers.py tests/test_fanout_broker.py tests/test_fanout_profiles.py \
@@ -56,8 +58,13 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_cold_recovery.py tests/test_fanout_quality.py \
                 tests/test_fanout_council_campaign.py \
                 tests/test_fanout_forge_fixtures.py \
+                tests/test_fanout_forge_selected_inputs.py \
                 tests/test_fanout_forge_campaign.py tests/test_fanout_forge_live.py \
                 tests/test_fanout_maka_transport.py tests/test_fanout_smoke.py \
+                tests/test_fanout_maka_capture.py \
+                tests/test_fanout_maka_capture_selector.py \
+                tests/test_fanout_maka_admission.py \
+                tests/test_fanout_maka_quality.py tests/test_fanout_maka_packaging.py \
                 tests/test_fanout_readonly_canaries.py \
                 tests/test_fanout_benchmark.py tests/test_fanout_certification.py \
                 tests/test_fanout_broker_output_limit.py \

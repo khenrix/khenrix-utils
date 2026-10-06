@@ -1927,7 +1927,7 @@ def test_verifier_accepts_six_authenticated_route_cells(
 
 
 @pytest.mark.parametrize("main_requests,auxiliary_attempts", (
-    (2, 0), (2, 1), (4, 0), (4, 1), (3, 3), (1, 5),
+    (2, 0), (2, 1), (4, 0), (4, 1), (3, 3), (1, 3), (4, 3),
 ))
 def test_bounded_tool_loop_reopens_every_authenticated_request(
     certifier, complete_receipt, tmp_path, monkeypatch, company_manifest,
@@ -1947,7 +1947,9 @@ def test_bounded_tool_loop_reopens_every_authenticated_request(
 
 
 @pytest.mark.parametrize("provider,main_requests,auxiliary,attempts,marker", (
-    ("agy", 4, 3, 7, 1),
+    ("agy", 4, 4, 8, 1),
+    ("agy", 1, 4, 5, 1),
+    ("agy", 1, 5, 6, 1),
     ("agy", 3, 2, 6, 1),
     ("agy", 3, 3, 6, 0),
     ("agy", 3, 3, 6, 3),
@@ -2151,6 +2153,7 @@ def test_quality_cli_requires_authentic_completed_cells_before_maka(
 
         def __init__(self, **_kwargs):
             assert attempt_parent_synced, "attempt filename was not durable before paid judge"
+            assert _kwargs['quality_run_root'] == root
             assert all(name not in os.environ
                        for name in certifier._LEGACY_KEY_ENVS)
 
@@ -2160,6 +2163,10 @@ def test_quality_cli_requires_authentic_completed_cells_before_maka(
                     "requested_model": "gpt-6.1-sol", "observed_model": "gpt-6.1-sol",
                     "effort": "xhigh", "tool_calls": 0,
                     "tool_boundary_sha256": self.no_tools_characterization_sha256}
+
+        def finish_captures(self):
+            assert len(calls) == 6
+            return 'f' * 64
 
     monkeypatch.setattr(certifier, "HarborMakaTransport", FakeMaka)
     status = certifier.main(_quality_argv(root, tmp_path))

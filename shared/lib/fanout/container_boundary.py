@@ -19,12 +19,12 @@ import stat
 import subprocess
 import threading
 import time
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
-from .artifacts import ArtifactRef, ArtifactStore, canonical_json
+from .artifacts import ArtifactLimits, ArtifactRef, ArtifactStore, canonical_json
 from .broker import Broker, BrokerPermit, BrokerRejected, _safe_response_body
 from .container_broker import FrameStream, HostRelay, PermitLedger, attempt_limit, _digest as _permit_digest
 from .container_source import runtime_source_digest
@@ -35,6 +35,8 @@ from .container_transfer_transport import (
     CandidateExportReceipt, InputSourceGrant, InputTransferReceipt,
     abandon_input_claim, admitted_request_digest,
     authenticate_launch_record, original_input_launch,
+    _prepare_quality_handoff, _reopen_quality_handoff_preparation,
+    reopen_quality_handoff,
     export_candidate as _export_candidate,
     reopen_input_receipt as _reopen_input_receipt,
     stage_inputs as _stage_inputs,
@@ -44,11 +46,11 @@ from .container_vm import (CONTEXT, PROFILE, VMProbe, VMProfileSpec,
                            parse_profile_config, require_vm_probe)
 from .controller import (LifecycleController, assert_controller,
                          controller_directory, read_evidence, write_evidence)
-from .errors import ArtifactExistsError, ProviderProtocolError, ProviderRequestError
+from .errors import ArtifactExistsError, ProcessValidationError, ProviderProtocolError, ProviderRequestError
 from .process import (ProcessCommand, ProcessResult, ProcessStatus,
                       TimeoutEvidence, _cleanup_group, build_child_environment,
                       executor_slot)
-from .providers import (AgyAdapter, ClaudeAdapter, ProviderRequest, ProviderResult,
+from .providers import (AgyAdapter, ClaudeAdapter, ExecutorProfile, ProviderRequest, ProviderResult,
                         ProviderRegistry, _make_result, _render_profile_argv)
 
 
@@ -99,6 +101,57 @@ try:
   try: pairs=json.loads(raw.decode('utf-8'),object_pairs_hook=list)
   except (ValueError,RecursionError): raise SystemExit(1)
   if pairs!=[('modelProvider','gemini')]: raise SystemExit(1)
+ finally: os.close(item)
+ print(hashlib.sha256(data).hexdigest())
+finally: os.close(fd)
+"""
+_AGY_QUALITY_AGENT_SCRIPT = """import hashlib,os,stat,sys
+root=sys.argv[1]; uid=int(sys.argv[2]); action=sys.argv[3]; encoded=sys.argv[4]
+if action not in ('create','verify') or not 0<len(encoded)<=8192: raise SystemExit(1)
+data=bytes.fromhex(encoded)
+def check_dir(fd):
+ s=os.fstat(fd)
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=uid or stat.S_IMODE(s.st_mode)!=0o700:
+  raise SystemExit(1)
+fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+ check_dir(fd)
+ paths=[root]; identities=[(os.fstat(fd).st_dev,os.fstat(fd).st_ino)]
+ for name in ('.gemini','config','agents'):
+  if action=='create':
+   try: os.mkdir(name,0o700,dir_fd=fd)
+   except FileExistsError: pass
+  child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+  os.close(fd); fd=child; check_dir(fd)
+  paths.append(paths[-1]+'/'+name); identities.append((os.fstat(fd).st_dev,os.fstat(fd).st_ino))
+ try:
+  item=os.open('eval-no-tools.md',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+ except FileNotFoundError:
+  if action!='create': raise
+  item=os.open('eval-no-tools.md',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=fd)
+  try:
+   pending=memoryview(data)
+   while pending:
+    count=os.write(item,pending)
+    if count<=0: raise SystemExit(1)
+    pending=pending[count:]
+   os.fsync(item)
+  finally: os.close(item)
+  os.fsync(fd)
+  item=os.open('eval-no-tools.md',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+ try:
+  s=os.fstat(item)
+  if not stat.S_ISREG(s.st_mode) or s.st_uid!=uid or stat.S_IMODE(s.st_mode)!=0o600 or s.st_nlink!=1 or s.st_size!=len(data):
+   raise SystemExit(1)
+  raw=os.read(item,len(data)+1)
+  named=os.stat('eval-no-tools.md',dir_fd=fd,follow_symlinks=False)
+  fields=('st_dev','st_ino','st_mode','st_uid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')
+  if raw!=data or tuple(getattr(named,k) for k in fields)!=tuple(getattr(s,k) for k in fields):
+   raise SystemExit(1)
+  for path,identity in zip(paths,identities):
+   parent=os.stat(path,follow_symlinks=False)
+   if not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=uid or stat.S_IMODE(parent.st_mode)!=0o700 or (parent.st_dev,parent.st_ino)!=identity:
+    raise SystemExit(1)
  finally: os.close(item)
  print(hashlib.sha256(data).hexdigest())
 finally: os.close(fd)
@@ -205,6 +258,9 @@ def _run_bounded_command(command: ProcessCommand, *,
                         continue
                     output = streams[key.data]
                     cap = stdout_cap if key.data == "stdout" else stderr_cap
+                    if command.max_output_bytes is not None:
+                        cap = min(cap, len(output) + command.max_output_bytes
+                                  - sum(len(value) for value in streams.values()))
                     chunk = os.read(key.fd, min(65536, cap - len(output) + 1))
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -249,9 +305,190 @@ def _run_control_command(argv: tuple[str, ...], *, data: bytes = b"",
         stderr_cap=_MAX_CLI_STDERR, acquire_slot=False, output_limit_result=True)
 
 
+def _quality_docker_argv(argv, data):
+    operations = {('image', 'inspect'), ('volume', 'create'), ('volume', 'inspect'),
+                  ('network', 'inspect'), ('container', 'ls')}
+    if (type(argv) is not tuple or argv[:len(DOCKER)] != DOCKER
+            or any(type(value) is not str or "\x00" in value for value in argv)
+            or data is not None and type(data) is not bytes):
+        raise ProviderRequestError("quality Docker context differs")
+    command = argv[len(DOCKER):]
+    if command[:1] == ('exec',):
+        handle = ContainerHandle(command[4] if len(command) > 4 else '', '', '', '')
+        if (argv in (quality_agy_agent_command(handle).argv,
+                     quality_agy_agent_command(handle, verify_only=True).argv)
+                or any(argv == _quality_cli_command(handle, provider).argv for provider in _PROVIDERS)):
+            if data not in (None, b''):
+                raise ProviderRequestError('quality no-model control input differs')
+            return
+    if (not command or not (command[:2] in operations
+            or command[0] in {'ps', 'inspect', 'info', 'create', 'start', 'stop', 'update'})):
+        raise ProviderRequestError("quality Docker operation is unknown")
+
+
+def _quality_docker_marker(marker, descriptor, identity=None):
+    info = os.fstat(descriptor)
+    named = marker.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+            or not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino)
+            or identity is not None and [info.st_dev, info.st_ino] != identity):
+        raise ProviderRequestError("quality Docker marker identity or type changed")
+    return [info.st_dev, info.st_ino]
+
+
+@contextmanager
+def _quality_docker_lock(controller, allocation, *, create=False, identity=None):
+    marker = controller_directory(controller, "locks") / f"quality-docker-{allocation}"
+    try:
+        descriptor = os.open(marker, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+            | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
+    except FileExistsError as error:
+        raise ProviderRequestError("quality Docker allocation already attempted") from error
+    except OSError as error:
+        raise ProviderRequestError("quality Docker marker is unavailable") from error
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ProviderRequestError("quality Docker command is pending") from error
+        _quality_docker_marker(marker, descriptor, identity)
+        yield marker, descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _quality_docker_capacity(limits):
+    reference = ['0' * 64 + '.json', '0' * 64]
+    capacity = (len(canonical_json(limits))
+        + len(canonical_json({'controls': reference}))
+        + limits['max_commands'] * sum(len(canonical_json({kind: reference}))
+            for kind in ('attempt', 'terminal')))
+    if capacity > ArtifactLimits().max_file_bytes:
+        raise ProviderRequestError('quality Docker marker capacity exceeds artifact file limit')
+    return capacity
+
+
+def _quality_docker_append(marker, descriptor, value, identity, limits):
+    _quality_docker_marker(marker, descriptor, identity)
+    data = canonical_json(value)
+    if os.lseek(descriptor, 0, os.SEEK_END) + len(data) > _quality_docker_capacity(limits):
+        raise ProviderRequestError("quality Docker marker limit exhausted")
+    pending = memoryview(data)
+    while pending:
+        count = os.write(descriptor, pending)
+        if count <= 0:
+            raise ProviderRequestError("quality Docker marker write failed")
+        pending = pending[count:]
+    os.fsync(descriptor)
+    _quality_docker_marker(marker, descriptor, identity)
+
+
+def _quality_docker_remaining(proof):
+    monotonic, wall = time.monotonic(), time.time()
+    if monotonic < proof['started_monotonic'] or wall < proof['started_wall']:
+        raise ProviderRequestError("quality Docker original clock differs")
+    remaining = min(proof['deadline_monotonic'] - monotonic, proof['deadline_wall'] - wall)
+    if remaining <= 0:
+        raise ProviderRequestError("quality Docker attempt or outer deadline exhausted")
+    return remaining
+
+
+def _quality_docker_consumed(controller, descriptor, proof, authority):
+    capacity = _quality_docker_capacity(proof['limits'])
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    raw = os.read(descriptor, capacity + 1)
+    if len(raw) > capacity:
+        raise ProviderRequestError("quality Docker marker is oversized")
+    lines = raw.splitlines(keepends=True)
+    try:
+        values = [json.loads(line) for line in lines]
+        if (len(values) < 2 or len(values) > 2 + 2 * proof['limits']['max_commands']
+                or any(canonical_json(value) != line for value, line in zip(values, lines))
+                or canonical_json(values[0]) != canonical_json(proof['limits'])
+                or values[1] != {'controls': list(authority)}):
+            raise ValueError
+        consumed = 0
+        from .container_routes import _read_owned_json
+        claims_root = controller_directory(controller, 'locks')
+        claim_prefix = 'quality-docker-' + proof['limits']['allocation'] + '-attempt-'
+        retained_root = controller_directory(controller, 'quarantine') / (
+            'quality-docker-' + proof['limits']['allocation'])
+        claimed = (len(values) - 1) // 2
+        if {path.name for path in claims_root.iterdir() if path.name.startswith(claim_prefix)} != {
+                claim_prefix + str(attempt) for attempt in range(1, claimed + 1)}:
+            raise ValueError
+        try:
+            names = {path.name for path in retained_root.iterdir()}
+        except FileNotFoundError:
+            names = set()
+        if names - {ArtifactStore._LOCK_NAME, ArtifactStore._TEMP_DIR} != {
+                str(attempt) for attempt in range(1, claimed + 1)}:
+            raise ValueError
+        for offset in range(2, len(values), 2):
+            attempt = consumed + 1
+            item = values[offset]
+            if type(item) is not dict or set(item) != {'attempt'}:
+                raise ValueError
+            attempt_ref = item['attempt']
+            if type(attempt_ref) is not list or len(attempt_ref) != 2:
+                raise ValueError
+            pending = read_evidence(controller, 'quality-docker-attempt', *attempt_ref)
+            if (set(pending) != {'controls', 'attempt', 'argv', 'stdin_sha256'}
+                    or pending['controls'] != list(authority) or type(pending['attempt']) is not int
+                    or pending['attempt'] != attempt or type(pending['argv']) is not list):
+                raise ValueError
+            _quality_docker_argv(tuple(pending['argv']), None)
+            _require_sha(pending['stdin_sha256'], 'quality Docker stdin')
+            claim = canonical_json({'attempt': attempt_ref})
+            claim_path = claims_root / (claim_prefix + str(attempt))
+            retained_claim, _ = _read_owned_json(claim_path)
+            if claim_path.lstat().st_nlink != 1 or retained_claim != {'attempt': attempt_ref}:
+                raise ValueError
+            with ArtifactStore.open_existing(retained_root) as retained:
+                retained.read_bytes(ArtifactRef(f'{attempt}/attempt.json',
+                    hashlib.sha256(claim).hexdigest(), len(claim)))
+            if offset + 1 == len(values):
+                raise ProviderRequestError('quality Docker command is pending')
+            item = values[offset + 1]
+            if type(item) is not dict or set(item) != {'terminal'}:
+                raise ValueError
+            terminal = read_evidence(controller, 'quality-docker-terminal', *item['terminal'])
+            if (set(terminal) != {'controls', 'attempt', 'attempt_authority', 'status',
+                    'returncode', 'capture_complete', 'stdout', 'stderr'}
+                    or terminal['controls'] != list(authority)
+                    or type(terminal['attempt']) is not int or terminal['attempt'] != attempt
+                    or terminal['attempt_authority'] != attempt_ref
+                    or terminal['status'] != ProcessStatus.EXIT.value
+                    or terminal['capture_complete'] is not True
+                    or type(terminal['returncode']) is not int):
+                raise ProviderRequestError('quality Docker command did not settle within its controls')
+            with ArtifactStore.open_existing(retained_root) as retained:
+                for stream, cap in (('stdout', 1024 * 1024), ('stderr', 512 * 1024)):
+                    value = terminal[stream]
+                    if (type(value) is not dict or set(value) != {'path', 'digest', 'size'}
+                            or value['path'] != f'{attempt}/{stream}.bin'
+                            or type(value['size']) is not int or not 0 <= value['size'] <= cap):
+                        raise ValueError
+                    _require_sha(value['digest'], 'quality Docker capture')
+                    info = (retained_root / value['path']).lstat()
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                        raise ValueError
+                    retained.read_bytes(ArtifactRef(**value))
+            consumed = attempt
+        return consumed
+    except ProviderRequestError:
+        raise
+    except Exception as error:
+        raise ProviderRequestError('quality Docker original command evidence differs') from error
+
+
 def quality_docker_runner(controller: LifecycleController, *, allocation_digest: str,
-                          max_commands: int, command_seconds: float, outer_seconds: float):
-    """A once-frozen quality caller bound at the existing launcher constructor."""
+                          max_commands: int, command_seconds: float, outer_seconds: float,
+                          original_controls: tuple[str, str] | None = None):
+    """Create once, or continue only the exact authenticated original controls."""
     assert_controller(controller)
     _require_sha(allocation_digest, "quality allocation")
     if (type(max_commands) is not int or max_commands < 1
@@ -261,47 +498,98 @@ def quality_docker_runner(controller: LifecycleController, *, allocation_digest:
         raise ProviderRequestError("quality Docker process controls differ")
     limits = {"allocation": allocation_digest, "max_commands": max_commands,
               "command_seconds": command_seconds, "outer_seconds": outer_seconds}
-    marker = controller_directory(controller, "locks") / f"quality-docker-{allocation_digest}"
-    try:
-        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError as error:
-        raise ProviderRequestError("quality Docker allocation already attempted") from error
-    with os.fdopen(descriptor, "wb") as output:
-        output.write(canonical_json(limits)); output.flush(); os.fsync(output.fileno())
-    authority = write_evidence(controller, "quality-docker-controls", limits)
-    deadline = time.monotonic() + outer_seconds
-    attempted = 0
+    _quality_docker_capacity(limits)
+    if original_controls is None:
+        with _quality_docker_lock(controller, allocation_digest, create=True) as (marker, descriptor):
+            identity = _quality_docker_marker(marker, descriptor)
+            monotonic, wall = time.monotonic(), time.time()
+            proof = {'schema': 'fanout-quality-docker-controls-v2', 'limits': limits,
+                'marker_identity': identity, 'started_monotonic': monotonic,
+                'deadline_monotonic': monotonic + outer_seconds, 'started_wall': wall,
+                'deadline_wall': wall + outer_seconds}
+            _quality_docker_append(marker, descriptor, limits, identity, limits)
+            authority = write_evidence(controller, 'quality-docker-controls', proof)
+            _quality_docker_append(marker, descriptor, {'controls': list(authority)}, identity, limits)
+            parent = os.open(marker.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+    else:
+        if type(original_controls) is not tuple or len(original_controls) != 2:
+            raise ProviderRequestError('quality Docker original controls are invalid')
+        authority = original_controls
+        proof = read_evidence(controller, 'quality-docker-controls', *authority)
+        if (set(proof) != {'schema', 'limits', 'marker_identity', 'started_monotonic',
+                'deadline_monotonic', 'started_wall', 'deadline_wall'}
+                or proof['schema'] != 'fanout-quality-docker-controls-v2'
+                or canonical_json(proof['limits']) != canonical_json(limits)
+                or type(proof['marker_identity']) is not list or len(proof['marker_identity']) != 2
+                or any(type(value) is not int or value < 0 for value in proof['marker_identity'])
+                or any(type(proof[key]) is not float or not math.isfinite(proof[key])
+                    for key in ('started_monotonic', 'deadline_monotonic', 'started_wall', 'deadline_wall'))
+                or proof['deadline_monotonic'] != proof['started_monotonic'] + outer_seconds
+                or proof['deadline_wall'] != proof['started_wall'] + outer_seconds):
+            raise ProviderRequestError('quality Docker original controls differ')
+        with _quality_docker_lock(controller, allocation_digest,
+                identity=proof['marker_identity']) as (_, descriptor):
+            _quality_docker_consumed(controller, descriptor, proof, authority)
+            _quality_docker_remaining(proof)
 
     def run(argv, data):
-        nonlocal attempted
-        if (type(argv) is not tuple or argv[:len(DOCKER)] != DOCKER
-                or any(type(value) is not str or "\x00" in value for value in argv)
-                or data is not None and type(data) is not bytes):
-            raise ProviderRequestError("quality Docker context differs")
-        if read_evidence(controller, "quality-docker-controls", *authority) != limits:
-            raise ProviderRequestError("quality Docker controls changed")
-        remaining = deadline - time.monotonic()
-        if attempted >= max_commands or remaining <= 0:
-            raise ProviderRequestError("quality Docker attempt or outer deadline exhausted")
-        attempted += 1
-        write_evidence(controller, "quality-docker-attempt", {
-            "controls": list(authority), "attempt": attempted,
-            "argv": list(argv), "stdin_sha256": hashlib.sha256(data or b"").hexdigest()})
-        result = _run_bounded_command(ProcessCommand(argv, data or b"",
-            timeout=min(command_seconds, remaining), max_output_bytes=1024 * 1024),
-            stdout_cap=1024 * 1024, stderr_cap=512 * 1024, acquire_slot=False)
-        with ArtifactStore(controller_directory(controller, "quarantine") /
-                           f"quality-docker-{allocation_digest}") as retained:
-            stdout = retained.write_bytes(f"{attempted}/stdout.bin", result.stdout)
-            stderr = retained.write_bytes(f"{attempted}/stderr.bin", result.stderr)
-        write_evidence(controller, "quality-docker-terminal", {
-            "controls": list(authority), "attempt": attempted,
-            "status": result.status.value, "returncode": result.returncode,
-            "capture_complete": result.capture_complete,
-            "stdout": asdict(stdout), "stderr": asdict(stderr)})
-        if result.status is not ProcessStatus.EXIT or not result.capture_complete:
-            raise ProviderRequestError("quality Docker command did not settle within its controls")
-        return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
+        _quality_docker_argv(argv, data)
+        if canonical_json(read_evidence(controller, 'quality-docker-controls', *authority)) != canonical_json(proof):
+            raise ProviderRequestError('quality Docker controls changed')
+        with _quality_docker_lock(controller, allocation_digest,
+                identity=proof['marker_identity']) as (marker, descriptor):
+            attempted = _quality_docker_consumed(controller, descriptor, proof, authority)
+            if attempted >= max_commands:
+                raise ProviderRequestError('quality Docker attempt or outer deadline exhausted')
+            _quality_docker_remaining(proof)
+            attempted += 1
+            attempt = write_evidence(controller, 'quality-docker-attempt', {
+                'controls': list(authority), 'attempt': attempted,
+                'argv': list(argv), 'stdin_sha256': hashlib.sha256(data or b'').hexdigest()})
+            claims_root = controller_directory(controller, 'locks')
+            claim_path = claims_root / f'quality-docker-{allocation_digest}-attempt-{attempted}'
+            try:
+                claim_fd = os.open(claim_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            except OSError as error:
+                raise ProviderRequestError('quality Docker command already claimed or unavailable') from error
+            with os.fdopen(claim_fd, 'wb') as claim_file:
+                claim_file.write(canonical_json({'attempt': list(attempt)}))
+                claim_file.flush()
+                os.fsync(claim_file.fileno())
+            parent_fd = os.open(claims_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+            with ArtifactStore(controller_directory(controller, 'quarantine') /
+                               f'quality-docker-{allocation_digest}') as retained:
+                retained.write_json(f'{attempted}/attempt.json', {'attempt': list(attempt)})
+            _quality_docker_append(marker, descriptor, {'attempt': list(attempt)},
+                proof['marker_identity'], proof['limits'])
+            remaining = _quality_docker_remaining(proof)
+            result = _run_bounded_command(ProcessCommand(argv, data or b'',
+                timeout=min(command_seconds, remaining), max_output_bytes=1024 * 1024),
+                stdout_cap=1024 * 1024, stderr_cap=512 * 1024, acquire_slot=False)
+            with ArtifactStore(controller_directory(controller, 'quarantine') /
+                               f'quality-docker-{allocation_digest}') as retained:
+                stdout = retained.write_bytes(f'{attempted}/stdout.bin', result.stdout)
+                stderr = retained.write_bytes(f'{attempted}/stderr.bin', result.stderr)
+            terminal = write_evidence(controller, 'quality-docker-terminal', {
+                'controls': list(authority), 'attempt': attempted, 'attempt_authority': list(attempt),
+                'status': result.status.value, 'returncode': result.returncode,
+                'capture_complete': result.capture_complete,
+                'stdout': asdict(stdout), 'stderr': asdict(stderr)})
+            _quality_docker_append(marker, descriptor, {'terminal': list(terminal)},
+                proof['marker_identity'], proof['limits'])
+            if result.status is not ProcessStatus.EXIT or not result.capture_complete:
+                raise ProviderRequestError('quality Docker command did not settle within its controls')
+            completed = subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
+            completed.quality_terminal = terminal
+            return completed
     run.controller = controller
     run.controls = authority
     return run
@@ -364,6 +652,89 @@ class PinnedDockerTransport:
                          boundary: "ContainerSeatBoundary",
                          private_root: Path) -> CandidateExportReceipt:
         return _export_candidate(request, boundary, private_root)
+
+    def handoff_quality_inputs(self, request: ProviderRequest,
+                               admission: "ContainerAdmission") -> "PinnedDockerTransport":
+        """Stop the no-model importer and retain its exact volumes/relay for RO3."""
+        scope = self._scope()
+        with nullcontext() if scope is None else scope.guard:
+            return self._handoff_quality_inputs(request, admission, scope)
+
+    def _handoff_quality_inputs(self, request, admission, scope):
+        control = getattr(self, "_control", None)
+        if control is not None:
+            if (type(control) is not PinnedSSHSeatControl or control.controller is not self.controller
+                    or control.spec != self.spec or control.ledger is not admission.ledger
+                    or control.broker.permit != admission.broker_permit
+                    or control.permit_id != admission.permit_id or control.epoch != admission.epoch):
+                raise ProviderRequestError("quality handoff retained control differs")
+            control._lease.require_held()
+        snapshot = context = None
+        if scope is not None:
+            scope.authorize()
+            context = scope.active[self.handle.container_id]['member']['context']
+            snapshot, _ = scope.snapshot(self)
+        preparation = _prepare_quality_handoff(self.controller, request, self, admission)
+        _, receipt, _, original_spec, spec, origin, stopped = _reopen_quality_handoff_preparation(
+            self.controller, request, preparation)
+        launcher = ContainerLauncher(self.launcher._docker,
+                                     guest_socket_attestor=self.launcher._socket_attestor)
+        model = handle = None
+        try:
+            inventory = None
+            if scope is not None:
+                scope.complete_handoff(self, request, admission, preparation)
+                scope.reserve_registered(context, spec, admission.ledger, admission.broker_permit, admission.epoch)
+                control.spec = spec
+                inventory = scope.prepare(launcher, spec, context, control)
+            handle = launcher._start_readonly_handoff(spec, original_spec, receipt.original_handle, origin, stopped, scope=inventory)
+            record = {"spec": asdict(spec), "handle": asdict(handle), "route": "quality-handoff",
+                      "volumes": launcher._volume_expectations[1],
+                      "handoff": json.loads(canonical_json(asdict(launcher._handoff))),
+                      "original_handoff": list(preparation)}
+            if snapshot is not None:
+                record['handoff_scope'] = list(snapshot)
+            authenticate_launch_record(self.controller, record, spec, handle,
+                                       inputs_digest=request.inputs_digest)
+            launch = write_evidence(self.controller, _HANDLE_CATEGORY, record)
+            model = type(self)(self.controller, spec, handle, launcher, self._vm_attestor,
+                self._socket_attestor, self._image_attestor, self._cli_attestor,
+                self._retained_process_runner, launch)
+            model.handoff_evidence = write_evidence(self.controller, "quality-container-input-handoff", {
+                "schema": "quality-container-handoff-v1", "preparation": list(preparation),
+                "model_launch": list(launch)})
+            reopen_quality_handoff(self.controller, request, model.handoff_evidence,
+                                   ledger=admission.ledger, sessions=admission.session_store)
+            if self._production_edge:
+                model._image_attestor = lambda: type(self)._attest_image(launcher, spec)
+                model._cli_attestor = lambda provider: type(self)._attest_linux_cli(spec, provider, handle)
+                model._process_runner = lambda command: type(self)._docker_exec(handle, command, receipt.workdir)
+                model._retained_process_runner = model._process_runner
+            if control is not None:
+                control._lease.require_held()
+                control.spec = spec
+                model._control = control
+                self._control = None
+            model._production_edge = self._production_edge
+            model._model_workdir = receipt.workdir
+            if scope is not None:
+                model._lifecycle_scope = model._retained_lifecycle_scope = scope
+                scope.register(model, context)
+            model.attest_container()
+            return model
+        except BaseException as primary:
+            if scope is not None:
+                try:
+                    scope.fail(spec, handle, control, primary, phase='quality_handoff')
+                except BaseException as cleanup:
+                    primary.add_note(f"Quality handoff lifecycle cleanup also failed: {type(cleanup).__name__}")
+            try:
+                if handle is not None:
+                    type(self)._quarantine_handle(spec, handle, launcher)
+            except BaseException as cleanup:
+                primary.add_note(_cleanup_failure_note(self.controller, "quality-handoff", cleanup,
+                    primary=primary, spec=spec, handle=handle))
+            raise
 
     @classmethod
     def start(cls, controller: LifecycleController, spec: ContainerSpec, *,
@@ -560,6 +931,7 @@ class PinnedDockerTransport:
             slot_cap=command.slot_cap, slot_timeout=command.slot_timeout,
             slot_root=command.slot_root, max_depth=command.max_depth,
             term_grace=command.term_grace, reap_timeout=command.reap_timeout,
+            max_output_bytes=command.max_output_bytes,
         )
         return (_run_bounded_command(wrapped) if before_spawn is None
                 else _run_bounded_command(wrapped, before_spawn=before_spawn))
@@ -1597,6 +1969,7 @@ class ContainerAdmission:
     handle_evidence_name: str = ""
     handle_evidence_digest: str = ""
     input_receipt: InputTransferReceipt | None = field(default=None, repr=False, compare=False)
+    quality_provisioning: object = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2055,6 +2428,744 @@ _CODEX_LOOPBACK_PROVIDER = (
     'http_headers={x-fanout-seat="disposable-placeholder"},'
     'request_max_retries=0,stream_max_retries=0}'
 )
+
+
+@dataclass(frozen=True, slots=True)
+class QualityContainerCommand:
+    canonical: ProcessCommand
+    guest: ProcessCommand
+    workdir: str
+    catalog_path: str | None
+    request_digest: str
+    canonical_digest: str
+    guest_digest: str
+
+
+def quality_agy_agent_command(handle: ContainerHandle, *, verify_only: bool = False) -> ProcessCommand:
+    """Fixed no-model create/check operation, to be joined before any guest dispatch."""
+    from .eval_provider import AGY_AGENT_TEXT
+    if (type(handle) is not ContainerHandle or type(handle.container_id) is not str
+            or _SHA.fullmatch(handle.container_id) is None or type(verify_only) is not bool):
+        raise ProviderRequestError('quality container agent operation differs')
+    return ProcessCommand((*DOCKER, 'exec', '-i', '--user', '65532:65532',
+        handle.container_id, 'python', '-c', _AGY_QUALITY_AGENT_SCRIPT,
+        '/session', '65532', 'verify' if verify_only else 'create', AGY_AGENT_TEXT.encode().hex()),
+        b'', timeout=30, max_output_bytes=65)
+
+
+def quality_container_command(request: ProviderRequest, command: ProcessCommand, *,
+                              workdir: str, catalog_path: str | None = None) -> QualityContainerCommand:
+    """Bind one fixed guest adaptation; this constructor grants no execution authority."""
+    from .eval_provider import quality_session_command
+    from .native_boundary import _command_digest
+    from .container_transfer_transport import _identity, _workdir
+    if (type(request) is not ProviderRequest or request.execution_class != 'read-only'
+            or type(request.profile) is not ExecutorProfile or type(command) is not ProcessCommand
+            or command.max_output_bytes is None
+            or command.environment or any(getattr(command, name) is not None for name in (
+                'native_original', 'native_boundary', 'native_request', 'native_controller', 'native_verification'))):
+        raise ProviderRequestError('quality container canonical command authority differs')
+    if not request.resume and request.executor_id != 'claude' and request.session_id is not None:
+        raise ProviderRequestError('quality container initial session differs')
+    try:
+        request.prompt_bytes.decode('utf-8')
+    except UnicodeDecodeError as error:
+        raise ProcessValidationError('quality container prompt must be UTF-8') from error
+    pinned = ProviderRegistry.default().select(request.executor_id, 'read-only', request.profile.quality_tier)
+    if request.profile.digest != pinned.digest:
+        raise ProviderRequestError('quality container profile differs from its pins')
+    if type(workdir) is not str or workdir != _workdir(_identity(request)):
+        raise ProviderRequestError('quality container workdir differs from original imported identity')
+    expected_catalog = workdir.removesuffix('/repo') + '/context/quality-catalog.json'
+    if catalog_path != (expected_catalog if request.executor_id == 'codex' else None):
+        raise ProviderRequestError('quality container catalog path differs')
+    canonical = quality_session_command(request, catalog_path=catalog_path)
+    if (command.argv != canonical.argv or command.stdin != canonical.stdin
+            or command.cwd != canonical.cwd or command.timeout != canonical.timeout
+            or (command.slot_cap, command.slot_timeout, command.slot_root) != (
+                request.slot_cap, request.slot_timeout, request.slot_root)):
+        raise ProviderRequestError('quality container canonical command grammar or controls differ')
+    argv = command.argv
+    if request.executor_id == 'codex':
+        overrides = ('-c', 'model_provider="fanout"', '-c', _CODEX_LOOPBACK_PROVIDER,
+            '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"',
+            '-c', 'allow_login_shell=false')
+        if request.resume:
+            if argv[-4:] != ('-c', 'sandbox_mode="read-only"', request.session_id, '-'):
+                raise ProviderRequestError('quality container canonical resume sandbox differs')
+            argv = (*argv[:3], *overrides, *argv[3:-4],
+                    '-c', 'sandbox_mode="danger-full-access"', request.session_id, '-')
+        else:
+            if argv[-5:] != ('--sandbox', 'read-only', '-C', str(request.cwd), '-'):
+                raise ProviderRequestError('quality container canonical initial sandbox differs')
+            argv = (*argv[:2], *overrides, *argv[2:-5],
+                    '--sandbox', 'danger-full-access', '-C', workdir, '-')
+    elif request.executor_id == 'agy':
+        argv = ('/usr/local/bin/agy', *argv[1:])
+    guest = replace(command, argv=argv)
+    return QualityContainerCommand(command, guest, workdir, catalog_path,
+        admitted_request_digest(request), _command_digest(command), _command_digest(guest))
+
+
+def _quality_cli_command(handle, provider):
+    if type(handle) is not ContainerHandle or _SHA.fullmatch(handle.container_id) is None or provider not in _PROVIDERS:
+        raise ProviderRequestError('quality guest CLI command differs')
+    script = ("import hashlib,shutil,sys; path=shutil.which(sys.argv[1]); "
+              "assert path; print(hashlib.sha256(open(path,'rb').read()).hexdigest())")
+    return ProcessCommand((*DOCKER, 'exec', '-i', '--user', '65532:65532', handle.container_id,
+        'python', '-c', script, provider), b'', timeout=30, max_output_bytes=65)
+
+
+def _quality_container_registration(controller, store, authority, bindings, backend_attachment, *, row=None,
+                                    role=None, phase=None, condition=None, epoch=None):
+    from .diagnostic import reopen_quality_allocation, _quality_resolved_permit
+    from .quality_case import _read_quality_backend_attachment
+    from .container_certification import _read_owned_json
+    allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+    rows = [item for item in allocation['rows'] if item == row] if row is not None else [
+        item for item in allocation['rows'] if (item['role'], item['phase'], item['condition'], item['epoch']) ==
+        (role, phase, condition, epoch)]
+    if len(rows) != 1:
+        raise ProviderRequestError('quality container allocated row differs')
+    row = rows[0]
+    attachment = _read_quality_backend_attachment(controller, store, backend_attachment,
+        authority=authority, bindings=bindings, row=row)
+    claim = {'allocation': authority[1], 'row': row}
+    digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+    actual, _ = _read_owned_json(controller.root / 'locks' / ('quality-row-' + digest))
+    pointer, _ = _read_owned_json(controller.root / 'locks' / ('quality-registration-' + digest))
+    if set(pointer) != {'authority'}:
+        raise ProviderRequestError('quality container registration pointer differs')
+    registration = read_evidence(controller, 'quality-permit-registration', *pointer['authority'])
+    if (set(registration) != {'allocation', 'row', 'permit_id', 'epoch', 'permit', 'initial_receipt', 'backend_attachment'}
+            or canonical_json(actual) != canonical_json(claim) or registration['allocation'] != authority[1]
+            or registration['row'] != row or type(registration['epoch']) is not int
+            or registration['epoch'] != row['epoch'] or registration['backend_attachment'] != list(backend_attachment)):
+        raise ProviderRequestError('quality container consumed registration differs')
+    permit = BrokerPermit(**registration['permit'])
+    resolved = _quality_resolved_permit(controller, store, authority, allocation, row,
+        registration['initial_receipt'], backend_attachment=backend_attachment)
+    if asdict(resolved) != registration['permit']:
+        raise ProviderRequestError('quality container resolved original permit differs')
+    ledger = PermitLedger(controller.root / 'locks/spend', controller)
+    with ledger._locked() as state:
+        entry = state['permits'].get(registration['permit_id'])
+        if (entry is None or entry['epoch'] != row['epoch']
+                or entry['permit_digest'] != _permit_digest(permit)):
+            raise ProviderRequestError('quality container original permit association differs')
+    return registration, attachment
+
+
+def _quality_container_request(request, registration, catalog):
+    row, permit = registration['row'], BrokerPermit(**registration['permit'])
+    if (type(request) is not ProviderRequest or type(request.profile) is not ExecutorProfile
+            or request.execution_class != 'read-only' or request.retries != 0
+            or any(getattr(request, key) is not None for key in ('native_boundary', 'native_controller',
+                'native_verification', 'container_boundary', 'canary_capture')) or request.certificate_roots != ()
+            or request.timeout != row['process_seconds'] or request.profile.digest != row['profile']
+            or row['catalog'] != (None if catalog is None else catalog['projected']['digest'])
+            or (permit.provider, permit.run_id, permit.task_id, permit.target_id, permit.seat_id,
+                permit.inputs_digest, permit.session_id, permit.route, permit.model) !=
+               (request.executor_id, request.run_id, request.task_id, request.target_id, request.seat_id,
+                request.inputs_digest, request.session_id, 'resume' if request.resume else 'initial', request.profile.requested_model)):
+        raise ProviderRequestError('quality container request or registered permit differs')
+
+
+def _quality_container_controls(controller, allocation, attachment):
+    controls = tuple(attachment['container']['docker_controls'])
+    proof = read_evidence(controller, 'quality-docker-controls', *controls)
+    limits = proof['limits']
+    runner = quality_docker_runner(controller, allocation_digest=allocation[1],
+        max_commands=limits['max_commands'], command_seconds=limits['command_seconds'],
+        outer_seconds=limits['outer_seconds'], original_controls=controls)
+    return runner
+
+
+def _quality_container_scope_request(controller, context_ref, request, registration, backend_attachment):
+    context = read_evidence(controller, 'container-coordinator-context', *context_ref)
+    if (context['schema_version'] != 'fanout-quality-container-context-v1'
+            or context['request_digest'] != admitted_request_digest(request)
+            or context['backend_attachment'] != list(backend_attachment)
+            or context['row'] != registration['row'] or context['allocation'][1] != registration['allocation']
+            or read_evidence(controller, 'quality-permit-registration', *context['registration']) != registration):
+        raise ProviderRequestError('quality container actual lifecycle prompt or row differs')
+    return context
+
+
+def _quality_cli_terminal(controller, pointer, controls, handle, provider, digest):
+    terminal = read_evidence(controller, 'quality-docker-terminal', *pointer)
+    attempt = read_evidence(controller, 'quality-docker-attempt', *terminal['attempt_authority'])
+    if (terminal['controls'] != list(controls) or attempt['controls'] != list(controls)
+            or attempt['attempt'] != terminal['attempt']
+            or attempt['argv'] != list(_quality_cli_command(handle, provider).argv)
+            or attempt['stdin_sha256'] != hashlib.sha256(b'').hexdigest()
+            or terminal['status'] != 'exit' or terminal['returncode'] != 0
+            or terminal['capture_complete'] is not True):
+        raise ProviderRequestError('quality original guest CLI observation differs')
+    proof = read_evidence(controller, 'quality-docker-controls', *controls)
+    with _quality_docker_lock(controller, proof['limits']['allocation'], identity=proof['marker_identity']) as (_, fd):
+        if _quality_docker_consumed(controller, fd, proof, controls) < terminal['attempt']:
+            raise ProviderRequestError('quality guest CLI original attempt is missing')
+    with ArtifactStore.open_existing(controller_directory(controller, 'quarantine') /
+            ('quality-docker-' + proof['limits']['allocation'])) as retained:
+        stdout, stderr = (retained.read_bytes(ArtifactRef(**terminal[key])) for key in ('stdout', 'stderr'))
+    if stdout != (digest + '\n').encode('ascii') or stderr:
+        raise ProviderRequestError('quality actual guest CLI bytes differ')
+
+
+def _quality_container_material(controller, store, request, original, handoff, attachment, catalog):
+    from .container_transfer_transport import reopen_quality_handoff_history, _completed_input_receipt, _material, _root_info
+    from .container_transfer import snapshot_manifest
+    from .diagnostic import _reopen_quality_catalog
+    history = reopen_quality_handoff_history(controller, original, handoff)
+    receipt = _completed_input_receipt(controller, request,
+        private_volume_names(request.run_id, request.task_id, request.target_id, request.seat_id)[0])
+    grant = read_evidence(controller, 'container-input-grant', receipt.grant_evidence_name, receipt.grant_evidence_digest)
+    if grant['quality_provisioning'].get('backend_attachment') != attachment['pointer']:
+        raise ProviderRequestError('quality container imported backend differs')
+    source = Path(grant['source_root'])
+    info = _root_info(controller, source)
+    manifest, _ = _material(controller, receipt.material_evidence_name, receipt.material_evidence_digest,
+        receipt.identity, receipt.original_handle, info)
+    if snapshot_manifest(source, receipt.identity) != manifest:
+        raise ProviderRequestError('quality container original imported material differs')
+    expected = {'context/quality-attachment.json': canonical_json(attachment['value'])}
+    if request.executor_id == 'codex':
+        expected['context/quality-catalog.json'] = _reopen_quality_catalog(store, catalog)
+    elif catalog is not None:
+        raise ProviderRequestError('quality container unexpected catalog')
+    entries = {entry.path: entry for entry in manifest.entries}
+    for path, raw in expected.items():
+        entry = entries.get(path)
+        if (entry is None or entry.kind != 'file' or entry.length != len(raw)
+                or entry.sha256 != hashlib.sha256(raw).hexdigest()):
+            raise ProviderRequestError('quality container imported attachment or catalog differs')
+    return history, receipt
+
+
+def issue_quality_container_command(controller, store, authority, *, request, admission, backend_attachment,
+                                    handoff, original_request, bindings, role, phase, condition,
+                                    catalog=None, predecessor=None):
+    from .diagnostic import _retain_quality_request, _quality_loaded_sources
+    from .eval_provider import quality_session_command
+    registration, attachment = _quality_container_registration(controller, store, authority, bindings,
+        backend_attachment, role=role, phase=phase, condition=condition, epoch=admission.epoch)
+    _quality_container_request(request, registration, catalog)
+    if type(admission) is not ContainerAdmission or type(admission.transport) is not PinnedDockerTransport:
+        raise ProviderRequestError('quality container admission differs')
+    transport = admission.transport
+    if (transport.controller is not controller or transport.spec.workspace_readonly is not True
+            or admission.ledger.controller is not controller or admission.permit_id != registration['permit_id']
+            or asdict(admission.broker_permit) != registration['permit']
+            or admission.image_digest != attachment['container']['image_digest']
+            or admission.cli_digest != attachment['container']['cli_digests'][request.executor_id]
+            or admission.session_store.identity != (request.run_id, request.task_id, request.target_id, request.seat_id)):
+        raise ProviderRequestError('quality container actual admission or backend pins differ')
+    admission.ledger.require_permit(admission.permit_id, admission.epoch, admission.broker_permit)
+    scope = transport._scope()
+    if scope is None:
+        raise ProviderRequestError('quality container requires its actual lifecycle scope')
+    context = scope.active[transport.handle.container_id]['member']['context']
+    _quality_container_scope_request(controller, context, request, registration, backend_attachment)
+    prefix = f"quality/{role}/{phase}/{admission.epoch}"
+    original_ref = _retain_quality_request(store, original_request, prefix + '/original')
+    history, receipt = _quality_container_material(controller, store, request, original_request, handoff,
+        {'pointer': list(backend_attachment), 'value': attachment}, catalog)
+    if admission.input_receipt != receipt:
+        raise ProviderRequestError('quality container original receipt differs')
+    vm, handle, socket = transport.attest_vm(), transport.attest_container(), transport.attest_socket()
+    if (handle != transport.handle or socket != admission.socket_attestation
+            or transport.attest_image() != admission.image_digest or transport.attest_cli(request.executor_id) != admission.cli_digest):
+        raise ProviderRequestError('quality container live physical pins differ')
+    control = getattr(transport, '_control', None)
+    if (type(control) is not PinnedSSHSeatControl or control.controller is not controller
+            or control.spec != transport.spec or control.ledger is not admission.ledger
+            or control.permit_id != admission.permit_id or control.epoch != admission.epoch
+            or control.broker.permit != admission.broker_permit or control._relay_error is not None):
+        raise ProviderRequestError('quality container actual relay is absent')
+    control._lease.require_held()
+    runner = _quality_container_controls(controller, authority, attachment)
+    cli = runner(_quality_cli_command(handle, request.executor_id).argv, b'')
+    _quality_cli_terminal(controller, cli.quality_terminal, runner.controls, handle, request.executor_id, admission.cli_digest)
+    workdir = receipt.workdir
+    catalog_path = workdir.removesuffix('/repo') + '/context/quality-catalog.json' if request.executor_id == 'codex' else None
+    canonical = replace(quality_session_command(request, catalog_path=catalog_path), max_output_bytes=8 * 1024 * 1024)
+    command = quality_container_command(request, canonical, workdir=workdir, catalog_path=catalog_path)
+    vm_ref = store.write_json(prefix + '/vm.json', control.vm_observation)
+    runtime = store.write_json(prefix + '/runtime.json', transport.runtime_observation)
+    runtime = transport.runtime_proof
+    proof = write_evidence(controller, 'quality-container-command', {
+        'schema': 'fanout-quality-container-command-v1', 'allocation': list(authority), 'store': str(store.root),
+        'bindings': bindings, 'registration': registration, 'backend_attachment': list(backend_attachment),
+        'catalog': catalog, 'loaded': _quality_loaded_sources(), 'request_digest': admitted_request_digest(request),
+        'original_request': asdict(original_ref), 'handoff': list(handoff),
+        'predecessor': None if predecessor is None else list(predecessor.quality_proof),
+        'launch': [transport.handle_evidence_name, transport.handle_evidence_digest],
+        'spec': asdict(transport.spec), 'handle': asdict(handle), 'socket': asdict(socket),
+        'vm': asdict(vm_ref), 'runtime': asdict(runtime), 'cli_terminal': list(cli.quality_terminal),
+        'canonical_digest': command.canonical_digest, 'guest_digest': command.guest_digest,
+        'workdir': workdir, 'catalog_path': catalog_path, 'context': context,
+        'lifecycle_snapshot': list(transport.lifecycle_snapshot)})
+    reopen_quality_container_command(controller, store, request, proof, backend_attachment=backend_attachment)
+    return proof
+
+
+def reopen_quality_container_command(controller, store, request, proof, *, backend_attachment):
+    from .diagnostic import _require_quality_loaded_sources, _reopen_quality_request
+    from .container_certification import _artifact_json, _reopen_vm
+    from .eval_provider import quality_session_command
+    try:
+        value = read_evidence(controller, 'quality-container-command', *proof)
+        if (set(value) != {'schema', 'allocation', 'store', 'bindings', 'registration', 'backend_attachment', 'catalog',
+                'loaded', 'request_digest', 'original_request', 'handoff', 'predecessor', 'launch', 'spec', 'handle',
+                'socket', 'vm', 'runtime', 'cli_terminal', 'canonical_digest', 'guest_digest', 'workdir', 'catalog_path',
+                'context', 'lifecycle_snapshot'} or value['schema'] != 'fanout-quality-container-command-v1'
+                or value['store'] != str(store.root) or value['backend_attachment'] != list(backend_attachment)
+                or value['request_digest'] != admitted_request_digest(request) or runtime_source_digest() != value['bindings']['source']):
+            raise ValueError('exact command source/request/backend')
+        _require_quality_loaded_sources(value['loaded'])
+        registration, attachment = _quality_container_registration(controller, store, tuple(value['allocation']),
+            value['bindings'], backend_attachment, row=value['registration']['row'])
+        if registration != value['registration']:
+            raise ValueError('original registration')
+        _quality_container_scope_request(controller, value['context'], request, registration, backend_attachment)
+        _quality_container_request(request, registration, value['catalog'])
+        original = _reopen_quality_request(store, ArtifactRef(**value['original_request']), request)
+        history, receipt = _quality_container_material(controller, store, request, original, value['handoff'],
+            {'pointer': list(backend_attachment), 'value': attachment}, value['catalog'])
+        spec, handle, socket = ContainerSpec(**value['spec']), ContainerHandle(**value['handle']), GuestSocketAttestation(**value['socket'])
+        ContainerLauncher._validate_spec(spec)
+        if (spec.workspace_readonly is not True or spec.image_digest != attachment['container']['image_digest']
+                or spec.cli_digest != attachment['container']['cli_digests'][request.executor_id]
+                or (spec.run_id, spec.task_id, spec.target_id, spec.seat_id) !=
+                   (request.run_id, request.task_id, request.target_id, request.seat_id)
+                or socket.path != spec.socket_path or socket.uid != 65532 or not stat.S_ISSOCK(socket.mode)
+                or stat.S_IMODE(socket.mode) != 0o600 or any(type(item) is not int or item <= 0
+                    for item in (socket.device, socket.inode, socket.ctime_ns))):
+            raise ValueError('actual read-only physical policy')
+        launch = read_evidence(controller, 'container-seat-launch', *value['launch'])
+        authenticate_launch_record(controller, launch, spec, handle, inputs_digest=request.inputs_digest)
+        completed = read_evidence(controller, 'quality-container-input-handoff', *value['handoff'])
+        if not request.resume and value['launch'] != completed['model_launch']:
+            raise ValueError('original RO handoff launch')
+        if not request.resume:
+            if value['predecessor'] is not None or registration['initial_receipt'] is not None:
+                raise ValueError('initial predecessor')
+        else:
+            if (type(value['predecessor']) is not list or value['predecessor'] != registration['initial_receipt']
+                    or launch['route'] != 'recover' or launch['original_input'] != [receipt.evidence_name, receipt.evidence_digest]):
+                raise ValueError('original container predecessor')
+            previous = validate_quality_container_readonly_turn(controller, store, original,
+                value['predecessor'], backend_attachment=backend_attachment)
+            previous_command = read_evidence(controller, 'quality-container-command', *previous['command'])
+            from .diagnostic import quality_row_identity
+            if (previous_command['registration']['row']['initial'] is not None
+                    or quality_row_identity(previous_command['registration']['row']) != registration['row']['initial']
+                    or previous_command['handoff'] != value['handoff'] or previous_command['catalog'] != value['catalog']
+                    or previous['backend_attachment'] != value['backend_attachment']):
+                raise ValueError('same original allocation, handoff and catalog')
+        vm = _reopen_vm(_artifact_json(store, value['vm']))
+        from .container_coordinator import _replay_lifecycle_runtime
+        _replay_lifecycle_runtime(controller, value['lifecycle_snapshot'], value['runtime'],
+            spec=spec, handle=handle, context_ref=value['context'], socket=socket)
+        _quality_cli_terminal(controller, value['cli_terminal'], attachment['container']['docker_controls'],
+            handle, request.executor_id, spec.cli_digest)
+        canonical = replace(quality_session_command(request, catalog_path=value['catalog_path']), max_output_bytes=8 * 1024 * 1024)
+        command = quality_container_command(request, canonical, workdir=value['workdir'], catalog_path=value['catalog_path'])
+        if (command.canonical_digest != value['canonical_digest'] or command.guest_digest != value['guest_digest']
+                or command.workdir != receipt.workdir):
+            raise ValueError('reconstructed original guest grammar')
+        return command, registration
+    except Exception as error:
+        raise ProviderRequestError('quality container command association differs') from error
+
+
+@dataclass(frozen=True, slots=True)
+class QualityContainerTurn:
+    result: ProviderResult
+    process: ProcessResult
+    command: tuple[str, str]
+    terminal: tuple[str, str]
+
+
+def _quality_container_live(controller, store, request, proof, backend_attachment, admission):
+    command, registration = reopen_quality_container_command(controller, store, request, proof,
+        backend_attachment=backend_attachment)
+    transport = admission.transport
+    value = read_evidence(controller, 'quality-container-command', *proof)
+    if (type(transport) is not PinnedDockerTransport or transport.controller is not controller
+            or admission.ledger.controller is not controller or admission.permit_id != registration['permit_id']
+            or admission.epoch != registration['epoch'] or asdict(admission.broker_permit) != registration['permit']
+            or value['launch'] != [transport.handle_evidence_name, transport.handle_evidence_digest]
+            or asdict(transport.spec) != value['spec'] or asdict(transport.handle) != value['handle']
+            or transport.spec.workspace_readonly is not True or transport._scope() is None):
+        raise ProviderRequestError('quality container live admission differs')
+    control = getattr(transport, '_control', None)
+    if (type(control) is not PinnedSSHSeatControl or control.controller is not controller
+            or control.spec != transport.spec or control.ledger is not admission.ledger
+            or control.permit_id != admission.permit_id or control.epoch != admission.epoch
+            or control.broker.permit != admission.broker_permit or control._relay_error is not None):
+        raise ProviderRequestError('quality container live relay association differs')
+    control._lease.require_held()
+    admission.ledger.require_permit(admission.permit_id, admission.epoch, admission.broker_permit)
+    transport._require_fixed_runner()
+    vm = transport.attest_vm()
+    from .container_certification import _artifact_json, _reopen_vm
+    original_vm = _reopen_vm(_artifact_json(store, value['vm']))
+    if (any(getattr(vm, key) != getattr(original_vm, key) for key in ('profile', 'docker_endpoint',
+                'ssh_host_key_sha256', 'effective_mounts_sha256', 'guest_mounts_sha256'))
+            or transport.attest_container() != transport.handle or asdict(transport.attest_socket()) != value['socket']
+            or transport.attest_image() != transport.spec.image_digest
+            or transport.attest_cli(request.executor_id) != transport.spec.cli_digest):
+        raise ProviderRequestError('quality container live physical policy changed')
+    attachment = read_evidence(controller, 'quality-installed-case-attachment', *backend_attachment)
+    _quality_container_controls(controller, tuple(value['allocation']), attachment)
+    return command, control
+
+
+def reopen_quality_container_transport(request, *, controller, store, authority, ledger, permit,
+                                       permit_id, epoch, session_store, broker, backend_attachment,
+                                       handoff, original_request, predecessor, bindings,
+                                       lifecycle_scope, context_ref):
+    """Recover the registered own-session RO row; historical evidence grants no new row."""
+    from .diagnostic import QualityContainerPredecessor, quality_row_identity
+    from .container_coordinator import _CoordinatorLifecycle
+    from .container_transfer_transport import _completed_input_receipt, reopen_stopped_seat
+    if (type(ledger) is not PermitLedger or ledger.controller is not controller
+            or ledger.root != controller.root / 'locks/spend' or type(permit) is not BrokerPermit
+            or type(broker) is not Broker or broker.permit is not permit
+            or type(lifecycle_scope) is not _CoordinatorLifecycle or lifecycle_scope.controller is not controller
+            or type(session_store) is not SessionStore):
+        raise ProviderRequestError('quality container recovery owner differs')
+    context = read_evidence(controller, 'container-coordinator-context', *context_ref)
+    registration, attachment = _quality_container_registration(controller, store, authority, bindings,
+        backend_attachment, row=context['row'])
+    if (registration['permit_id'] != permit_id or registration['epoch'] != epoch
+            or registration['permit'] != asdict(permit)):
+        raise ProviderRequestError('quality container recovery registration differs')
+    control = transport = None
+    try:
+        if (not request.resume or type(predecessor) is not QualityContainerPredecessor
+                or predecessor.backend_attachment != backend_attachment
+                or predecessor.session_id != request.session_id
+                or predecessor.row_digest != registration['row']['initial']
+                or list(predecessor.quality_proof) != registration['initial_receipt']):
+            raise ProviderRequestError('quality container recovery original predecessor differs')
+        previous = validate_quality_container_readonly_turn(controller, store, original_request,
+            predecessor.quality_proof, backend_attachment=backend_attachment)
+        prior = read_evidence(controller, 'quality-container-command', *previous['command'])
+        _quality_container_request(request, registration, prior['catalog'])
+        if (quality_row_identity(prior['registration']['row']) != predecessor.row_digest
+                or prior['handoff'] != list(handoff) or prior['registration']['row']['initial'] is not None):
+            raise ProviderRequestError('quality container recovery original row differs')
+        spec = ContainerSpec(**prior['spec'])
+        _quality_container_scope_request(controller, context_ref, request, registration, backend_attachment)
+        binding = session_store.resume(request.executor_id)
+        if (session_store.controller is not controller
+                or session_store.identity != (request.run_id, request.task_id, request.target_id, request.seat_id)
+                or session_store.volume != spec.session_volume or binding.session_id != request.session_id
+                or binding.upstream_route_digest != permit.upstream_route_digest):
+            raise ProviderRequestError('quality container recovery settled own session differs')
+        terminal = read_evidence(controller, 'quality-container-terminal', *previous['terminal'])
+        handle = ContainerHandle(**prior['handle'])
+        reopen_stopped_seat(controller, terminal['stop'], spec=spec, handle=handle)
+        receipt = _completed_input_receipt(controller, request, spec.workspace_volume)
+        _quality_container_material(controller, store, request, original_request, handoff,
+            {'pointer': list(backend_attachment), 'value': attachment}, prior['catalog'])
+        ledger.require_permit(permit_id, epoch, permit)
+        if ledger.attempt_counts(permit_id, epoch) != (0, 0) or ledger.request_records(permit_id, epoch):
+            raise ProviderRequestError('quality container recovery row was already attempted')
+        runner = _quality_container_controls(controller, authority, attachment)
+        with lifecycle_scope.guard:
+            lifecycle_scope.authorize()
+            if lifecycle_scope.pending.get((permit_id, epoch)) != (spec, tuple(context_ref), permit, ledger):
+                raise ProviderRequestError('quality container recovery pending scope differs')
+            control = PinnedSSHSeatControl(controller, spec, ledger, broker, permit_id, epoch)
+            control.open()
+            control.attest_vm()
+            launcher = ContainerLauncher(runner, guest_socket_attestor=control.attest_socket)
+            launch = read_evidence(controller, _HANDLE_CATEGORY, *prior['launch'])
+            authenticate_launch_record(controller, launch, spec, handle, inputs_digest=request.inputs_digest)
+            launcher.restore_launch(launch, spec, handle, recover=launch['route'] == 'recover')
+            inventory = lifecycle_scope.prepare(launcher, spec, context_ref, control)
+            transport = PinnedDockerTransport._start_guarded(controller, spec, launcher=launcher,
+                vm_attestor=control.attest_vm, socket_attestor=control.attest_socket,
+                image_attestor=lambda: PinnedDockerTransport._attest_image(launcher, spec),
+                cli_attestor=lambda provider: PinnedDockerTransport._attest_linux_cli(spec, provider, transport.handle),
+                process_runner=lambda command: PinnedDockerTransport._docker_exec(transport.handle, command, receipt.workdir),
+                recover=True, scope=inventory, lifecycle_scope=lifecycle_scope, context_ref=context_ref,
+                session_control=control, original_input=[receipt.evidence_name, receipt.evidence_digest])
+            transport._production_edge = True
+            transport._model_workdir = receipt.workdir
+            transport.handoff_evidence = handoff
+            return ContainerAdmission(permit, permit_id, epoch, ledger, spec.image_digest, spec.cli_digest,
+                transport.attest_socket(), transport, session_store, transport.handle_evidence_name,
+                transport.handle_evidence_digest, receipt)
+    except BaseException as primary:
+        if control is not None:
+            try:
+                if transport is not None:
+                    transport.close()
+                else:
+                    with lifecycle_scope.guard:
+                        if not lifecycle_scope.blocked:
+                            lifecycle_scope.fail(ContainerSpec(**prior['spec']), None, control, primary, phase='quality_recovery')
+                    control.close()
+            except BaseException as cleanup:
+                primary.add_note(f"Quality recovery cleanup also failed: {type(cleanup).__name__}")
+        try:
+            ledger.fence_epoch(permit_id, epoch)
+        except BaseException as cleanup:
+            primary.add_note(f"Quality recovery permit fence also failed: {type(cleanup).__name__}")
+        raise
+
+
+def run_quality_container_readonly_turn(request, *, controller, store, authority, admission,
+                                       backend_attachment, handoff, original_request, bindings,
+                                       role, phase, condition, route, credential, catalog=None, predecessor=None):
+    from .diagnostic import (_retain_quality_request, _quality_request_material, quality_upstream_sender,
+        QualityContainerPredecessor)
+    from .container_upstream import HostUpstream
+    from scripts.fanout_container_certify import _capture_private_wire
+    if (type(admission) is not ContainerAdmission or type(admission.ledger) is not PermitLedger
+            or admission.ledger.controller is not controller or admission.ledger.root != controller.root / 'locks/spend'):
+        raise ProviderRequestError('quality container original fencing authority differs')
+    registration, attachment = _quality_container_registration(controller, store, authority, bindings,
+        backend_attachment, role=role, phase=phase, condition=condition, epoch=admission.epoch)
+    if admission.permit_id != registration['permit_id'] or asdict(admission.broker_permit) != registration['permit']:
+        raise ProviderRequestError('quality container fencing permit differs')
+    transport = admission.transport
+    primary = cleanup = None
+    started = time.monotonic()
+    prefix = f"quality/{role}/{phase}/{admission.epoch}"
+    wires = {}
+    command_proof = process = result = request_ref = None
+    cleanup_authorized = False
+    try:
+        _quality_container_request(request, registration, catalog)
+        _quality_request_material(request, prefix + '/current')
+        if (request.resume != (predecessor is not None) or predecessor is not None and (
+                type(predecessor) is not QualityContainerPredecessor
+                or predecessor.backend_attachment != backend_attachment or predecessor.session_id != request.session_id)):
+            raise ProviderRequestError('quality container predecessor type or backend differs')
+        if predecessor is not None:
+            previous = validate_quality_container_readonly_turn(controller, store, original_request,
+                predecessor.quality_proof, backend_attachment=backend_attachment)
+            previous_command = read_evidence(controller, 'quality-container-command', *previous['command'])
+            from .diagnostic import quality_row_identity
+            if (previous_command['handoff'] != list(handoff)
+                    or predecessor.row_digest != registration['row']['initial']
+                    or predecessor.row_digest != quality_row_identity(previous_command['registration']['row'])
+                    or list(predecessor.quality_proof) != registration['initial_receipt']):
+                raise ProviderRequestError('quality container original handoff differs')
+        else:
+            reopen_quality_handoff(controller, original_request, handoff,
+                ledger=admission.ledger, sessions=admission.session_store)
+        if (type(transport) is not PinnedDockerTransport or transport.controller is not controller
+                or transport.spec.workspace_readonly is not True
+                or [transport.handle_evidence_name, transport.handle_evidence_digest] !=
+                   [admission.handle_evidence_name, admission.handle_evidence_digest]):
+            raise ProviderRequestError('quality container retained transport differs')
+        launch = read_evidence(controller, _HANDLE_CATEGORY, transport.handle_evidence_name, transport.handle_evidence_digest)
+        authenticate_launch_record(controller, launch, transport.spec, transport.handle, inputs_digest=request.inputs_digest)
+        cleanup_authorized = True
+        command_proof = issue_quality_container_command(controller, store, authority, request=request,
+            admission=admission, backend_attachment=backend_attachment, handoff=handoff,
+            original_request=original_request, bindings=bindings, role=role, phase=phase,
+            condition=condition, catalog=catalog, predecessor=predecessor)
+        request_ref = _retain_quality_request(store, request, prefix + '/current')
+        def success(payload):
+            captured = _capture_private_wire(admission.ledger, admission.permit_id, admission.epoch,
+                store.root, f'quality-{role}-{phase}-{admission.epoch}', payload)
+            wires[captured['request_id']] = captured
+        sender = quality_upstream_sender(HostUpstream(admission.broker_permit, route,
+            max_response_bytes=admission.broker_permit.max_response_bytes,
+            deadline_seconds=admission.broker_permit.response_deadline, success_sink=success),
+            store, f'{role}-{phase}-{admission.epoch}')
+        command, control = _quality_container_live(controller, store, request, command_proof, backend_attachment, admission)
+        with control.broker._lock:
+            if (control.broker._credential != credential or control.broker._used != 0
+                    or control.broker._effective_limits or control.broker._refused_agy_auxiliary):
+                raise ProviderRequestError('quality container original broker was already used or differs')
+            if admission.ledger.attempt_counts(admission.permit_id, admission.epoch) != (0, 0):
+                raise ProviderRequestError('quality container model permit already attempted')
+            control.broker._send = sender
+        turn_digest = _digest({'command': list(command_proof), 'request': admitted_request_digest(request)})
+        admission.session_store.reserve(request.executor_id, turn_digest, initial=not request.resume,
+            upstream_route_digest=admission.broker_permit.upstream_route_digest,
+            initial_session_id=request.session_id if request.executor_id == 'claude' and not request.resume else None)
+        if request.executor_id == 'agy':
+            runner = _quality_container_controls(controller, authority, attachment)
+            from .eval_provider import AGY_AGENT_TEXT
+            for verify in (False, True):
+                observed = runner(quality_agy_agent_command(transport.handle, verify_only=verify).argv, b'')
+                if observed.returncode != 0 or observed.stdout != hashlib.sha256(AGY_AGENT_TEXT.encode()).hexdigest().encode() + b'\n' or observed.stderr:
+                    raise ProviderRequestError('quality container actual empty-tools agent differs')
+        def final_admission():
+            _quality_container_live(controller, store, request, command_proof, backend_attachment, admission)
+        transport.process_result = None
+        if transport._production_edge:
+            process = PinnedDockerTransport._docker_exec(transport.handle, command.guest, command.workdir, before_spawn=final_admission)
+        else:
+            final_admission()
+            process = transport._process_runner(command.guest)
+        transport.process_result = process
+        if type(process) is not ProcessResult or process.capture_complete is not True:
+            raise ProviderRequestError('quality container raw process capture differs')
+        adapter = ProviderRegistry((request.profile,)).require(request.executor_id)
+        parsed = adapter.parse(process.stdout)
+        result = _make_result(request, adapter, process, parsed, 1, time.monotonic() - started)
+        if not result.valid or process.status is not ProcessStatus.EXIT or process.returncode != 0:
+            raise ProviderRequestError('quality container process did not deliver a valid own-session answer')
+        if control._relay_error is not None:
+            raise ProviderRequestError('quality container relay did not settle') from control._relay_error
+    except BaseException as error:
+        primary = error
+    finally:
+        if cleanup_authorized:
+            try:
+                transport.close()
+            except BaseException as error:
+                cleanup = error
+                (primary or error).add_note(_cleanup_failure_note(controller, 'quality-turn', error,
+                    primary=primary, spec=transport.spec, handle=transport.handle,
+                    permit_id=admission.permit_id, provider=request.executor_id, store=admission.session_store))
+        try:
+            admission.ledger.fence_epoch(admission.permit_id, admission.epoch)
+        except BaseException as error:
+            if primary is not None or cleanup is not None:
+                (primary or cleanup).add_note(f"Quality turn permit fence also failed: {type(error).__name__}")
+            else:
+                cleanup = error
+    if primary is not None:
+        raise primary.with_traceback(primary.__traceback__)
+    if cleanup is not None:
+        raise cleanup
+    from .container_transfer_transport import reopen_stopped_seat
+    reopen_stopped_seat(controller, transport.stop_evidence, spec=transport.spec, handle=transport.handle)
+    admission.session_store.settle(request.executor_id, result.session_id, turn_digest,
+        initial=not request.resume, upstream_route_digest=admission.broker_permit.upstream_route_digest)
+    stdout, stderr = (store.write_bytes(prefix + '/' + key + '.bin', raw) for key, raw in
+        (('stdout', process.stdout), ('stderr', process.stderr)))
+    final = store.write_bytes(prefix + '/final.txt', result.answer.encode())
+    terminal = write_evidence(controller, 'quality-container-terminal', {
+        'schema': 'fanout-quality-container-terminal-v1', 'command': list(command_proof),
+        'request_digest': admitted_request_digest(request), 'process_status': process.status.value,
+        'returncode': process.returncode, 'capture_complete': process.capture_complete,
+        'stdout_sha256': stdout.digest, 'stderr_sha256': stderr.digest, 'answer_sha256': final.digest,
+        'valid': result.valid, 'session_id': result.session_id, 'observed_model': result.observed_model,
+        'turn_digest': turn_digest, 'stop': list(transport.stop_evidence),
+        'session_identity': list(admission.session_store.identity), 'session_volume': admission.session_store.volume})
+    total, auxiliary = admission.ledger.attempt_counts(admission.permit_id, admission.epoch)
+    proof = write_evidence(controller, 'quality-readonly-turn', {
+        'schema': 'fanout-quality-container-readonly-turn-v1', 'backend_attachment': list(backend_attachment),
+        'command': list(command_proof), 'terminal': list(terminal), 'request': asdict(request_ref),
+        'stdout': asdict(stdout), 'stderr': asdict(stderr), 'final': asdict(final),
+        'records': list(admission.ledger.request_records(admission.permit_id, admission.epoch)),
+        'prepared': [asdict(ref) for ref in sender.captures.values()], 'wires': wires, 'route': asdict(route),
+        'main_attempts': total, 'auxiliary_attempts': auxiliary, 'elapsed': time.monotonic() - started,
+        'outer_seconds': registration['row']['outer_seconds']})
+    validate_quality_container_readonly_turn(controller, store, request, proof, backend_attachment=backend_attachment)
+    return QualityContainerTurn(result, process, command_proof, terminal), proof
+
+
+def validate_quality_container_readonly_turn(controller, store, request, proof, *, backend_attachment):
+    from .diagnostic import _quality_request_material, _read_quality_request_json, _read_quality_request_artifact, _quality_empty_tools
+    from .container_certification import reopen_quality_wire
+    from .container_routes import RouteAdmission, RouteProfile
+    from .container_transfer_transport import reopen_stopped_seat
+    value = read_evidence(controller, 'quality-readonly-turn', *proof)
+    if (set(value) != {'schema', 'backend_attachment', 'command', 'terminal', 'request', 'stdout', 'stderr', 'final',
+            'records', 'prepared', 'wires', 'route', 'main_attempts', 'auxiliary_attempts', 'elapsed', 'outer_seconds'}
+            or value['schema'] != 'fanout-quality-container-readonly-turn-v1'
+            or value['backend_attachment'] != list(backend_attachment)):
+        raise ProviderRequestError('quality container readonly receipt differs')
+    command, registration = reopen_quality_container_command(controller, store, request, value['command'], backend_attachment=backend_attachment)
+    command_value = read_evidence(controller, 'quality-container-command', *value['command'])
+    row, permit = registration['row'], BrokerPermit(**registration['permit'])
+    request_ref = ArtifactRef(**value['request'])
+    retained = _read_quality_request_json(store, request_ref)
+    material, prompt, profile = _quality_request_material(request, request_ref.path.removesuffix('/request.json'))
+    if (retained != material or _read_quality_request_artifact(store, ArtifactRef(**retained['prompt']), 1024 * 1024) != prompt
+            or _read_quality_request_artifact(store, ArtifactRef(**retained['profile']), 64 * 1024) != profile):
+        raise ProviderRequestError('quality container retained actual request differs')
+    ledger = PermitLedger(controller.root / 'locks/spend', controller)
+    records, attempts = ledger.request_records(registration['permit_id'], row['epoch']), ledger.attempt_counts(registration['permit_id'], row['epoch'])
+    with ledger._locked() as state:
+        entry = state['permits'].get(registration['permit_id'])
+        if entry is None or entry['fenced'] is not True:
+            raise ProviderRequestError('quality container original permit is not fenced')
+    terminal = read_evidence(controller, 'quality-container-terminal', *value['terminal'])
+    if (set(terminal) != {'schema', 'command', 'request_digest', 'process_status', 'returncode', 'capture_complete',
+            'stdout_sha256', 'stderr_sha256', 'answer_sha256', 'valid', 'session_id', 'observed_model', 'turn_digest',
+            'stop', 'session_identity', 'session_volume'} or terminal['schema'] != 'fanout-quality-container-terminal-v1'
+            or terminal['command'] != value['command'] or terminal['request_digest'] != admitted_request_digest(request)
+            or terminal['process_status'] != 'exit' or type(terminal['returncode']) is not int or terminal['returncode'] != 0
+            or terminal['valid'] is not True or terminal['capture_complete'] is not True
+            or value['records'] != list(records) or attempts != (value['main_attempts'], value['auxiliary_attempts'])
+            or type(value['main_attempts']) is not int or type(value['auxiliary_attempts']) is not int
+            or attempts[0] > attempt_limit(permit) or len(records) > permit.max_requests or not records
+            or {item['request_id'] for item in records} != set(value['wires'])
+            or any(item['state'] != 'settled' for item in records) or value['outer_seconds'] != row['outer_seconds']
+            or type(value['elapsed']) not in (int, float) or not math.isfinite(value['elapsed'])
+            or not 0 < value['elapsed'] <= row['outer_seconds']):
+        raise ProviderRequestError('quality container actual process or finite accounting differs')
+    stdout, stderr, final = (store.read_bytes(ArtifactRef(**value[key])) for key in ('stdout', 'stderr', 'final'))
+    if any(hashlib.sha256(raw).hexdigest() != terminal[key] for raw, key in
+            ((stdout, 'stdout_sha256'), (stderr, 'stderr_sha256'), (final, 'answer_sha256'))):
+        raise ProviderRequestError('quality container raw process bytes differ')
+    adapter = ProviderRegistry((request.profile,)).require(request.executor_id)
+    parsed = adapter.parse(stdout)
+    result = _make_result(replace(request, artifact_store=None), adapter,
+        ProcessResult(ProcessStatus.EXIT, 0, stdout, stderr), parsed, 1, value['elapsed'])
+    if (not result.valid or not final or result.answer.encode() != final or result.session_id != terminal['session_id']
+            or result.observed_model != terminal['observed_model']):
+        raise ProviderRequestError('quality container raw own-session answer differs')
+    spec, handle = ContainerSpec(**command_value['spec']), ContainerHandle(**command_value['handle'])
+    reopen_stopped_seat(controller, terminal['stop'], spec=spec, handle=handle)
+    stopped = read_evidence(controller, 'container-seat-stopped', *terminal['stop'])
+    if [stopped['launch_evidence_name'], stopped['launch_evidence_digest']] != command_value['launch']:
+        raise ProviderRequestError('quality container exact model stop differs')
+    sessions = SessionStore(controller, request.run_id, request.task_id, request.target_id, request.seat_id, spec.session_volume)
+    binding = sessions.read(request.executor_id)
+    if binding is None:
+        raise ProviderRequestError('quality container original own session is absent')
+    expected_turn = _digest({'command': value['command'], 'request': admitted_request_digest(request)})
+    def settled(state):
+        turn = state['turns'].get(expected_turn)
+        if turn != {'provider': request.executor_id, 'state': 'settled'}:
+            raise ProviderRequestError('quality container actual session turn is not settled')
+        return None, False
+    sessions._update(settled)
+    if (binding.session_id != result.session_id or binding.upstream_route_digest != permit.upstream_route_digest
+            or terminal['turn_digest'] != expected_turn or terminal['session_identity'] != list(sessions.identity)
+            or terminal['session_volume'] != sessions.volume or not request.resume and binding.turn_digest != expected_turn):
+        raise ProviderRequestError('quality container settled own session differs')
+    prepared_set = set()
+    if type(value['prepared']) is not list or not 1 <= len(value['prepared']) <= len(records):
+        raise ProviderRequestError('quality container prepared request set differs')
+    for retained in value['prepared']:
+        prepared = store.read_json(ArtifactRef(**retained))
+        if set(prepared) != {'method', 'provider_path', 'route', 'origin', 'path', 'model', 'normalized_body', 'effective_body'}:
+            raise ProviderRequestError('quality container prepared request fields differ')
+        for key in ('normalized_body', 'effective_body'):
+            _quality_empty_tools(store.read_bytes(ArtifactRef(**prepared[key])))
+        observed = (prepared['normalized_body']['digest'], prepared['effective_body']['digest'])
+        matches = [record['identity'] for record in records if
+            (record['identity']['body_sha256'], record['identity']['upstream_body_sha256']) == observed]
+        if (not matches or observed in prepared_set or any(
+                (prepared['method'], prepared['provider_path'], prepared['route'], prepared['origin'], prepared['path'], prepared['model']) !=
+                (item['method'], item['path'], item['upstream_route_digest'], item['upstream_origin'], item['upstream_path'], item['upstream_model'])
+                for item in matches)):
+            raise ProviderRequestError('quality container prepared request association differs')
+        prepared_set.add(observed)
+    if prepared_set != {(record['identity']['body_sha256'], record['identity']['upstream_body_sha256']) for record in records}:
+        raise ProviderRequestError('quality container prepared request set differs')
+    profile = {**value['route']['profile'], 'execution_classes': tuple(value['route']['profile']['execution_classes'])}
+    route = RouteAdmission(**{**value['route'], 'profile': RouteProfile(**profile)})
+    for record in records:
+        reopen_quality_wire(store, value['wires'][record['request_id']], permit, record, route)
+    return value
 
 
 def _route_command(request: ProviderRequest, command: ProcessCommand) -> ProcessCommand:

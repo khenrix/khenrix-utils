@@ -37,6 +37,654 @@ CLI = "b" * 64
 CONTAINER_ID = "c" * 64
 
 
+@pytest.fixture
+def quality_provisioning(tmp_path, request):
+    from test_fanout_container_runtime import SharedDocker
+    from shared.lib.fanout import diagnostic
+    from shared.lib.fanout.container_boundary import ContainerAdmission, PinnedDockerTransport, SessionStore
+    from shared.lib.fanout.container_source import runtime_source_digest
+    from shared.lib.fanout.container_runtime import ContainerLauncher
+
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    daemon = SharedDocker()
+    spec, first_launcher, first, _ = daemon.seat("seat-claude", CONTAINER_ID)
+    ro_spec = replace(spec, workspace_readonly=True)
+    _, second_launcher, second, _ = daemon.seat("seat-claude", "9" * 64, spec=ro_spec)
+    for mount in second.inspect["Mounts"]:
+        if mount["Destination"] == "/workspace":
+            mount["RW"] = False
+    for mount in second.inspect["HostConfig"]["Mounts"]:
+        if mount["Target"] == "/workspace":
+            mount["ReadOnly"] = True
+    switched = False
+    def physical(argv, stdin):
+        nonlocal switched
+        if argv[3] == "create" and CONTAINER_ID in daemon.items:
+            switched = True
+        return (second_launcher if switched else first_launcher)._docker(argv, stdin)
+    socket = first_launcher._socket_attestor(spec.socket_path)
+    launcher = ContainerLauncher(physical, guest_socket_attestor=lambda _: socket)
+    vm = VMProbe("fanout-isolated", "unix:///private/fanout/docker.sock",
+                 "1" * 64, "2" * 64, "3" * 64, "4" * 64)
+    calls = []
+    def no_model(command):
+        calls.append(command)
+        pytest.fail("handoff must not dispatch a model")
+    transport = PinnedDockerTransport.start(controller, spec, launcher=launcher,
+        vm_attestor=lambda: vm, socket_attestor=lambda _: socket,
+        image_attestor=lambda: IMAGE, cli_attestor=lambda _: CLI, process_runner=no_model)
+    backend_declared = getattr(request, "param", None) == "container-authority"
+    provider = "claude" if backend_declared else getattr(request, "param", "claude")
+    session_id = "11111111-1111-4111-8111-111111111111" if provider == "claude" else None
+    profile = ProviderRegistry.default().select(provider, "read-only", "standard")
+    request = ProviderRequest(provider, b"original quality question", tmp_path,
+        profile=profile, session_id=session_id,
+        timeout=30, run_id=spec.run_id, task_id=spec.task_id,
+        target_id=spec.target_id, seat_id=spec.seat_id, inputs_digest="e" * 64,
+        context_sha256="a" * 64, skill_bundle_sha256="b" * 64,
+        skill_delivery_sha256="8" * 64)
+    permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id,
+        spec.seat_id, "initial", profile.requested_model, "disposable-placeholder",
+        1, 100_000, 100_000, 8192, inputs_digest=request.inputs_digest,
+        session_id=request.session_id, upstream_route_digest="a" * 64,
+        upstream_origin="https://eu-aiplatform.googleapis.com",
+        upstream_model=profile.requested_model, upstream_path="/v1/pinned-route")
+    ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+    bindings = {name: "b" * 64 for name in
+                ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+    bindings.update(source=runtime_source_digest(), profile=profile.digest, inputs=request.inputs_digest)
+    store = ArtifactStore(tmp_path / "allocation")
+    row = {"role": "candidate-seat", "phase": "initial", "condition": "candidate",
+           "epoch": 1, "permit": asdict(permit), "blocker": None, "initial": None,
+           "profile": profile.digest, "catalog": None, "process_seconds": 30, "outer_seconds": 60}
+    backend_attachment = None
+    if backend_declared:
+        from shared.lib.fanout import quality_case
+        attachment = dict.fromkeys(quality_case._FIELDS)
+        attachment.update(schema="fanout-quality-installed-case-attachment-v2",
+            backend="container-read-only", case_id="normal-01", run_id=spec.run_id,
+            task_id=spec.task_id, target_id=spec.target_id, condition="candidate",
+            execution_class="read-only", inputs_digest=request.inputs_digest,
+            case_input=asdict(store.write_bytes("quality/input.json", canonical_json({"prompt": request.prompt_bytes.decode("utf-8")}))),
+            catalog=None, seats={provider: {"seat_id": spec.seat_id, "workspace_digest": "b" * 64,
+                "profile_digest": profile.digest, "route_id": "claude-eu"}},
+            container={"image_digest": IMAGE, "cli_digests": {name: CLI for name in ("claude", "codex", "agy")},
+                "docker_controls": ["a" * 64 + ".json", "a" * 64]})
+        bindings["projection"] = hashlib.sha256(canonical_json(quality_case._quality_input_projection(attachment))).hexdigest()
+    ref = store.write_json("quality/case.json", {
+        "schema": "fanout-quality-case-allocation-v1", "case_id": "normal-01",
+        "controller_id": controller.controller_id, "bindings": bindings,
+        "maka_output_tokens": 8192, "rows": [row, dict(row, role="owner-grade", epoch=2)]})
+    authority = diagnostic.seal_quality_allocation(controller, store, ref, bindings=bindings)
+    if backend_declared:
+        from shared.lib.fanout.container_boundary import quality_docker_runner
+        runner = quality_docker_runner(controller, allocation_digest=authority[1],
+            max_commands=300, command_seconds=5, outer_seconds=60)
+        attachment.update(allocation=list(authority), bindings=bindings)
+        attachment["container"]["docker_controls"] = list(runner.controls)
+        backend_attachment = write_evidence(controller, "quality-installed-case-attachment", attachment)
+    permit_id = diagnostic.register_quality_permit(controller, store, authority, ledger,
+        role=row["role"], phase=row["phase"], condition=row["condition"],
+        permit=permit, epoch=1, bindings=bindings, backend_attachment=backend_attachment)
+    sessions = SessionStore(controller, spec.run_id, spec.task_id, spec.target_id,
+                            spec.seat_id, spec.session_volume)
+    admission = ContainerAdmission(permit, permit_id, 1, ledger, IMAGE, CLI,
+        socket, transport, sessions, transport.handle_evidence_name, transport.handle_evidence_digest)
+    from shared.lib.fanout.container_transfer_transport import QualityProvisioning
+    admission = replace(admission, quality_provisioning=QualityProvisioning(store.root,
+        authority, bindings, row["role"], row["phase"], row["condition"],
+        backend_attachment=backend_attachment))
+    source = controller.root / "quarantine" / "source"
+    source.mkdir(mode=0o700)
+    (source / "repo").mkdir(mode=0o700)
+    (source / "context").mkdir(mode=0o700)
+    (source / "repo" / "base.txt").write_text("baseline\n")
+    (source / "context" / "full-plan.md").write_text("complete plan\n")
+    identity = TransferIdentity(spec.run_id, spec.task_id, spec.target_id, spec.seat_id, request.inputs_digest)
+    manifest = snapshot_manifest(source, identity)
+    with ArtifactStore(controller.root / "quarantine" / "input-material-store") as material_store:
+        manifest_ref = material_store.write_json("original/manifest.json", asdict(manifest))
+    info = source.stat()
+    material = write_evidence(controller, "container-input-material", {
+        "schema_version": "InputMaterialV1", "identity": asdict(identity),
+        "source_device": info.st_dev, "source_inode": info.st_ino,
+        "original_handle": asdict(transport.handle), "workspace_volume": spec.workspace_volume,
+        "run_inputs_sha256": request.inputs_digest, "task_packet_sha256": "5" * 64,
+        "target_baseline_sha256": "6" * 64, "workspace_sha256": "7" * 64,
+        "skill_delivery_sha256": request.skill_delivery_sha256, "dependency_context_sha256": "9" * 64,
+        "provider_context_sha256": request.context_sha256,
+        "skill_bundle_sha256": request.skill_bundle_sha256, "manifest_ref": asdict(manifest_ref)})
+    transport._transfer_popen, guest = _guest_popen(tmp_path, [], container_id=CONTAINER_ID)
+    yield SimpleNamespace(controller=controller, request=request, transport=transport,
+        admission=admission, source=source, material=material, store=store, authority=authority,
+        bindings=bindings, row=row, ref=ref, daemon=daemon, first=first, second=second,
+        guest=guest, model_calls=calls)
+    store.close()
+
+
+def test_quality_original_import_accepts_consumed_readonly_row(quality_provisioning):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    grant = issue_input_source_grant(q.controller, q.request, q.transport,
+                                     q.admission, q.source, *q.material)
+    receipt = q.transport.stage_inputs(q.request, grant)
+    assert receipt.workspace_volume == q.transport.spec.workspace_volume
+    assert q.model_calls == []
+
+
+def _quality_import(q):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    grant = issue_input_source_grant(q.controller, q.request, q.transport,
+                                     q.admission, q.source, *q.material)
+    receipt = q.transport.stage_inputs(q.request, grant)
+    q.admission = replace(q.admission, input_receipt=receipt)
+    return receipt
+
+
+def test_quality_existing_recovery_cannot_reuse_writable_launch_as_readonly(quality_provisioning):
+    q = quality_provisioning
+    _quality_import(q)
+    q.transport._close(retain_control=True)
+    # A fresh initial RO handoff must not be disguised as ordinary settled resume.
+    with pytest.raises(ProviderRequestError, match="original volume authority"):
+        q.transport.launcher.recover(replace(q.transport.spec, workspace_readonly=True))
+
+
+@pytest.mark.parametrize("quality_provisioning", ("claude", "agy"), indirect=True)
+def test_quality_handoff_preserves_import_volumes_and_unspent_roster(quality_provisioning):
+    from shared.lib.fanout.container_transfer_transport import (
+        _InputClaimJournal, reopen_quality_handoff, reopen_quality_handoff_history,
+    )
+    q = quality_provisioning
+    receipt = _quality_import(q)
+    allocation = q.store.read_bytes(q.ref)
+    with q.admission.ledger._locked() as state:
+        ledger_before = canonical_json(state)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    assert model.handle.container_id != q.transport.handle.container_id
+    assert model.spec == replace(q.transport.spec, workspace_readonly=True)
+    assert model.attest_container() == model.handle
+    assert model.launcher._volume_expectations[1] == q.transport.launcher._volume_expectations[1]
+    assert q.daemon.items[q.transport.handle.container_id]["State"]["Running"] is False
+    assert _InputClaimJournal(q.controller, receipt.identity, receipt.workspace_volume).completed() == (
+        receipt.evidence_name, receipt.evidence_digest)
+    assert q.store.read_bytes(q.ref) == allocation
+    with q.admission.ledger._locked() as state:
+        assert canonical_json(state) == ledger_before
+    reopen_quality_handoff(q.controller, q.request, model.handoff_evidence,
+                           ledger=q.admission.ledger, sessions=q.admission.session_store)
+    reopen_quality_handoff_history(q.controller, q.request, model.handoff_evidence)
+    assert q.model_calls == []
+    with pytest.raises(ProviderRequestError):
+        q.transport.handoff_quality_inputs(q.request, q.admission)
+    model.close()
+
+
+def test_quality_handoff_historical_reader_survives_later_activity(quality_provisioning):
+    from shared.lib.fanout.container_transfer_transport import (
+        reopen_quality_handoff, reopen_quality_handoff_history,
+    )
+    q = quality_provisioning
+    _quality_import(q)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    q.admission.ledger.record_attempt(q.admission.permit_id, q.admission.epoch)
+    q.admission.ledger.fence_epoch(q.admission.permit_id, q.admission.epoch)
+    sessions = q.admission.session_store
+    sessions.reserve("claude", "6" * 64, initial=True,
+        upstream_route_digest="a" * 64, initial_session_id=q.request.session_id)
+    sessions.settle("claude", q.request.session_id, "6" * 64, initial=True,
+                    upstream_route_digest="a" * 64)
+    with pytest.raises(ProviderRequestError):
+        reopen_quality_handoff(q.controller, q.request, model.handoff_evidence,
+                               ledger=q.admission.ledger, sessions=q.admission.session_store)
+    history = reopen_quality_handoff_history(q.controller, q.request, model.handoff_evidence)
+    assert history["zero_activity"] == {"used": 0, "attempts": 0, "auxiliary_attempts": 0,
+                                       "auxiliary_refusals": 0, "requests": [], "bindings": {}, "turns": {}}
+    model.close()
+
+
+@pytest.mark.parametrize("change", ("prompt", "profile", "row", "bindings", "controller",
+    "unconsumed", "foreign-allocation", "resume", "fenced", "attempt", "used",
+    "pending-session", "settled-session", "session-volume", "native-authority", "catalog"))
+def test_quality_provisioning_rejects_substitution_before_import(quality_provisioning, change, tmp_path):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    request, admission, controller = q.request, q.admission, q.controller
+    context = admission.quality_provisioning
+    if change == "prompt":
+        # After grant issuance it is the grant, not the allocation, that binds this exact prompt.
+        grant = issue_input_source_grant(controller, request, q.transport, admission, q.source, *q.material)
+        with pytest.raises(ProviderRequestError):
+            q.transport.stage_inputs(replace(request, prompt="substituted"), grant)
+        assert not (q.guest / "inputs").exists()
+        return
+    if change == "profile":
+        request = replace(request, profile=ProviderRegistry.default().select("claude", "read-only", "deep"))
+    elif change == "row":
+        admission = replace(admission, quality_provisioning=replace(context, role="owner-grade"))
+    elif change == "bindings":
+        admission = replace(admission, quality_provisioning=replace(context, bindings=dict(q.bindings, source="f" * 64)))
+    elif change == "controller":
+        controller = create_lifecycle_controller(tmp_path / "foreign-controller")
+    elif change == "unconsumed":
+        admission = replace(admission, epoch=2, quality_provisioning=replace(context, role="owner-grade"))
+    elif change == "foreign-allocation":
+        admission = replace(admission, quality_provisioning=replace(context, allocation=("f" * 64 + ".json", "f" * 64)))
+    elif change == "resume":
+        request = replace(request, resume=True)
+    elif change == "fenced":
+        admission.ledger.fence_epoch(admission.permit_id, admission.epoch)
+    elif change == "attempt":
+        admission.ledger.record_attempt(admission.permit_id, admission.epoch)
+    elif change == "used":
+        from shared.lib.fanout.container_broker import OutboundRequestIdentity
+        admission.ledger.record_attempt(admission.permit_id, admission.epoch)
+        permit = admission.broker_permit
+        identity = OutboundRequestIdentity("POST", "/v1/messages", "7" * 64, 8192, permit.model,
+            permit.upstream_route_digest, permit.upstream_origin, permit.upstream_path,
+            "7" * 64, permit.upstream_model)
+        admission.ledger.reserve(admission.permit_id, admission.epoch, "later-request", identity)
+    elif change in {"pending-session", "settled-session"}:
+        admission.session_store.reserve("claude", "6" * 64, initial=True,
+            upstream_route_digest="a" * 64, initial_session_id=request.session_id)
+        if change == "settled-session":
+            admission.session_store.settle("claude", request.session_id, "6" * 64,
+                                           initial=True, upstream_route_digest="a" * 64)
+    elif change == "session-volume":
+        admission.session_store.volume = "fanout-session-" + "f" * 64
+    elif change == "native-authority":
+        object.__setattr__(request, "native_boundary", object())
+    elif change == "catalog":
+        admission = replace(admission, quality_provisioning=replace(context,
+            catalog={"original": {}, "projected": {"digest": "a" * 64}}))
+    mutations = list(q.daemon.mutations)
+    with pytest.raises(ProviderRequestError):
+        issue_input_source_grant(controller, request, q.transport, admission, q.source, *q.material)
+    assert q.daemon.mutations == mutations
+    assert q.model_calls == []
+
+
+@pytest.mark.parametrize("quality_provisioning", ("agy",), indirect=True)
+def test_quality_provisioning_rejects_auxiliary_activity(quality_provisioning):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    assert q.request.executor_id == "agy"
+    q.admission.ledger.record_attempt(q.admission.permit_id, q.admission.epoch)
+    q.admission.ledger.record_auxiliary_refusal(q.admission.permit_id, q.admission.epoch)
+    assert q.admission.ledger.attempt_counts(q.admission.permit_id, q.admission.epoch) == (1, 1)
+    with pytest.raises(ProviderRequestError, match="zero permit activity"):
+        issue_input_source_grant(q.controller, q.request, q.transport, q.admission, q.source, *q.material)
+
+
+def test_quality_closed_provisioning_does_not_enable_ordinary_model_boundary(quality_provisioning):
+    from shared.lib.fanout.container_boundary import _check_association
+    q = quality_provisioning
+    with pytest.raises(ProviderRequestError, match="repo-write"):
+        _check_association(q.request, q.admission)
+
+
+def test_quality_handoff_transfers_same_held_control_once(quality_provisioning):
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout.container_boundary import HostSessionLease, PinnedSSHSeatControl
+    q = quality_provisioning
+    control = object.__new__(PinnedSSHSeatControl)
+    control.controller, control.spec, control.ledger = q.controller, q.transport.spec, q.admission.ledger
+    control.broker = Broker(q.admission.broker_permit, credential="inert-test-placeholder",
+                           send=lambda *args: pytest.fail("handoff must not send"))
+    control.permit_id, control.epoch = q.admission.permit_id, q.admission.epoch
+    with HostSessionLease(q.controller, control.permit_id, control.epoch) as lease:
+        control._lease = lease
+        q.transport._control = control
+        _quality_import(q)
+        held = lease.require_held()
+        model = q.transport.handoff_quality_inputs(q.request, q.admission)
+        assert model._control is control and q.transport._control is None
+        assert control.spec == model.spec and control.spec.workspace_readonly is True
+        assert lease.require_held() == held
+        q.transport.close()
+        assert lease.require_held() == held
+        with pytest.raises(ProviderRequestError):
+            q.transport.handoff_quality_inputs(q.request, q.admission)
+        assert model._control is control
+        # Relay subprocess I/O is synthetic; exercise the actual container stop separately.
+        model._close(retain_control=True)
+
+
+def test_quality_provisioning_rejects_boolean_epoch_alias(quality_provisioning):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    with pytest.raises(ProviderRequestError):
+        issue_input_source_grant(q.controller, q.request, q.transport,
+            replace(q.admission, epoch=True), q.source, *q.material)
+
+
+def test_quality_production_provisioning_requires_original_finite_helper(quality_provisioning):
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout.container_boundary import HostSessionLease, PinnedSSHSeatControl
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    control = object.__new__(PinnedSSHSeatControl)
+    control.controller, control.spec, control.ledger = q.controller, q.transport.spec, q.admission.ledger
+    control.broker = Broker(q.admission.broker_permit, credential="inert-test-placeholder",
+                           send=lambda *args: pytest.fail("handoff must not send"))
+    control.permit_id, control.epoch = q.admission.permit_id, q.admission.epoch
+    with HostSessionLease(q.controller, control.permit_id, control.epoch) as lease:
+        control._lease = lease
+        q.transport._control, q.transport._production_edge = control, True
+        with pytest.raises(ProviderRequestError, match="finite Docker"):
+            issue_input_source_grant(q.controller, q.request, q.transport, q.admission, q.source, *q.material)
+
+
+def test_quality_handoff_retains_actual_finite_helper_counter(quality_provisioning, monkeypatch):
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout import container_transfer_transport as transfer
+    q = quality_provisioning
+    control = object.__new__(module.PinnedSSHSeatControl)
+    control.controller, control.spec, control.ledger = q.controller, q.transport.spec, q.admission.ledger
+    control.broker = Broker(q.admission.broker_permit, credential="inert-test-placeholder",
+                           send=lambda *args: pytest.fail("handoff must not send"))
+    control.permit_id, control.epoch = q.admission.permit_id, q.admission.epoch
+    original = q.transport.launcher._docker
+    def physical(command, **kwargs):
+        result = original(tuple(command.argv), None)
+        return ProcessResult(ProcessStatus.EXIT, result.returncode, result.stdout, result.stderr)
+    monkeypatch.setattr(module, "_run_bounded_command", physical)
+    runner = module.quality_docker_runner(q.controller, allocation_digest=q.authority[1],
+        max_commands=300, command_seconds=5, outer_seconds=60)
+    q.transport.launcher._docker = runner
+    guest_popen = q.transport._transfer_popen
+    del q.transport._transfer_popen
+    monkeypatch.setattr(transfer, "subprocess", SimpleNamespace(Popen=guest_popen,
+        PIPE=subprocess.PIPE, TimeoutExpired=subprocess.TimeoutExpired))
+    with module.HostSessionLease(q.controller, control.permit_id, control.epoch) as lease:
+        control._lease = lease
+        q.transport._control, q.transport._production_edge = control, True
+        _quality_import(q)
+        before = len(list((q.controller.root / "quarantine" / f"quality-docker-{q.authority[1]}").iterdir()))
+        model = q.transport.handoff_quality_inputs(q.request, q.admission)
+        assert model.launcher._docker is runner
+        assert model._control is control and control.spec == model.spec
+        retained = q.controller.root / "quarantine" / f"quality-docker-{q.authority[1]}"
+        assert len(list(retained.iterdir())) > before
+        with pytest.raises(ProviderRequestError, match="already attempted"):
+            module.quality_docker_runner(q.controller, allocation_digest=q.authority[1],
+                max_commands=300, command_seconds=5, outer_seconds=60)
+        model._close(retain_control=True)
+    assert q.model_calls == []
+
+
+@pytest.mark.parametrize("change", ("exhausted", "deadline", "raw", "retained-claim", "rewind", "foreign-controls", "marker-mode"))
+def test_quality_provisioning_v2_controls_refuse_without_replenishment(quality_provisioning, change, monkeypatch):
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    q = quality_provisioning
+    control = object.__new__(module.PinnedSSHSeatControl)
+    control.controller, control.spec, control.ledger = q.controller, q.transport.spec, q.admission.ledger
+    control.broker = Broker(q.admission.broker_permit, credential="inert-test-placeholder",
+                           send=lambda *args: pytest.fail("provisioning must not send"))
+    control.permit_id, control.epoch = q.admission.permit_id, q.admission.epoch
+    physical_calls = []
+    original = q.transport.launcher._docker
+    def physical(command, **kwargs):
+        physical_calls.append(tuple(command.argv))
+        result = original(tuple(command.argv), None)
+        return ProcessResult(ProcessStatus.EXIT, result.returncode, result.stdout, result.stderr)
+    monkeypatch.setattr(module, "_run_bounded_command", physical)
+    runner = module.quality_docker_runner(q.controller, allocation_digest=q.authority[1],
+        max_commands=1 if change == "exhausted" else 300, command_seconds=5, outer_seconds=60)
+    q.transport.launcher._docker = runner
+    runner((*module.DOCKER, "container", "ls", "-a", "--no-trunc", "--format", "{{.ID}}"), None)
+    controls = runner.controls
+    proof = read_evidence(q.controller, "quality-docker-controls", *controls)
+    marker = q.controller.root / "locks" / f"quality-docker-{q.authority[1]}"
+    retained = q.controller.root / "quarantine" / f"quality-docker-{q.authority[1]}"
+    claim = q.controller.root / "locks" / f"quality-docker-{q.authority[1]}-attempt-1"
+    original_controls = (q.controller.root / "receipts" / controls[0]).read_bytes()
+    if change == "deadline":
+        monkeypatch.setattr(module, "time", SimpleNamespace(
+            monotonic=lambda: proof["deadline_monotonic"] + 1,
+            time=lambda: proof["deadline_wall"] + 1))
+    elif change == "raw":
+        (retained / "1/stdout.bin").write_bytes(b"substituted")
+    elif change == "retained-claim":
+        claim.write_bytes(canonical_json({"attempt": ["f" * 64 + ".json", "f" * 64]}))
+    elif change == "rewind":
+        (retained / "1").rename(retained / "retained-attempt-one")
+        lines = marker.read_bytes().splitlines(keepends=True)
+        marker.write_bytes(b"".join(lines[:2]))
+    elif change == "foreign-controls":
+        foreign = module.quality_docker_runner(q.controller, allocation_digest="f" * 64,
+            max_commands=300, command_seconds=5, outer_seconds=60)
+        runner.controls = foreign.controls
+    elif change == "marker-mode":
+        marker.chmod(0o640)
+    before = list(physical_calls)
+    with module.HostSessionLease(q.controller, control.permit_id, control.epoch) as lease:
+        control._lease = lease
+        q.transport._control, q.transport._production_edge = control, True
+        with pytest.raises(ProviderRequestError):
+            issue_input_source_grant(q.controller, q.request, q.transport, q.admission, q.source, *q.material)
+        assert q.transport.launcher._docker is runner
+    assert physical_calls == before
+    assert (q.controller.root / "receipts" / controls[0]).read_bytes() == original_controls
+    assert q.model_calls == []
+    assert q.admission.ledger.attempt_counts(q.admission.permit_id, q.admission.epoch) == (0, 0)
+
+
+@pytest.mark.parametrize("foreign", (False, True))
+def test_quality_handoff_failed_launch_keeps_original_stop_and_exact_cleanup(quality_provisioning, foreign):
+    q = quality_provisioning
+    _quality_import(q)
+    if foreign:
+        q.second.inspect["Config"]["Labels"]["io.khenrix.fanout.seat"] = "foreign-seat"
+    else:
+        q.second.inspect["HostConfig"]["ReadonlyRootfs"] = False
+    with pytest.raises(ProviderRequestError) as caught:
+        q.transport.handoff_quality_inputs(q.request, q.admission)
+    assert q.daemon.items[CONTAINER_ID]["State"]["Running"] is False
+    owned = [item for item in q.daemon.mutations if item[-1] == "9" * 64]
+    assert bool(owned) is not foreign
+    assert any("cleanup" in note.lower() for note in caught.value.__notes__)
+    assert q.model_calls == []
+    assert q.admission.ledger.attempt_counts(q.admission.permit_id, q.admission.epoch) == (0, 0)
+    with pytest.raises(ProviderRequestError):
+        q.transport.handoff_quality_inputs(q.request, q.admission)
+
+
+@pytest.mark.parametrize("change", ("repo", "context", "source-inode", "manifest", "volume",
+    "workspace-mode", "session-mode", "socket-mode", "extra-mount", "foreign-container", "receipt"))
+def test_quality_handoff_refuses_changed_input_or_running_predecessor(quality_provisioning, change):
+    import copy
+    from shared.lib.fanout.artifacts import ArtifactRef
+    q = quality_provisioning
+    receipt = _quality_import(q)
+    if change in {"repo", "context"}:
+        path = q.source / ("repo/base.txt" if change == "repo" else "context/full-plan.md")
+        path.write_text("substituted\n")
+    elif change == "source-inode":
+        q.source.rename(q.source.with_name("retained-source"))
+        q.source.mkdir(mode=0o700)
+    elif change == "manifest":
+        material = read_evidence(q.controller, "container-input-material", *q.material)
+        ref = ArtifactRef(**material["manifest_ref"])
+        path = q.controller.root / "quarantine/input-material-store" / ref.path
+        path.write_bytes(b"{}")
+    elif change == "volume":
+        q.first.volumes["workspace"]["CreatedAt"] = "2099-01-01T00:00:00Z"
+    elif change in {"workspace-mode", "session-mode", "socket-mode", "extra-mount"}:
+        path = {"workspace-mode": "/workspace", "session-mode": "/session", "socket-mode": "/run/fanout/broker.sock"}.get(change)
+        if change == "extra-mount":
+            q.first.inspect["Mounts"].append(copy.deepcopy(q.first.inspect["Mounts"][0]))
+        else:
+            for mount in q.first.inspect["Mounts"]:
+                if mount["Destination"] == path:
+                    mount["RW"] = not mount["RW"]
+    elif change == "foreign-container":
+        item = copy.deepcopy(q.first.inspect)
+        item["Id"] = "f" * 64
+        item["Config"]["Labels"]["io.khenrix.fanout.boundary"] = "foreign"
+        q.daemon.items[item["Id"]] = item
+    elif change == "receipt":
+        q.admission = replace(q.admission, input_receipt=replace(receipt, manifest_sha256="f" * 64))
+    mutations = list(q.daemon.mutations)
+    with pytest.raises(ProviderRequestError):
+        q.transport.handoff_quality_inputs(q.request, q.admission)
+    assert q.daemon.mutations == mutations
+    assert q.model_calls == []
+
+
+@pytest.mark.parametrize("change", ("live", "workspace-top", "workspace-host", "session", "socket", "extra", "absent"))
+def test_quality_handoff_reopens_actual_stop_before_model_launch(quality_provisioning, change, monkeypatch):
+    import json
+    from shared.lib.fanout.artifacts import ArtifactRef
+    q = quality_provisioning
+    _quality_import(q)
+    close = q.transport._close
+    def changed_stop(*, retain_control):
+        close(retain_control=retain_control)
+        if change == "absent":
+            q.transport.stop_evidence = ("f" * 64 + ".json", "f" * 64)
+            return
+        payload = read_evidence(q.controller, "container-seat-stopped", *q.transport.stop_evidence)
+        with ArtifactStore.open_existing(q.controller.root / "quarantine/runtime-proofs") as store:
+            item = json.loads(store.read_bytes(ArtifactRef(**payload["raw_inspect"])))[0]
+        if change == "live":
+            item["State"]["Running"] = True
+        elif change == "workspace-host":
+            item["HostConfig"]["Mounts"][0]["ReadOnly"] = True
+        elif change == "extra":
+            item["Mounts"].append(dict(item["Mounts"][0]))
+        else:
+            target = {"workspace-top": "/workspace", "session": "/session", "socket": "/run/fanout/broker.sock"}[change]
+            for mount in item["Mounts"]:
+                if mount["Destination"] == target:
+                    mount["RW"] = not mount["RW"]
+        raw = canonical_json([item])
+        path = q.controller.root / "quarantine/runtime-proofs" / payload["raw_inspect"]["path"]
+        path.write_bytes(raw)
+        payload["raw_inspect"] = asdict(ArtifactRef(payload["raw_inspect"]["path"], hashlib.sha256(raw).hexdigest(), len(raw)))
+        q.transport.stop_evidence = write_evidence(q.controller, "container-seat-stopped", payload)
+    monkeypatch.setattr(q.transport, "_close", changed_stop)
+    with pytest.raises(ProviderRequestError):
+        q.transport.handoff_quality_inputs(q.request, q.admission)
+    assert set(q.daemon.items) == {q.transport.handle.container_id}
+    assert q.model_calls == []
+
+
+def test_quality_handoff_reopens_in_fresh_child_without_producer_objects(quality_provisioning):
+    import json
+    q = quality_provisioning
+    _quality_import(q)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    payload = {"controller": str(q.controller.root), "capability": q.controller.capability.export_token(),
+               "proof": model.handoff_evidence, "cwd": str(q.request.cwd)}
+    script = r'''
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from shared.lib.fanout.controller import resume_lifecycle_controller, LifecycleCapability
+from shared.lib.fanout.providers import ProviderRequest, ProviderRegistry
+from shared.lib.fanout.container_broker import PermitLedger
+from shared.lib.fanout.container_boundary import SessionStore
+from shared.lib.fanout.container_runtime import private_volume_names
+from shared.lib.fanout.container_transfer_transport import reopen_quality_handoff, reopen_quality_handoff_history
+v = json.load(sys.stdin)
+c = resume_lifecycle_controller(Path(v['controller']), LifecycleCapability(v['capability']))
+r = ProviderRequest('claude', b'original quality question', v['cwd'],
+    profile=ProviderRegistry.default().select('claude', 'read-only', 'standard'),
+    session_id='11111111-1111-4111-8111-111111111111', timeout=30,
+    run_id='run-synthetic', task_id='task-plan', target_id='target-one', seat_id='seat-claude',
+    inputs_digest='e'*64, context_sha256='a'*64, skill_bundle_sha256='b'*64, skill_delivery_sha256='8'*64)
+ledger = PermitLedger(c.root / 'locks/spend', c)
+sessions = SessionStore(c, r.run_id, r.task_id, r.target_id, r.seat_id,
+    private_volume_names(r.run_id, r.task_id, r.target_id, r.seat_id)[1])
+assert reopen_quality_handoff(c, r, v['proof'], ledger=ledger, sessions=sessions) == reopen_quality_handoff_history(c, r, v['proof'])
+print('authenticated cold handoff')
+'''
+    completed = subprocess.run([sys.executable, "-I", "-B", "-c", script,
+        str(Path(__file__).resolve().parents[1])], input=json.dumps(payload), text=True,
+        capture_output=True, timeout=20)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "authenticated cold handoff\n"
+    model.close()
+
+
+@pytest.mark.parametrize("change", ("allocation", "registration", "grant", "receipt", "material",
+    "provisioning-launch", "model-launch", "stop", "raw-stop", "manifest", "source", "pointer"))
+def test_quality_cold_handoff_reopens_every_original_reference(quality_provisioning, change):
+    from shared.lib.fanout.container_transfer_transport import reopen_quality_handoff_history, _handoff_pointer
+    q = quality_provisioning
+    receipt = _quality_import(q)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    completed = read_evidence(q.controller, "quality-container-input-handoff", *model.handoff_evidence)
+    prep = read_evidence(q.controller, "quality-container-input-handoff", *completed["preparation"])
+    references = {"registration": prep["registration"], "grant": (receipt.grant_evidence_name, receipt.grant_evidence_digest),
+        "receipt": (receipt.evidence_name, receipt.evidence_digest), "material": q.material,
+        "provisioning-launch": (receipt.handle_evidence_name, receipt.handle_evidence_digest),
+        "model-launch": completed["model_launch"], "stop": prep["stop"]}
+    if change in references:
+        (q.controller.root / "receipts" / references[change][0]).write_bytes(b"{}")
+    elif change == "allocation":
+        (q.store.root / q.ref.path).write_bytes(b"{}")
+    elif change == "raw-stop":
+        stop = read_evidence(q.controller, "container-seat-stopped", *prep["stop"])
+        (q.controller.root / "quarantine/runtime-proofs" / stop["raw_inspect"]["path"]).write_bytes(b"[]")
+    elif change == "manifest":
+        material = read_evidence(q.controller, "container-input-material", *q.material)
+        (q.controller.root / "quarantine/input-material-store" / material["manifest_ref"]["path"]).write_bytes(b"{}")
+    elif change == "source":
+        (q.source / "context/full-plan.md").write_text("substituted\n")
+    elif change == "pointer":
+        _handoff_pointer(q.controller, receipt.identity).write_bytes(canonical_json({"preparation": ["f" * 64 + ".json", "f" * 64]}))
+    mutations = list(q.daemon.mutations)
+    with pytest.raises(ProviderRequestError):
+        reopen_quality_handoff_history(q.controller, q.request, model.handoff_evidence)
+    assert q.daemon.mutations == mutations
+    assert q.model_calls == []
+
+
+@pytest.mark.parametrize("change", ("zero", "model-mode-one", "model-mode-omitted", "provisioner-mode",
+    "model-volume", "duplicate-predecessor", "route", "request", "foreign-controller"))
+def test_quality_cold_handoff_refuses_signed_semantic_substitution(quality_provisioning, change, tmp_path):
+    from shared.lib.fanout.container_transfer_transport import reopen_quality_handoff_history, _handoff_pointer
+    q = quality_provisioning
+    receipt = _quality_import(q)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    completed = read_evidence(q.controller, "quality-container-input-handoff", *model.handoff_evidence)
+    prep = read_evidence(q.controller, "quality-container-input-handoff", *completed["preparation"])
+    origin = read_evidence(q.controller, "container-seat-launch", *completed["model_launch"])
+    controller, request = q.controller, q.request
+    if change == "zero":
+        prep["zero_activity"]["attempts"] = 1
+    elif change == "provisioner-mode":
+        prep["provisioning_spec"]["workspace_readonly"] = True
+    elif change == "model-mode-one":
+        origin["spec"]["workspace_readonly"] = 1
+    elif change == "model-mode-omitted":
+        del origin["spec"]["workspace_readonly"]
+    elif change == "model-volume":
+        origin["volumes"]["workspace"]["CreatedAt"] = "2099-01-01T00:00:00Z"
+    elif change == "duplicate-predecessor":
+        origin["handoff"]["predecessors"] *= 2
+    elif change == "route":
+        origin["route"] = "recover"
+    elif change == "request":
+        request = replace(request, prompt="substituted")
+    elif change == "foreign-controller":
+        controller = create_lifecycle_controller(tmp_path / "foreign-controller")
+    if change in {"zero", "provisioner-mode"}:
+        completed["preparation"] = list(write_evidence(q.controller, "quality-container-input-handoff", prep))
+        _handoff_pointer(q.controller, receipt.identity).write_bytes(canonical_json({"preparation": completed["preparation"]}))
+        origin["original_handoff"] = completed["preparation"]
+    completed["model_launch"] = list(write_evidence(q.controller, "container-seat-launch", origin))
+    proof = write_evidence(q.controller, "quality-container-input-handoff", completed)
+    with pytest.raises(ProviderRequestError):
+        reopen_quality_handoff_history(controller, request, proof)
+    assert q.model_calls == []
+
+
 class RunningLauncher:
     def __init__(self, handle):
         self.handle = handle
@@ -624,22 +1272,22 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                 if turn_request.resume:
                     native_argv = (
                         "codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"',
-                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"',
                         "--json", "codex-thread-1", "-",
                     )
                     routed_argv = (
                         "-c", 'sandbox_mode="danger-full-access"',
-                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"',
                         "--json", "codex-thread-1", "-",
                     )
                 else:
                     native_argv = (
                         "codex", "exec", "-", "--json", "--sandbox", "workspace-write",
-                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"',
                     )
                     routed_argv = (
                         "-", "--json", "--sandbox", "danger-full-access",
-                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"',
                     )
                 native = ProviderRegistry.default().require("codex").build_command(turn_request)
                 assert native.argv == native_argv
@@ -912,10 +1560,13 @@ def test_export_reopen_authenticates_persisted_tree_and_stopped_seat(seat, chang
     inspect = [{
         "Id": transport.handle.container_id,
         "Config": {"Labels": ContainerLauncher._labels(transport.spec), "Image": IMAGE},
-        "State": {"Running": False}, "HostConfig": {"RestartPolicy": {"Name": "no"}},
-        "Mounts": [{"Destination": "/workspace", "Type": "volume", "Name": transport.spec.workspace_volume},
-                   {"Destination": "/session", "Type": "volume", "Name": transport.spec.session_volume},
-                   {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": transport.spec.socket_path}],
+        "State": {"Running": False}, "HostConfig": {"RestartPolicy": {"Name": "no"}, "Mounts": [
+            {"Target": "/workspace", "Type": "volume", "Source": transport.spec.workspace_volume},
+            {"Target": "/session", "Type": "volume", "Source": transport.spec.session_volume},
+            {"Target": "/run/fanout/broker.sock", "Type": "bind", "Source": transport.spec.socket_path, "ReadOnly": True}]},
+        "Mounts": [{"Destination": "/workspace", "Type": "volume", "Name": transport.spec.workspace_volume, "RW": True},
+                   {"Destination": "/session", "Type": "volume", "Name": transport.spec.session_volume, "RW": True},
+                   {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": transport.spec.socket_path, "RW": False}],
     }]
     with ArtifactStore(controller.root / "quarantine" / "runtime-proofs") as proof_store:
         raw_ref = proof_store.write_json(f"stopped/{transport.handle.container_id}.json", inspect)
@@ -977,10 +1628,13 @@ def test_coordinator_fences_only_authenticated_stop_before_resume(seat, changed)
     controller, request, transport, admission, _, _, _, _, _, _ = seat
     spec, handle = transport.spec, transport.handle
     inspect = [{"Id": handle.container_id, "Config": {"Labels": ContainerLauncher._labels(spec), "Image": spec.image_digest},
-        "State": {"Running": False}, "HostConfig": {"RestartPolicy": {"Name": "no"}}, "Mounts": [
-        {"Destination": "/workspace", "Type": "volume", "Name": spec.workspace_volume},
-        {"Destination": "/session", "Type": "volume", "Name": spec.session_volume},
-        {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path}]}]
+        "State": {"Running": False}, "HostConfig": {"RestartPolicy": {"Name": "no"}, "Mounts": [
+            {"Target": "/workspace", "Type": "volume", "Source": spec.workspace_volume},
+            {"Target": "/session", "Type": "volume", "Source": spec.session_volume},
+            {"Target": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path, "ReadOnly": True}]}, "Mounts": [
+        {"Destination": "/workspace", "Type": "volume", "Name": spec.workspace_volume, "RW": True},
+        {"Destination": "/session", "Type": "volume", "Name": spec.session_volume, "RW": True},
+        {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path, "RW": False}]}]
     with ArtifactStore(controller.root / "quarantine/runtime-proofs") as store:
         raw = store.write_json(f"stopped/{handle.container_id}.json", inspect)
     transport.stop_evidence = write_evidence(controller, "container-seat-stopped", {

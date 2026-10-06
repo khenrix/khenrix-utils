@@ -12,7 +12,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator
 
@@ -38,6 +38,7 @@ _MATERIAL_CATEGORY = "container-input-material"
 _GRANT_CATEGORY = "container-input-grant"
 _RECEIPT_CATEGORY = "container-input-transfer"
 _EXPORT_CATEGORY = "container-candidate-export"
+_HANDOFF_CATEGORY = "quality-container-input-handoff"
 _JOURNAL_SCHEMA = "fanout-input-claim-v1"
 _MAGIC = b"FANOUT-XFER-1\n"
 _MAX_MANIFEST_WIRE = MAX_MANIFEST + 4 * ((MAX_MANIFEST + MAX_FRAME - 1) // MAX_FRAME)
@@ -80,6 +81,275 @@ class InputSourceGrant:
     evidence_name: str
     evidence_digest: str
     admission: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class QualityProvisioning:
+    store_root: Path
+    allocation: tuple[str, str]
+    bindings: dict
+    role: str
+    phase: str
+    condition: str
+    catalog: dict | None = None
+    backend_attachment: tuple[str, str] | None = None
+
+
+def _quality_context(value):
+    if (type(value) is not QualityProvisioning or type(value.store_root) is not type(Path())
+            or type(value.allocation) is not tuple or len(value.allocation) != 2
+            or not _sha(value.allocation[1]) or value.allocation[0] != value.allocation[1] + ".json"
+            or type(value.bindings) is not dict
+            or set(value.bindings) != {"campaign", "casebook", "source", "projection", "profile", "inputs"}
+            or any(not _sha(item) for item in value.bindings.values())
+            or any(type(item) is not str or not 1 <= len(item) <= 64
+                   for item in (value.role, value.phase, value.condition))
+            or value.catalog is not None and type(value.catalog) is not dict
+            or value.backend_attachment is not None and (
+                type(value.backend_attachment) is not tuple or len(value.backend_attachment) != 2
+                or not _sha(value.backend_attachment[1])
+                or value.backend_attachment[0] != value.backend_attachment[1] + ".json")):
+        raise ProviderRequestError("quality provisioning context is invalid")
+    result = {"store_root": str(value.store_root), "allocation": list(value.allocation),
+            "bindings": value.bindings, "role": value.role, "phase": value.phase,
+            "condition": value.condition, "catalog": value.catalog}
+    if value.backend_attachment is not None:
+        result["backend_attachment"] = list(value.backend_attachment)
+    return result
+
+
+def _registered_quality_row(controller, request, context, permit, permit_id, epoch):
+    from . import diagnostic
+    from .container_certification import _read_owned_json
+    from .container_source import runtime_source_digest
+    from .providers import ProviderRequest, ExecutorProfile
+    try:
+        _quality_context(context)
+        if (type(epoch) is not int or epoch < 1 or not _sha(permit_id)
+                or type(request) is not ProviderRequest or type(request.profile) is not ExecutorProfile
+                or len(request.prompt_bytes) > 1024 * 1024
+                or request.execution_class != "read-only" or request.resume is not False
+                or request.retries != 0 or permit.route != "initial"
+                or context.phase != "initial" or context.bindings["source"] != runtime_source_digest()
+                or context.bindings["inputs"] != request.inputs_digest
+                or any(getattr(request, key) is not None for key in
+                       ("native_boundary", "native_controller", "native_verification",
+                        "container_boundary", "canary_capture"))
+                or request.certificate_roots != ()
+                or any(getattr(permit, key) != getattr(request, key) for key in
+                       ("run_id", "task_id", "target_id", "seat_id", "inputs_digest", "session_id"))
+                or permit.provider != request.executor_id or permit.model != request.profile.requested_model
+                or permit.upstream_route_digest is None):
+            raise ValueError("initial request")
+        with ArtifactStore.open_existing(context.store_root) as store:
+            allocation = diagnostic.reopen_quality_allocation(controller, store,
+                context.allocation, bindings=context.bindings)
+            rows = [row for row in allocation["rows"] if
+                    (row["role"], row["phase"], row["condition"], row["epoch"]) ==
+                    (context.role, context.phase, context.condition, epoch)]
+            if (len(rows) != 1 or rows[0]["blocker"] is not None or rows[0]["initial"] is not None
+                    or rows[0]["profile"] != request.profile.digest
+                    or rows[0]["process_seconds"] != request.timeout
+                    or rows[0]["catalog"] != (None if context.catalog is None else context.catalog["projected"]["digest"])):
+                raise ValueError("allocated row")
+            if request.executor_id == "codex":
+                diagnostic._reopen_quality_catalog(store, context.catalog)
+            elif context.catalog is not None:
+                raise ValueError("unexpected catalog")
+            claim = {"allocation": context.allocation[1], "row": rows[0]}
+            digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+            actual, _ = _read_owned_json(controller_directory(controller, "locks") / f"quality-row-{digest}")
+            pointer, _ = _read_owned_json(controller_directory(controller, "locks") / f"quality-registration-{digest}")
+            if set(pointer) != {"authority"}:
+                raise ValueError("registration pointer")
+            registration = read_evidence(controller, "quality-permit-registration", *pointer["authority"])
+            expected = {**claim, "permit_id": permit_id, "epoch": epoch,
+                        "permit": asdict(permit), "initial_receipt": None}
+            if context.backend_attachment is not None:
+                expected["backend_attachment"] = list(context.backend_attachment)
+            if (canonical_json(actual) != canonical_json(claim)
+                    or canonical_json(registration) != canonical_json(expected)
+                    or asdict(diagnostic._quality_resolved_permit(controller, store,
+                        context.allocation, allocation, rows[0], None,
+                        backend_attachment=context.backend_attachment)) != asdict(permit)):
+                raise ValueError("consumed registration")
+        return list(pointer["authority"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArtifactError, LifecycleError) as error:
+        raise ProviderRequestError("quality provisioning allocation or request differs") from error
+
+
+def _quality_zero(controller, request, admission):
+    from .container_boundary import SessionStore
+    from .container_broker import PermitLedger, _digest
+    if (type(admission.ledger) is not PermitLedger or admission.ledger.controller is not controller
+            or admission.ledger.root != controller_directory(controller, "locks") / "spend"
+            or type(admission.session_store) is not SessionStore
+            or admission.session_store.controller is not controller
+            or admission.session_store.identity !=
+               (request.run_id, request.task_id, request.target_id, request.seat_id)
+            or admission.session_store.volume != private_volume_names(
+                request.run_id, request.task_id, request.target_id, request.seat_id)[1]):
+        raise ProviderRequestError("quality provisioning ledger or session association differs")
+    with admission.ledger._locked() as state:
+        entry = state["permits"].get(admission.permit_id)
+        requests = [key for key, value in state["requests"].items()
+                    if value["permit_id"] == admission.permit_id]
+        if (not isinstance(entry, dict) or entry["permit_digest"] != _digest(admission.broker_permit)
+                or entry["epoch"] != admission.epoch or entry["fenced"] is not False
+                or any(entry[key] != 0 for key in
+                       ("used", "attempts", "auxiliary_attempts", "auxiliary_refusals"))
+                or requests):
+            raise ProviderRequestError("quality provisioning requires zero permit activity")
+        observed = {key: entry[key] for key in
+                    ("used", "attempts", "auxiliary_attempts", "auxiliary_refusals")}
+        observed["requests"] = requests
+    def empty(state):
+        if state["bindings"] or state["turns"]:
+            raise ProviderRequestError("quality provisioning requires an empty session store")
+        return {"bindings": dict(state["bindings"]), "turns": dict(state["turns"])}, False
+    observed.update(admission.session_store._update(empty))
+    return observed
+
+
+def _quality_provisioning_association(controller, request, admission):
+    from .container_boundary import ContainerAdmission
+    if type(admission) is not ContainerAdmission:
+        raise ProviderRequestError("quality provisioning admission type differs")
+    registration = _registered_quality_row(controller, request, admission.quality_provisioning,
+        admission.broker_permit, admission.permit_id, admission.epoch)
+    _quality_zero(controller, request, admission)
+    return registration
+
+
+_ZERO_ACTIVITY = {"used": 0, "attempts": 0, "auxiliary_attempts": 0,
+                  "auxiliary_refusals": 0, "requests": [], "bindings": {}, "turns": {}}
+
+
+def _handoff_pointer(controller, identity):
+    digest = hashlib.sha256(canonical_json(asdict(identity))).hexdigest()
+    return controller_directory(controller, "locks") / f"quality-input-handoff-{digest}"
+
+
+def _reopen_quality_handoff_preparation(controller, request, proof):
+    """Authenticate immutable import/stop facts, not current turn authority."""
+    from .container_certification import _read_owned_json
+    from .container_runtime import ContainerLauncher, _json_one
+    try:
+        value = read_evidence(controller, _HANDOFF_CATEGORY, *proof)
+        if (set(value) != {"schema", "request_digest", "registration", "input_receipt",
+                          "provisioning_spec", "model_spec", "stop", "zero_activity"}
+                or value["schema"] != "quality-container-handoff-preparation-v1"
+                or canonical_json(value["zero_activity"]) != canonical_json(_ZERO_ACTIVITY)
+                or value["request_digest"] != admitted_request_digest(request)):
+            raise ValueError("handoff preparation")
+        pointer, _ = _read_owned_json(_handoff_pointer(controller, _identity(request)))
+        if pointer != {"preparation": list(proof)}:
+            raise ValueError("handoff pointer")
+        receipt = _completed_input_receipt(controller, request,
+            private_volume_names(request.run_id, request.task_id, request.target_id, request.seat_id)[0])
+        if value["input_receipt"] != [receipt.evidence_name, receipt.evidence_digest]:
+            raise ValueError("completed import")
+        grant = read_evidence(controller, _GRANT_CATEGORY,
+                              receipt.grant_evidence_name, receipt.grant_evidence_digest)
+        raw = grant["quality_provisioning"]
+        original_fields = set(QualityProvisioning.__dataclass_fields__) - {"backend_attachment"}
+        if set(raw) not in (original_fields, original_fields | {"backend_attachment"}):
+            raise ValueError("quality source context")
+        backend = None
+        if "backend_attachment" in raw:
+            if type(raw["backend_attachment"]) is not list or len(raw["backend_attachment"]) != 2:
+                raise ValueError("quality source backend pointer")
+            backend = tuple(raw["backend_attachment"])
+        context = QualityProvisioning(Path(raw["store_root"]), tuple(raw["allocation"]),
+            raw["bindings"], raw["role"], raw["phase"], raw["condition"], raw["catalog"], backend)
+        permit = _decode_original_permit(controller, grant)
+        if value["registration"] != _registered_quality_row(controller, request, context,
+                permit, grant["permit_id"], grant["permit_epoch"]):
+            raise ValueError("original registration")
+        spec = ContainerSpec(**value["provisioning_spec"])
+        model_spec = ContainerSpec(**value["model_spec"])
+        ContainerLauncher._validate_spec(spec)
+        ContainerLauncher._validate_spec(model_spec)
+        if (spec.workspace_readonly is not False or model_spec.workspace_readonly is not True
+                or model_spec != replace(spec, workspace_readonly=True)
+                or canonical_json(value["provisioning_spec"]) != canonical_json(asdict(spec))
+                or canonical_json(value["model_spec"]) != canonical_json(asdict(model_spec))):
+            raise ValueError("handoff specs")
+        origin = read_evidence(controller, "container-seat-launch",
+                               receipt.handle_evidence_name, receipt.handle_evidence_digest)
+        decode_launch_record(origin, spec, receipt.original_handle, recover=False)
+        reopen_stopped_seat(controller, value["stop"], spec=spec, handle=receipt.original_handle)
+        stopped = read_evidence(controller, "container-seat-stopped", *value["stop"])
+        if (stopped["launch_evidence_name"], stopped["launch_evidence_digest"]) != (
+                receipt.handle_evidence_name, receipt.handle_evidence_digest):
+            raise ValueError("original stopped launch")
+        with ArtifactStore.open_existing(controller_directory(controller, "quarantine") / "runtime-proofs") as store:
+            item = _json_one(store.read_bytes(ArtifactRef(**stopped["raw_inspect"])), "handoff stopped inspect")
+        observed = ContainerLauncher._stopped_observation(receipt.original_handle.container_id, spec, item)
+        return value, receipt, grant, spec, model_spec, origin, (receipt.original_handle.container_id, observed)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArtifactError, LifecycleError) as error:
+        raise ProviderRequestError("quality container handoff authentication failed") from error
+
+
+def reopen_quality_handoff_history(controller, request, proof):
+    """Read completed handoff provenance after later model activity; grants no launch."""
+    try:
+        completed = read_evidence(controller, _HANDOFF_CATEGORY, *proof)
+        if set(completed) != {"schema", "preparation", "model_launch"} or completed["schema"] != "quality-container-handoff-v1":
+            raise ValueError("completed handoff")
+        value, receipt, grant, spec, model_spec, origin, stopped = _reopen_quality_handoff_preparation(
+            controller, request, completed["preparation"])
+        model = read_evidence(controller, "container-seat-launch", *completed["model_launch"])
+        handle = ContainerHandle(**model["handle"])
+        association = decode_launch_record(model, model_spec, handle, recover=False, handoff=True)
+        if (model["original_handoff"] != completed["preparation"]
+                or association.predecessors != _quality_handoff_stopped_scope(controller, model, spec, receipt.original_handle, stopped)
+                or model["volumes"] != origin["volumes"]):
+            raise ValueError("handoff model launch")
+        return value
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ArtifactError, LifecycleError) as error:
+        raise ProviderRequestError("quality container completed handoff differs") from error
+
+
+def reopen_quality_handoff(controller, request, proof, *, ledger, sessions):
+    """Authenticate an unused handoff against current zero ledger/empty sessions."""
+    from .container_boundary import ContainerAdmission
+    value = reopen_quality_handoff_history(controller, request, proof)
+    receipt = _completed_input_receipt(controller, request,
+        private_volume_names(request.run_id, request.task_id, request.target_id, request.seat_id)[0])
+    grant = read_evidence(controller, _GRANT_CATEGORY, receipt.grant_evidence_name, receipt.grant_evidence_digest)
+    _quality_zero(controller, request, ContainerAdmission(_decode_original_permit(controller, grant),
+        grant["permit_id"], grant["permit_epoch"], ledger, session_store=sessions))
+    return value
+
+
+def _prepare_quality_handoff(controller, request, transport, admission):
+    if getattr(transport, "_quarantined", False):
+        raise ProviderRequestError("quality provisioning transport is already stopped")
+    _preflight(controller, request, transport, admission)
+    registration = _quality_provisioning_association(controller, request, admission)
+    validate_input_receipt(controller, request, admission.input_receipt, transport.spec.workspace_volume)
+    transport._close(retain_control=True)
+    _quality_provisioning_association(controller, request, admission)
+    observed = _quality_zero(controller, request, admission)
+    proof = write_evidence(controller, _HANDOFF_CATEGORY, {
+        "schema": "quality-container-handoff-preparation-v1",
+        "request_digest": admitted_request_digest(request), "registration": registration,
+        "input_receipt": [admission.input_receipt.evidence_name, admission.input_receipt.evidence_digest],
+        "provisioning_spec": asdict(transport.spec),
+        "model_spec": asdict(replace(transport.spec, workspace_readonly=True)),
+        "stop": list(transport.stop_evidence), "zero_activity": observed})
+    try:
+        fd = os.open(_handoff_pointer(controller, _identity(request)),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError as error:
+        raise ProviderRequestError("quality input handoff already claimed") from error
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(canonical_json({"preparation": list(proof)}))
+        handle.flush()
+        os.fsync(handle.fileno())
+    _reopen_quality_handoff_preparation(controller, request, proof)
+    return proof
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +555,35 @@ def _preflight(controller: LifecycleController, request, transport,
             or (handle.workspace_volume, handle.session_volume) !=
             (workspace, session)):
         raise ProviderRequestError("container transfer target or volume differs")
-    _check_association(request, admission)
+    if admission.quality_provisioning is None:
+        _check_association(request, admission)
+    else:
+        if spec.workspace_readonly is not False:
+            raise ProviderRequestError("quality provisioning workspace must be writable")
+        _quality_provisioning_association(controller, request, admission)
+        if getattr(transport, "_production_edge", False):
+            import types
+            from .container_boundary import quality_docker_runner, HostSessionLease
+            runner = transport.launcher._docker
+            try:
+                if (type(runner) is not types.FunctionType
+                        or runner.__code__ not in quality_docker_runner.__code__.co_consts
+                        or runner.controller is not controller
+                        or control.ledger is not admission.ledger
+                        or canonical_json(asdict(control.broker.permit)) != canonical_json(asdict(admission.broker_permit))
+                        or type(control._lease) is not HostSessionLease
+                        or control._lease.path != controller_directory(controller, "locks") /
+                           f"relay-{admission.permit_id}-{admission.epoch}.lock"):
+                    raise ValueError("fixed helper or retained control")
+                control._lease.require_held()
+                proof = read_evidence(controller, "quality-docker-controls", *runner.controls)
+                limits = proof["limits"]
+                quality_docker_runner(controller,
+                    allocation_digest=admission.quality_provisioning.allocation[1],
+                    max_commands=limits["max_commands"], command_seconds=limits["command_seconds"],
+                    outer_seconds=limits["outer_seconds"], original_controls=runner.controls)
+            except (OSError, ValueError, TypeError, AttributeError, KeyError, LifecycleError) as error:
+                raise ProviderRequestError("quality provisioning requires the original finite Docker helper") from error
     _authenticated_launch(controller, request, handle, admission)
     try:
         vm = transport.attest_vm()
@@ -345,6 +643,8 @@ def issue_input_source_grant(controller: LifecycleController, request,
         "permit_digest": hashlib.sha256(canonical_json(asdict(admission.broker_permit))).hexdigest(),
         "original_permit": asdict(admission.broker_permit),
     }
+    if admission.quality_provisioning is not None:
+        payload["quality_provisioning"] = _quality_context(admission.quality_provisioning)
     name, digest = write_evidence(controller, _GRANT_CATEGORY, payload)
     return InputSourceGrant(Path(source_root), identity, info.st_dev,
                             info.st_ino, material_evidence_name,
@@ -383,6 +683,9 @@ def _open_grant(controller: LifecycleController, request, transport,
             or payload.get("image_digest") != admission.image_digest
             or payload.get("cli_digest") != admission.cli_digest):
         raise ProviderRequestError("container source grant association differs")
+    if payload.get("quality_provisioning") != (None if admission.quality_provisioning is None
+                                               else _quality_context(admission.quality_provisioning)):
+        raise ProviderRequestError("quality source grant context differs")
     sealed_vm = payload.get("vm_probe")
     if not isinstance(sealed_vm, dict):
         raise ProviderRequestError("container source grant VM probe is invalid")
@@ -901,12 +1204,37 @@ def _original_permit(controller, request, grant):
         raise ProviderRequestError("container original permit authentication failed") from error
 
 
+def _quality_handoff_stopped_scope(controller, launch, original_spec, original_handle, stopped):
+    if "handoff_scope" not in launch:
+        return (stopped,)
+    from .container_coordinator import _read_lifecycle_snapshot
+    snapshot = read_evidence(controller, "container-coordinator-snapshot", *launch["handoff_scope"])
+    member = read_evidence(controller, "container-coordinator-member", *snapshot["subject"])
+    context = read_evidence(controller, "container-coordinator-context", *member["context"])
+    if context["schema_version"] != "fanout-quality-container-context-v1":
+        raise ProviderRequestError("quality handoff requires its original quality scope")
+    scope, subject = _read_lifecycle_snapshot(controller, launch["handoff_scope"],
+        spec=original_spec, handle=original_handle, context_ref=member["context"])
+    if scope.stopped.count(stopped) or (original_spec, original_handle) not in scope.active:
+        raise ProviderRequestError("quality handoff original importer scope differs")
+    return (*scope.stopped, stopped)
+
+
 def authenticate_launch_record(controller, launch, spec, handle, *, inputs_digest=None):
-    recovery = decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
+    handoff = launch.get("route") == "quality-handoff"
+    recovery = decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover", handoff=handoff)
     if recovery is None:
         return None
     try:
-        name, digest = launch["original_input"]
+        preparation = None
+        if handoff:
+            preparation = read_evidence(controller, _HANDOFF_CATEGORY, *launch["original_handoff"])
+            if (preparation.get("schema") != "quality-container-handoff-preparation-v1"
+                    or canonical_json(preparation.get("zero_activity")) != canonical_json(_ZERO_ACTIVITY)
+                    or preparation.get("model_spec") != asdict(spec)
+                    or preparation["model_spec"]["workspace_readonly"] is not True):
+                raise ValueError("handoff preparation")
+        name, digest = preparation["input_receipt"] if handoff else launch["original_input"]
         payload = read_evidence(controller, _RECEIPT_CATEGORY, name, digest)
         identity = TransferIdentity(**payload["identity"])
         receipt = InputTransferReceipt(
@@ -938,7 +1266,43 @@ def authenticate_launch_record(controller, launch, spec, handle, *, inputs_diges
             raise ValueError("original grant association")
         origin = read_evidence(controller, "container-seat-launch",
                                receipt.handle_evidence_name, receipt.handle_evidence_digest)
-        decode_launch_record(origin, spec, receipt.original_handle, recover=False)
+        quality_recovery = not handoff and spec.workspace_readonly is True and "quality_provisioning" in grant
+        if quality_recovery:
+            context = grant["quality_provisioning"]
+            fields = set(QualityProvisioning.__dataclass_fields__)
+            if (set(context) != fields or context["backend_attachment"] is None
+                    or context["phase"] != "initial" or context["condition"] != "candidate"):
+                raise ValueError("quality recovery original context")
+            from .container_certification import _read_owned_json
+            pointer, _ = _read_owned_json(_handoff_pointer(controller, identity))
+            prior = read_evidence(controller, _HANDOFF_CATEGORY, *pointer["preparation"])
+            if (prior["schema"] != "quality-container-handoff-preparation-v1"
+                    or prior["model_spec"] != asdict(spec) or prior["model_spec"]["workspace_readonly"] is not True
+                    or prior["input_receipt"] != [name, digest]
+                    or canonical_json(prior["zero_activity"]) != canonical_json(_ZERO_ACTIVITY)):
+                raise ValueError("quality recovery original handoff")
+        original_spec = replace(spec, workspace_readonly=False) if handoff or quality_recovery else spec
+        decode_launch_record(origin, original_spec, receipt.original_handle, recover=False)
+        if handoff:
+            from .container_runtime import ContainerLauncher, _json_one
+            from .container_certification import _read_owned_json
+            pointer, _ = _read_owned_json(_handoff_pointer(controller, identity))
+            if (pointer != {"preparation": launch["original_handoff"]}
+                    or preparation["provisioning_spec"] != asdict(original_spec)
+                    or preparation["provisioning_spec"]["workspace_readonly"] is not False
+                    or "quality_provisioning" not in grant):
+                raise ValueError("handoff original policy")
+            reopen_stopped_seat(controller, preparation["stop"], spec=original_spec, handle=receipt.original_handle)
+            stopped = read_evidence(controller, "container-seat-stopped", *preparation["stop"])
+            if (stopped["launch_evidence_name"], stopped["launch_evidence_digest"]) != (
+                    receipt.handle_evidence_name, receipt.handle_evidence_digest):
+                raise ValueError("handoff stopped launch")
+            with ArtifactStore.open_existing(controller_directory(controller, "quarantine") / "runtime-proofs") as store:
+                item = _json_one(store.read_bytes(ArtifactRef(**stopped["raw_inspect"])), "handoff stopped inspect")
+            observation = ContainerLauncher._stopped_observation(receipt.original_handle.container_id, original_spec, item)
+            if recovery.predecessors != _quality_handoff_stopped_scope(controller, launch, original_spec,
+                    receipt.original_handle, (receipt.original_handle.container_id, observation)):
+                raise ValueError("handoff stopped observation")
         if launch["volumes"] != origin["volumes"]:
             raise ValueError("original creation metadata")
         source = Path(grant["source_root"])
@@ -1151,9 +1515,12 @@ def reopen_candidate_export(controller: LifecycleController,
 def reopen_stopped_seat(controller, stop_evidence, *, spec, handle):
     """Reopen the existing exact stopped observation; never execute Docker."""
     from .container_runtime import ContainerLauncher
+    ContainerLauncher._validate_spec(spec)
     try:
         stopped = read_evidence(controller, "container-seat-stopped", *stop_evidence)
         if (set(stopped) != {"spec", "handle", "launch_evidence_name", "launch_evidence_digest", "raw_inspect"}
+                or not isinstance(stopped["spec"], dict)
+                or type(stopped["spec"].get("workspace_readonly")) is not bool
                 or stopped["spec"] != asdict(spec) or stopped["handle"] != asdict(handle)
                 or (spec.workspace_volume, spec.session_volume) !=
                    private_volume_names(spec.run_id, spec.task_id, spec.target_id, spec.seat_id)):
@@ -1171,17 +1538,24 @@ def reopen_stopped_seat(controller, stop_evidence, *, spec, handle):
             raise ValueError("stopped inspect")
         item = items[0]
         mounts = {entry["Destination"]: entry for entry in item["Mounts"]}
-        wanted = {"/workspace": ("volume", spec.workspace_volume),
-                  "/session": ("volume", spec.session_volume),
-                  "/run/fanout/broker.sock": ("bind", spec.socket_path)}
+        host_mounts = item["HostConfig"]["Mounts"]
+        by_target = {entry["Target"]: entry for entry in host_mounts}
+        wanted = {"/workspace": ("volume", spec.workspace_volume, not spec.workspace_readonly),
+                  "/session": ("volume", spec.session_volume, True),
+                  "/run/fanout/broker.sock": ("bind", spec.socket_path, False)}
         if (item["Id"] != handle.container_id or item["State"]["Running"] is not False
                 or item["HostConfig"]["RestartPolicy"]["Name"] != "no"
                 or item["Config"]["Image"] != spec.image_digest
                 or item["Config"]["Labels"] != ContainerLauncher._labels(spec)
                 or len(item["Mounts"]) != len(wanted) or set(mounts) != set(wanted)
+                or len(host_mounts) != len(wanted) or set(by_target) != set(wanted)
                 or any(mounts[path]["Type"] != kind or
                        mounts[path]["Name" if kind == "volume" else "Source"] != source
-                       for path, (kind, source) in wanted.items())):
+                       or mounts[path].get("RW") is not writable
+                       or by_target[path].get("Type") != kind
+                       or by_target[path].get("Source") != source
+                       or by_target[path].get("ReadOnly", False) is not (not writable)
+                       for path, (kind, source, writable) in wanted.items())):
             raise ValueError("stopped state or ownership")
     except (OSError, ValueError, TypeError, KeyError, AttributeError, ArtifactError,
             LifecycleError, TransferRejected) as error:

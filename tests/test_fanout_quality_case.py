@@ -156,6 +156,153 @@ def _guarded_dormant_quality_entry(tmp_path, monkeypatch, *, attached=True):
     return helper, module, runtime, preparation.digest, seat.agy_guard_receipt_sha256
 
 
+def test_declared_container_never_falls_back_to_native_credentials(tmp_path, monkeypatch):
+    from test_fanout_container_upstream import _route
+    helper, module, runtime, opened, value = _dormant_service(tmp_path)
+    BrokerPermit = importlib.import_module(runtime.__name__ + ".broker").BrokerPermit
+    routes = importlib.import_module(runtime.__name__ + ".container_routes")
+    route = _route("claude")
+    route = routes.RouteAdmission(**{**asdict(route), "profile": routes.RouteProfile(**asdict(route.profile))})
+    with opened:
+        service = opened.service
+        preparation = next(iter(service.preparations.values()))
+        seat = next(assigned for assigned in preparation.seats if assigned.executor_id == "claude")
+        profile, timeout = service.coordinator._selected_profile(
+            preparation.packet, seat, preparation.policy, service.inputs)
+        permit = BrokerPermit("claude", value["run_id"], value["task_id"], value["target_id"],
+            seat.seat_id, "initial", profile.requested_model, "inert-placeholder", 1,
+            1024, 2048, 8192, inputs_digest=value["inputs_digest"],
+            session_id="11111111-1111-4111-8111-111111111111")
+        row = {"role": "candidate-seat", "phase": "initial", "condition": "candidate",
+            "permit": asdict(permit), "epoch": 1, "profile": profile.digest,
+            "process_seconds": timeout, "outer_seconds": timeout + 60, "initial": None,
+            "catalog": None, "blocker": None}
+        request = module._quality_case_request(service, value, preparation, seat, row)
+        value.update(schema="fanout-quality-installed-case-attachment-v2",
+                     backend="container-read-only", container={},
+                     allocation=["a" * 64 + ".json", "a" * 64])
+        runner = module.QualityCaseRunner(module.QualityCaseAttachment("a" * 64 + ".json", "a" * 64),
+            helper=helper.__file__, runtime_digest=helper._runtime_digest(runtime))
+        runner._service = service
+        monkeypatch.setattr(module, "HostCredentialSource",
+            lambda *_: pytest.fail("declared container fell back to native credential construction"))
+        with pytest.raises(module.ProviderRequestError, match="container"):
+            runner._turn(request, value, row, {"claude": route}, seat)
+        assert not service.journal.state.seat_phases
+        assert not (service.lifecycle_controller.root / "locks/spend").exists()
+
+
+def test_container_owner_initial_uses_a_fresh_declared_identity_after_worker_settles(tmp_path):
+    _, module, runtime, opened, value = _dormant_service(tmp_path)
+    SessionStore = importlib.import_module(runtime.__name__ + ".container_boundary").SessionStore
+    private_volume_names = importlib.import_module(runtime.__name__ + ".container_runtime").private_volume_names
+    with opened:
+        service = opened.service
+        preparation = next(iter(service.preparations.values()))
+        seat = next(seat for seat in preparation.seats if seat.executor_id == "claude")
+        value.update(schema="fanout-quality-installed-case-attachment-v2",
+                     backend="container-read-only")
+        question = service.artifacts.write_json("quality/owner-question.json", {"prompt": "Original question"})
+        value["case_input"] = asdict(question)
+        sources = {name: service.artifacts.write_bytes(f"quality/{name}.txt", answer)
+                   for name, answer in (("codex", b"First final answer"), ("agy", b"Second final answer"))}
+        row = {"role": "owner-synthesis", "phase": "initial",
+               "permit": {"session_id": "36c75d5f-564e-4c3c-bbf9-03189455fc87",
+                          "seat_id": seat.seat_id + "-quality-owner"}}
+        request = module._quality_case_request(service, value, preparation, seat, row, sources=sources)
+        assert request.seat_id == seat.seat_id + "-quality-owner"
+        assert request.cwd == seat.workspace_verification.workspace.root
+        assert request.staged_skill_admission is seat.admission
+        identity = (value["run_id"], value["task_id"], value["target_id"])
+        worker_volume = private_volume_names(*identity, seat.seat_id)[1]
+        worker = SessionStore(service.lifecycle_controller, *identity, seat.seat_id, volume=worker_volume)
+        worker.reserve("claude", "1" * 64, initial=True, upstream_route_digest="a" * 64)
+        worker.settle("claude", "worker-session", "1" * 64, initial=True, upstream_route_digest="a" * 64)
+        owner_volume = private_volume_names(*identity, request.seat_id)[1]
+        owner = SessionStore(service.lifecycle_controller, *identity, request.seat_id, volume=owner_volume)
+        owner.reserve("claude", "2" * 64, initial=True, upstream_route_digest="a" * 64,
+                      initial_session_id=request.session_id)
+        owner.settle("claude", request.session_id, "2" * 64, initial=True, upstream_route_digest="a" * 64)
+        assert worker.read("claude").session_id == "worker-session"
+        assert owner.read("claude").session_id == request.session_id
+        assert owner_volume != worker_volume
+        prompt = json.loads(request.prompt_bytes)
+        assert prompt["question"] == "Original question"
+        assert {item["answer"] for item in prompt["sources"]} == {"First final answer", "Second final answer"}
+
+
+@pytest.mark.parametrize("tamper", ["legacy-extra", "v2-without-backend", "unknown-backend",
+    "missing-guest", "bool-digest", "extra-container", "foreign-controls", "unpinned-image"])
+def test_quality_backend_rejects_undeclared_or_substituted_container_projection(tamper):
+    from shared.lib.fanout import quality_case as module
+    value = dict.fromkeys(module._FIELDS)
+    value.update(schema="fanout-quality-installed-case-attachment-v2", backend="container-read-only",
+        run_id="run", task_id="task", target_id="target", container={
+            "image_digest": "fanout-seat@sha256:" + "a" * 64,
+            "cli_digests": {provider: "b" * 64 for provider in ("claude", "codex", "agy")},
+            "docker_controls": ["c" * 64 + ".json", "c" * 64]})
+    assert module._quality_backend(value) == "container-read-only"
+    if tamper == "legacy-extra":
+        value["schema"] = "fanout-quality-installed-case-attachment-v1"
+    elif tamper == "v2-without-backend":
+        del value["backend"]
+    elif tamper == "unknown-backend":
+        value["backend"] = "automatic"
+    elif tamper == "missing-guest":
+        del value["container"]["cli_digests"]["agy"]
+    elif tamper == "bool-digest":
+        value["container"]["cli_digests"]["codex"] = True
+    elif tamper == "extra-container":
+        value["container"]["environment"] = {}
+    elif tamper == "foreign-controls":
+        value["container"]["docker_controls"][0] = "d" * 64 + ".json"
+    else:
+        value["container"]["image_digest"] = "fanout-seat:latest"
+    with pytest.raises(module.ProviderRequestError):
+        module._quality_backend(value)
+
+
+def test_quality_material_refuses_an_injected_authority_before_source_staging(tmp_path):
+    _, _, runtime, opened, _ = _dormant_service(tmp_path)
+    material = importlib.import_module(runtime.__name__ + ".container_coordinator")
+    with opened:
+        service = opened.service
+        preparation = next(iter(service.preparations.values()))
+        with pytest.raises(runtime.CollaborationValidationError):
+            material.stage_input_material(service.coordinator, preparation.packet,
+                preparation.seats[0], None, None, quality=object())
+        assert not list((service.lifecycle_controller.root / "quarantine").glob("input-*"))
+
+
+@pytest.mark.parametrize("operation", ["reserve_registered", "complete_handoff"])
+def test_quality_sibling_scope_refuses_missing_registration_without_adding_a_permit(tmp_path, operation):
+    _, _, runtime, opened, value = _dormant_service(tmp_path)
+    component = importlib.import_module(runtime.__name__ + ".container_coordinator")
+    boundary = importlib.import_module(runtime.__name__ + ".container_boundary")
+    container = importlib.import_module(runtime.__name__ + ".container_runtime")
+    broker = importlib.import_module(runtime.__name__ + ".broker")
+    errors = importlib.import_module(runtime.__name__ + ".errors")
+    with opened:
+        service = opened.service
+        scope = component._coordinator_lifecycle(service.coordinator)
+        ledger = boundary.PermitLedger(service.lifecycle_controller.root / "locks/spend", service.lifecycle_controller)
+        permit = broker.BrokerPermit("codex", value["run_id"], value["task_id"], value["target_id"],
+            "codex-seat", "initial", "gpt-6.1-sol", "fixed-inert-placeholder", 1, 1024, 1024, 32,
+            inputs_digest=value["inputs_digest"])
+        spec = container.ContainerSpec(value["run_id"], value["task_id"], value["target_id"], "codex-seat",
+            "fanout-seat@sha256:" + "a" * 64,
+            *container.private_volume_names(value["run_id"], value["task_id"], value["target_id"], "codex-seat"),
+            container.seat_socket_path("codex-seat"), "b" * 64)
+        with pytest.raises((ValueError, errors.LifecycleError, runtime.CollaborationDurabilityError)):
+            if operation == "reserve_registered":
+                scope.reserve_registered(("c" * 64 + ".json", "c" * 64), spec, ledger, permit, 1)
+            else:
+                scope.complete_handoff(None, None, None, ("c" * 64 + ".json", "c" * 64))
+        assert scope.pending == scope.active == scope.completed == {}
+        with ledger._locked() as state:
+            assert state["permits"] == state["requests"] == {}
+
+
 def test_closed_quality_entry_restores_actual_agy_guard_before_coordinator_dispatch(tmp_path, monkeypatch):
     helper, module, runtime, preparation_digest, guard_digest = _guarded_dormant_quality_entry(tmp_path, monkeypatch)
     real_bind = module.QualityCaseRunner.bind
@@ -292,20 +439,25 @@ def test_quality_question_join_uses_actual_planner_source_not_generic_task_objec
         assert not opened.journal.state.seat_phases
 
 
-def _full_frozen_allocation(tmp_path, *, work_tamper=None):
+def _full_frozen_allocation(tmp_path, *, work_tamper=None, bindings=None, owner_seat=None, route_digest=None):
     from shared.lib import fanout
     from shared.lib.fanout import diagnostic
     from shared.lib.fanout.broker import BrokerPermit
     controller = fanout.create_lifecycle_controller(tmp_path / "controller")
     store = fanout.ArtifactStore(tmp_path / "artifacts")
-    bindings = {key: "a" * 64 for key in ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+    if bindings is None:
+        bindings = {key: "a" * 64 for key in ("campaign", "casebook", "source", "projection", "profile", "inputs")}
     rows = []
     for index, provider in enumerate(("claude", "codex", "agy")):
         profile = fanout.ProviderRegistry.default().select(provider, "read-only", "standard")
         permit = BrokerPermit(provider, "run", "question", "quality-normal-01", provider + "-seat",
             "initial", profile.requested_model, "synthetic-placeholder", 1, 1024, 2048, 8192,
             inputs_digest="a" * 64,
-            session_id="fd6f840b-4b79-4fd2-91d0-14d3d8fba655" if provider == "claude" else None)
+            session_id="fd6f840b-4b79-4fd2-91d0-14d3d8fba655" if provider == "claude" else None,
+            upstream_route_digest=route_digest,
+            upstream_origin="https://provider.example.test" if route_digest else None,
+            upstream_model=profile.requested_model if route_digest else None,
+            upstream_path="/v1/provider" if route_digest else None)
         original = {"role": "candidate-seat", "phase": "initial", "condition": "candidate",
             "epoch": 2 * index + 1, "permit": asdict(permit), "blocker": None, "initial": None,
             "profile": profile.digest, "catalog": "b" * 64 if provider == "codex" else None,
@@ -314,6 +466,8 @@ def _full_frozen_allocation(tmp_path, *, work_tamper=None):
             "initial": diagnostic.quality_row_identity(original),
             "permit": {**asdict(permit), "route": "resume"}}))
     rows.append({**rows[0], "role": "owner-synthesis", "epoch": 7})
+    if owner_seat is not None:
+        rows[6] = {**rows[6], "permit": {**rows[6]["permit"], "seat_id": owner_seat}}
     rows.append({**rows[2], "role": "candidate-grade", "phase": "grade", "epoch": 8,
         "permit": {**rows[2]["permit"], "task_id": "grade-normal-01", "seat_id": "grading-seat"}})
     if work_tamper == "extra-seat":
@@ -328,6 +482,132 @@ def _full_frozen_allocation(tmp_path, *, work_tamper=None):
     ref = store.write_json("full-original-allocation.json", document)
     authority = diagnostic.seal_quality_allocation(controller, store, ref, bindings=bindings)
     return diagnostic, controller, store, bindings, ref, authority, document
+
+
+def _declared_container_backend(tmp_path, *, shared_owner=False, route_digest=None):
+    from shared.lib.fanout import quality_case as module
+    from shared.lib.fanout.artifacts import canonical_json
+    from shared.lib.fanout.container_source import runtime_source_digest
+    from shared.lib.fanout.providers import ProviderRegistry
+    value = dict.fromkeys(module._FIELDS)
+    value.update(schema="fanout-quality-installed-case-attachment-v2", backend="container-read-only",
+        run_id="run", task_id="question", target_id="quality-normal-01", inputs_digest="a" * 64,
+        condition="candidate", execution_class="read-only", case_input={"original": "question"},
+        catalog={"original": "catalog"}, container={
+            "image_digest": "fanout-seat@sha256:" + "b" * 64,
+            "cli_digests": {provider: "c" * 64 for provider in ("claude", "codex", "agy")},
+            "docker_controls": ["d" * 64 + ".json", "d" * 64]},
+        seats={provider: {"seat_id": provider + "-seat", "workspace_digest": "e" * 64,
+            "profile_digest": ProviderRegistry.default().select(provider, "read-only", "standard").digest,
+            "route_id": "local-fixture"} for provider in ("claude", "codex", "agy")})
+    projection = {"case_input": {"original": "question"}, "catalog": {"original": "catalog"},
+        "backend": {"kind": "container-read-only", "image_digest": "fanout-seat@sha256:" + "b" * 64,
+                    "cli_digests": {provider: "c" * 64 for provider in ("claude", "codex", "agy")}}}
+    bindings = {key: "a" * 64 for key in ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+    bindings.update(source=runtime_source_digest(), projection=hashlib.sha256(canonical_json(projection)).hexdigest())
+    _, controller, store, _, _, authority, allocation = _full_frozen_allocation(tmp_path,
+        bindings=bindings, owner_seat="claude-seat" if shared_owner else "claude-seat-quality-owner",
+        route_digest=route_digest)
+    value.update(allocation=list(authority), bindings=bindings)
+    return module, controller, store, authority, allocation, value, bindings
+
+
+@pytest.mark.parametrize("tamper", [None, "epoch-type", "request-controls", "image", "raw-prompt", "extra-field"])
+def test_quality_sibling_scope_uses_the_registered_row_epoch_not_worker_round_formula(tmp_path, tamper):
+    from shared.lib.fanout import container_coordinator as component, diagnostic
+    from shared.lib.fanout.artifacts import canonical_json
+    from shared.lib.fanout.container_boundary import quality_docker_runner
+    from shared.lib.fanout.container_broker import PermitLedger
+    from shared.lib.fanout.container_runtime import ContainerSpec, private_volume_names, seat_socket_path
+    from shared.lib.fanout.container_source import release_source_binding
+    from shared.lib.fanout.controller import read_evidence, write_evidence
+    from shared.lib.fanout.providers import ProviderRequest, ProviderRegistry
+    module, controller, store, authority, allocation, value, bindings = _declared_container_backend(
+        tmp_path, route_digest="f" * 64)
+    with store:
+        row = allocation["rows"][2]
+        permit = diagnostic._quality_row_permit(row)
+        controls = quality_docker_runner(controller, allocation_digest=authority[1],
+            max_commands=32, command_seconds=1, outer_seconds=60)
+        value["container"]["docker_controls"] = list(controls.controls)
+        attachment = write_evidence(controller, "quality-installed-case-attachment", value)
+        ledger = PermitLedger(controller.root / "locks/spend", controller)
+        permit_id = diagnostic.register_quality_permit(controller, store, authority, ledger,
+            role=row["role"], phase=row["phase"], condition=row["condition"], permit=permit,
+            epoch=3, bindings=bindings, backend_attachment=attachment)
+        claim = {"allocation": authority[1], "row": row}
+        claim_digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+        registration = json.loads((controller.root / "locks" / ("quality-registration-" + claim_digest)).read_bytes())["authority"]
+        request = ProviderRequest("codex", b"actual original scoped prompt", cwd=tmp_path,
+            profile=ProviderRegistry.default().select("codex", "read-only", "standard"), timeout=30,
+            run_id="run", task_id="question", target_id="quality-normal-01", seat_id="codex-seat",
+            inputs_digest="a" * 64, artifact_store=store, artifact_prefix="quality/scope")
+        retained = diagnostic._retain_quality_request(store, request, "quality/scope")
+        descriptor = store.read_json(retained)
+        source = release_source_binding().to_dict()
+        context = {"schema_version": "fanout-quality-container-context-v1",
+            "run_id": "run", "task_id": "question", "target_id": "quality-normal-01", "seat_id": "codex-seat",
+            "inputs_digest": "a" * 64, "release_source_binding": source,
+            "request": descriptor["controls"], "request_material": asdict(retained),
+            "request_digest": module.admitted_request_digest(request), "task_packet_sha256": "a" * 64,
+            "backend_attachment": list(attachment), "allocation": list(authority), "bindings": bindings,
+            "registration": registration, "store": str(store.root), "row": row}
+        spec = ContainerSpec("run", "question", "quality-normal-01", "codex-seat",
+            "fanout-seat@sha256:" + "b" * 64,
+            *private_volume_names("run", "question", "quality-normal-01", "codex-seat"),
+            seat_socket_path("codex-seat"), "c" * 64)
+        if tamper == "epoch-type":
+            context["row"] = {**row, "epoch": 3.0}
+        elif tamper == "request-controls":
+            context["request"] = {**context["request"], "timeout": True}
+        elif tamper == "image":
+            spec = replace(spec, image_digest="fanout-seat@sha256:" + "e" * 64)
+        elif tamper == "raw-prompt":
+            (store.root / descriptor["prompt"]["path"]).write_bytes(b"substituted original question")
+        elif tamper == "extra-field":
+            context["allow_unknown_peers"] = True
+        proof = write_evidence(controller, "container-coordinator-context", context)
+        if tamper is None:
+            decoded = component._scope_context(controller, proof, spec, "a" * 64, source, permit)
+            assert decoded == context
+            assert component._scope_epoch(decoded) == 3
+        else:
+            from shared.lib.fanout.errors import ArtifactError
+            with pytest.raises((ValueError, module.ProviderRequestError, ArtifactError)):
+                component._scope_context(controller, proof, spec, "a" * 64, source, permit)
+        assert ledger.attempt_counts(permit_id, 3) == (0, 0)
+        assert ledger.request_records(permit_id, 3) == ()
+        assert read_evidence(controller, "quality-docker-controls", *controls.controls)["limits"]["max_commands"] == 32
+
+
+@pytest.mark.parametrize("tamper", [None, "backend", "image", "guest", "source", "row", "shared-owner"])
+def test_container_backend_reader_joins_frozen_projection_without_consuming_a_row(tmp_path, tamper):
+    module, controller, store, authority, allocation, value, bindings = _declared_container_backend(
+        tmp_path, shared_owner=tamper == "shared-owner")
+    with store:
+        row = allocation["rows"][6]
+        if tamper == "backend":
+            value["backend"] = "native"
+        elif tamper == "image":
+            value["container"]["image_digest"] = "fanout-seat@sha256:" + "f" * 64
+        elif tamper == "guest":
+            value["container"]["cli_digests"]["agy"] = "f" * 64
+        elif tamper == "source":
+            value["bindings"] = {**bindings, "source": "f" * 64}
+        elif tamper == "row":
+            row = {**row, "epoch": 9}
+        pointer = module.write_evidence(controller, "quality-installed-case-attachment", value)
+        frozen = (controller.root / "locks/quality-allocation.json").read_bytes()
+        if tamper is None:
+            assert module._read_quality_backend_attachment(controller, store, pointer,
+                authority=authority, bindings=bindings, row=row) == value
+        else:
+            with pytest.raises(module.ProviderRequestError):
+                module._read_quality_backend_attachment(controller, store, pointer,
+                    authority=authority, bindings=bindings, row=row)
+        assert (controller.root / "locks/quality-allocation.json").read_bytes() == frozen
+        assert not list((controller.root / "locks").glob("quality-row-*"))
+        assert not (controller.root / "locks/spend").exists()
 
 
 def test_quality_work_rows_accept_full_frozen_allocation_without_consuming_grade(tmp_path):

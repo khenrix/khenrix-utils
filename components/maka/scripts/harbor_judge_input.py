@@ -127,6 +127,26 @@ def main(arguments: list[str]) -> int:
             sys.stdout.buffer.write(read_probe(arguments[1]))
         elif len(arguments) == 2 and arguments[0] == "deliver":
             deliver(arguments[1], decoded_input())
+        elif arguments and arguments[0].startswith("capture-native-"):
+            from harbor_judge_capture import (
+                CaptureRejected, native_cleanup, native_context, native_emit,
+                native_receive, publish_sealed,
+            )
+            try:
+                if len(arguments) == 10 and arguments[0] == "capture-native-context":
+                    sys.stdout.write(native_context(arguments[1:]) + "\n")
+                elif len(arguments) == 8 and arguments[0] == "capture-native-receive":
+                    native_receive(arguments[1:])
+                elif len(arguments) == 9 and arguments[0] == "capture-native-emit":
+                    native_emit(arguments[1:])
+                elif len(arguments) == 2 and arguments[0] == "capture-native-cleanup":
+                    native_cleanup(arguments[1])
+                elif len(arguments) == 3 and arguments[0] == "capture-native-sealed":
+                    publish_sealed(arguments[1], arguments[2])
+                else:
+                    raise CaptureRejected()
+            except Exception:
+                raise BallotError("Harbor native capture association is unproven") from None
         else:
             raise BallotError("Harbor judge input invocation is invalid")
     except (BallotError, OSError, TimeoutError) as error:

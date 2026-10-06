@@ -12,24 +12,30 @@ import pwd
 import re
 import sys
 
-from install_component import (
-    PACKAGE_INTEGRITY,
-    PACKAGE_NAME,
-    PACKAGE_VERSION,
-    SOURCE_COMMIT,
-    InstallLayout,
-    ComponentInstallError,
-    canonical_layout,
-    candidate_receipt,
-    clean_environment,
-    discover_package_root,
-    read_manifest,
-    render_wrapper,
-    resolve_mise,
-    supported_platform,
-    source_digest,
-)
-from apply_gpt6_compat import PATCHES, PATCHED_HASHES
+if __package__:
+    from . import install_component as installer
+    from .apply_gpt6_compat import PATCHES, PATCHED_HASHES
+    from .harbor_judge_capture import _read as read_private_file
+else:
+    import install_component as installer
+    from apply_gpt6_compat import PATCHES, PATCHED_HASHES
+    from harbor_judge_capture import _read as read_private_file
+
+PACKAGE_INTEGRITY = installer.PACKAGE_INTEGRITY
+PACKAGE_NAME = installer.PACKAGE_NAME
+PACKAGE_VERSION = installer.PACKAGE_VERSION
+SOURCE_COMMIT = installer.SOURCE_COMMIT
+InstallLayout = installer.InstallLayout
+ComponentInstallError = installer.ComponentInstallError
+canonical_layout = installer.canonical_layout
+candidate_receipt = installer.candidate_receipt
+clean_environment = installer.clean_environment
+discover_package_root = installer.discover_package_root
+read_manifest = installer.read_manifest
+render_wrapper = installer.render_wrapper
+resolve_mise = installer.resolve_mise
+supported_platform = installer.supported_platform
+source_digest = installer.source_digest
 
 EXPECTED_INTEGRITY = PACKAGE_INTEGRITY
 EXPECTED_COMMIT = SOURCE_COMMIT
@@ -107,10 +113,11 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
 
     try:
         receipt = json.loads(
-            receipt_path.read_text(encoding="utf-8"),
+            read_private_file(receipt_path.parent.resolve(strict=True) / receipt_path.name,
+                              limit=8192).decode('utf-8'),
             object_pairs_hook=unique_object,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, ValueError) as error:
         raise DoctorError("install receipt is invalid JSON") from error
     require(isinstance(receipt, dict), "install receipt must be an object")
     allowed = {

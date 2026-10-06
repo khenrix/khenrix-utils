@@ -53,6 +53,370 @@ SESSION_IDS = {"claude": CLAUDE_ID, "codex": "codex-thread-1",
                "agy": "agy-conversation-1"}
 
 
+def _quality_container_original(tmp_path, provider, *, resume=False, tier='standard'):
+    from shared.lib.fanout.eval_provider import quality_session_command
+    from shared.lib.fanout.container_transfer_transport import _identity, _workdir
+    profile = ProviderRegistry.default().select(provider, 'read-only', tier)
+    request = ProviderRequest(provider, 'Räkna € och 税.\nUse only this context.'.encode(),
+        cwd=tmp_path, profile=profile, timeout=31, resume=resume,
+        session_id=SESSION_IDS[provider] if resume or provider == 'claude' else None,
+        run_id='quality-run', task_id='quality-task', target_id='quality-target',
+        seat_id=provider + '-seat', inputs_digest='a' * 64,
+        slot_cap=2, slot_timeout=1.25, slot_root=tmp_path / 'slots')
+    workdir = _workdir(_identity(request))
+    catalog = workdir.removesuffix('/repo') + '/context/quality-catalog.json' if provider == 'codex' else None
+    canonical = replace(quality_session_command(request, catalog_path=catalog),
+        slot_cap=request.slot_cap, slot_timeout=request.slot_timeout, slot_root=request.slot_root,
+        max_depth=1, term_grace=0.125, reap_timeout=0.75, max_output_bytes=1024)
+    return request, canonical, workdir, catalog
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex', 'agy'])
+@pytest.mark.parametrize('resume', [False, True])
+@pytest.mark.parametrize('tier', ['standard', 'deep'])
+def test_quality_container_exact_canonical_guest_pair_preserves_request_and_controls(
+    tmp_path, provider, resume, tier,
+):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.container_transfer_transport import admitted_request_digest
+    from shared.lib.fanout.native_boundary import _command_digest
+    request, canonical, workdir, catalog = _quality_container_original(tmp_path, provider, resume=resume, tier=tier)
+    original = admitted_request_digest(request)
+    pair = module.quality_container_command(request, canonical, workdir=workdir, catalog_path=catalog)
+    expected = list(canonical.argv)
+    if provider == 'codex':
+        level = 3 if resume else 2
+        overrides = ('-c', 'model_provider="fanout"', '-c',
+            'model_providers.fanout={name="Fanout",base_url="http://127.0.0.1:43187/v1",'
+            'wire_api="responses",http_headers={x-fanout-seat="disposable-placeholder"},'
+            'request_max_retries=0,stream_max_retries=0}',
+            '-c', 'approval_policy="never"', '-c', 'approvals_reviewer="user"',
+            '-c', 'allow_login_shell=false')
+        expected[level:level] = overrides
+        if resume:
+            expected[expected.index('sandbox_mode="read-only"')] = 'sandbox_mode="danger-full-access"'
+        else:
+            expected[expected.index('--sandbox') + 1] = 'danger-full-access'
+            expected[expected.index('-C') + 1] = workdir
+    elif provider == 'agy':
+        expected[0] = '/usr/local/bin/agy'
+    assert pair.canonical is canonical
+    assert pair.guest == replace(canonical, argv=tuple(expected))
+    assert pair.guest.stdin == canonical.stdin
+    assert pair.workdir == workdir and pair.catalog_path == catalog
+    assert pair.request_digest == original == admitted_request_digest(request)
+    assert pair.canonical_digest == _command_digest(canonical)
+    assert pair.guest_digest == _command_digest(pair.guest)
+    assert request.profile.requested_model == {'claude': 'claude-opus-5-5',
+        'codex': 'gpt-6.1-sol', 'agy': 'gemini-3.8-flash-high'}[provider]
+    assert request.profile.requested_effort == {
+        ('claude', 'standard'): 'medium', ('claude', 'deep'): 'ultracode',
+        ('codex', 'standard'): 'medium', ('codex', 'deep'): 'ultra',
+        ('agy', 'standard'): 'high', ('agy', 'deep'): 'high'}[provider, tier]
+    if provider == 'agy':
+        assert json.loads(pair.guest.stdin)['message']['content'] == request.prompt_bytes.decode()
+        assert canonical.argv == ('agy', *(('--conversation', request.session_id) if resume else ('--new-project',)),
+            '--mode', 'plan', '--input-format', 'stream-json', '--output-format', 'stream-json',
+            '--model', request.profile.requested_model, '--effort', request.profile.requested_effort,
+            '--agent', 'eval-no-tools', '--disable-slash-commands')
+    else:
+        assert pair.guest.stdin == request.prompt_bytes
+        if provider == 'claude':
+            assert canonical.argv == ('claude', '--print', '--output-format', 'json',
+                '--resume' if resume else '--session-id', request.session_id,
+                '--model', request.profile.requested_model, '--effort', request.profile.requested_effort,
+                '--safe-mode', '--disable-slash-commands', '--strict-mcp-config', '--no-chrome', '--tools', '')
+        else:
+            disabled = ('shell_tool', 'unified_exec', 'view_image', 'apps', 'plugins',
+                'remote_plugin', 'hooks', 'skill_search', 'multi_agent', 'multi_agent_v2',
+                'deferred_executor', 'token_budget', 'sleep_tool', 'current_time_reminder',
+                'send_message_to_user_async', 'request_permissions_tool', 'tool_suggest', 'goals')
+            prefix = ('codex', 'exec', 'resume') if resume else ('codex', 'exec')
+            expected_canonical = (*prefix, '--ignore-user-config', '--ignore-rules', '--json', '--skip-git-repo-check',
+                '--enable', 'skip_host_skill_discovery',
+                *(part for feature in disabled for part in ('--disable', feature)),
+                '-c', 'agents.enabled=false', '-c', 'suppress_unstable_features_warning=true',
+                '-c', 'web_search="disabled"', '-c', 'tools.experimental_request_user_input.enabled=false',
+                '-c', 'tools.update_plan.enabled=false', '-c', f'model_catalog_json="{catalog}"',
+                '-m', request.profile.requested_model, '-c', f'model_reasoning_effort="{request.profile.requested_effort}"')
+            expected_canonical += (('-c', 'sandbox_mode="read-only"', request.session_id, '-') if resume else
+                                   ('--sandbox', 'read-only', '-C', str(request.cwd), '-'))
+            assert canonical.argv == expected_canonical
+            assert [pair.guest.argv[index + 1] for index, value in enumerate(pair.guest.argv)
+                    if value == '--disable'] == list(disabled)
+    # The guest adaptation cannot be admitted again as a canonical native command.
+    if provider != 'claude':
+        with pytest.raises(ProviderRequestError, match='canonical'):
+            module.quality_container_command(request, pair.guest, workdir=workdir, catalog_path=catalog)
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex', 'agy'])
+@pytest.mark.parametrize('damage', ['tools', 'model', 'effort', 'session', 'stdin', 'cwd',
+    'timeout', 'config', 'host-operand', 'environment', 'native', 'slots'])
+def test_quality_container_modified_canonical_command_refuses(tmp_path, provider, damage):
+    from shared.lib.fanout import container_boundary as module
+    request, command, workdir, catalog = _quality_container_original(tmp_path, provider, resume=True)
+    argv = list(command.argv)
+    if damage == 'tools':
+        if provider == 'codex':
+            argv[argv.index('agents.enabled=false')] = 'agents.enabled=true'
+        else:
+            argv[argv.index('--tools' if provider == 'claude' else '--agent') + 1] = 'default'
+    elif damage == 'model':
+        argv[argv.index('-m' if provider == 'codex' else '--model') + 1] = 'foreign-model'
+    elif damage == 'effort':
+        if provider == 'codex':
+            argv[argv.index('model_reasoning_effort="medium"')] = 'model_reasoning_effort="xhigh"'
+        else:
+            argv[argv.index('--effort') + 1] = 'max'
+    elif damage == 'session':
+        argv[argv.index(request.session_id)] = 'foreign-session'
+    elif damage in ('config', 'host-operand'):
+        argv.extend(('-c', 'unknown.enabled=true') if damage == 'config' else ('--add-dir', str(tmp_path)))
+    elif damage == 'stdin':
+        command = replace(command, stdin=b'foreign prompt')
+    elif damage == 'cwd':
+        other = tmp_path / 'other'
+        other.mkdir()
+        command = replace(command, cwd=other)
+    elif damage == 'timeout':
+        command = replace(command, timeout=32)
+    elif damage == 'environment':
+        command = replace(command, environment={'HOME': str(tmp_path)})
+    elif damage == 'native':
+        command = replace(command, native_original=command)
+    else:
+        command = replace(command, slot_cap=3)
+    command = replace(command, argv=tuple(argv))
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(request, command, workdir=workdir, catalog_path=catalog)
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex', 'agy'])
+def test_quality_container_writer_or_substituted_profile_refuses(tmp_path, provider):
+    from shared.lib.fanout import container_boundary as module
+    request, command, workdir, catalog = _quality_container_original(tmp_path, provider)
+    writer = replace(request, execution_class='repo-write',
+        profile=ProviderRegistry.default().select(provider, 'repo-write', 'standard'))
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(writer, command, workdir=workdir, catalog_path=catalog)
+    changed = replace(request, profile=replace(request.profile, requested_model='foreign-model', profile_sha256=None))
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(changed, command, workdir=workdir, catalog_path=catalog)
+
+
+def test_quality_container_claimed_profile_digest_cannot_admit_a_foreign_model(tmp_path):
+    from dataclasses import fields
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.eval_provider import quality_session_command
+    request, command, workdir, catalog = _quality_container_original(tmp_path, 'codex')
+    claimed_digest = request.profile.digest
+
+    class ClaimedProfile(type(request.profile)):
+        @property
+        def digest(self):
+            return claimed_digest
+
+    descriptor = {field.name: getattr(request.profile, field.name) for field in fields(request.profile)}
+    descriptor.update(requested_model='foreign-model', profile_sha256=None)
+    request = replace(request, profile=ClaimedProfile(**descriptor))
+    expected = quality_session_command(request, catalog_path=catalog)
+    command = replace(command, argv=expected.argv)
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(request, command, workdir=workdir, catalog_path=catalog)
+
+
+def test_quality_container_original_command_must_have_a_finite_output_limit(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    request, command, workdir, catalog = _quality_container_original(tmp_path, 'codex')
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(request, replace(command, max_output_bytes=None),
+            workdir=workdir, catalog_path=catalog)
+
+
+@pytest.mark.parametrize('foreign', ['host', 'other-import', 'dot-component', 'catalog'])
+def test_quality_container_foreign_workdir_or_catalog_refuses(tmp_path, foreign):
+    from shared.lib.fanout import container_boundary as module
+    request, command, workdir, catalog = _quality_container_original(tmp_path, 'codex')
+    if foreign == 'catalog':
+        catalog = '/session/quality-catalog.json'
+    elif foreign == 'host':
+        workdir = str(tmp_path)
+    elif foreign == 'other-import':
+        workdir = '/workspace/inputs/' + 'b' * 64 + '/published/repo'
+    else:
+        workdir += '/../repo'
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(request, command, workdir=workdir, catalog_path=catalog)
+
+
+def test_quality_container_agy_invalid_utf8_and_host_direct_binary_refuse(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.errors import ProcessValidationError
+    request, command, workdir, _ = _quality_container_original(tmp_path, 'agy')
+    with pytest.raises(ProcessValidationError, match='UTF-8'):
+        module.quality_container_command(replace(request, prompt=b'bad\xff'), command, workdir=workdir)
+    command = replace(command, argv=(str(tmp_path / 'host-agy-bin'), *command.argv[1:]))
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(request, command, workdir=workdir)
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex', 'agy'])
+def test_quality_container_invalid_utf8_never_creates_a_guest_command(tmp_path, provider):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.errors import ProcessValidationError
+    request, command, workdir, catalog = _quality_container_original(tmp_path, provider)
+    request = replace(request, prompt=b'bad\xff')
+    if provider != 'agy':
+        command = replace(command, stdin=request.prompt_bytes)
+    with pytest.raises(ProcessValidationError, match='UTF-8'):
+        module.quality_container_command(request, command,
+            workdir=workdir, catalog_path=catalog)
+
+
+@pytest.mark.parametrize('provider', ['codex', 'agy'])
+def test_quality_container_initial_cannot_claim_a_resume_session(tmp_path, provider):
+    from shared.lib.fanout import container_boundary as module
+    request, command, workdir, catalog = _quality_container_original(tmp_path, provider)
+    with pytest.raises(ProviderRequestError):
+        module.quality_container_command(replace(request, session_id='foreign-session'), command,
+            workdir=workdir, catalog_path=catalog)
+
+
+def _run_quality_agent_script(command, home, monkeypatch):
+    script = command.argv[command.argv.index('-c') + 1]
+    arguments = list(command.argv[command.argv.index('-c') + 2:])
+    assert arguments[:2] == ['/session', '65532']
+    arguments[:2] = [str(home), str(os.getuid())]
+    monkeypatch.setattr(sys, 'argv', ['quality-agent', *arguments])
+    exec(compile(script, 'fixed-quality-agent', 'exec'), {})
+
+
+def test_quality_container_agent_operation_creates_and_rechecks_exact_private_bytes(tmp_path, monkeypatch, capsys):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.eval_provider import AGY_AGENT_TEXT
+    import hashlib
+    handle = ContainerHandle('a' * 64, 'b' * 64, 'workspace-volume', 'session-volume')
+    create = module.quality_agy_agent_command(handle)
+    verify = module.quality_agy_agent_command(handle, verify_only=True)
+    expected = AGY_AGENT_TEXT.encode()
+    assert create.argv[:9] == ('docker', '--context', 'colima-fanout-isolated', 'exec', '-i',
+        '--user', '65532:65532', handle.container_id, 'python')
+    assert create.argv[-4:] == ('/session', '65532', 'create', expected.hex())
+    assert verify.argv[-4:] == ('/session', '65532', 'verify', expected.hex())
+    assert create.stdin == verify.stdin == b''
+    assert create.environment == verify.environment == {}
+    assert create.timeout == verify.timeout == 30
+    assert create.max_output_bytes == verify.max_output_bytes == 65
+    home = tmp_path / 'session'
+    home.mkdir(mode=0o700)
+    with pytest.raises(FileNotFoundError):
+        _run_quality_agent_script(verify, home, monkeypatch)
+    assert tuple(home.iterdir()) == ()
+    original = os.umask(0o022)
+    try:
+        _run_quality_agent_script(create, home, monkeypatch)
+    finally:
+        os.umask(original)
+    agent = home / '.gemini/config/agents/eval-no-tools.md'
+    assert agent.read_bytes() == expected and stat.S_IMODE(agent.stat().st_mode) == 0o600
+    for parent in (home / '.gemini', home / '.gemini/config', home / '.gemini/config/agents'):
+        assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    identity = (agent.stat().st_dev, agent.stat().st_ino)
+    _run_quality_agent_script(create, home, monkeypatch)
+    _run_quality_agent_script(verify, home, monkeypatch)
+    assert identity == (agent.stat().st_dev, agent.stat().st_ino)
+    assert capsys.readouterr().out.splitlines() == [hashlib.sha256(expected).hexdigest()] * 3
+
+
+@pytest.mark.parametrize('damage', ['bytes', 'file-mode', 'parent-mode', 'symlink',
+    'parent-symlink', 'hardlink', 'fifo', 'owner'])
+def test_quality_container_agent_changed_or_foreign_material_refuses_without_repair(
+    tmp_path, monkeypatch, damage,
+):
+    from shared.lib.fanout import container_boundary as module
+    handle = ContainerHandle('a' * 64, 'b' * 64, 'workspace-volume', 'session-volume')
+    create = module.quality_agy_agent_command(handle)
+    verify = module.quality_agy_agent_command(handle, verify_only=True)
+    home = tmp_path / 'session'
+    home.mkdir(mode=0o700)
+    _run_quality_agent_script(create, home, monkeypatch)
+    agent = home / '.gemini/config/agents/eval-no-tools.md'
+    if damage == 'bytes':
+        agent.write_bytes(b'foreign tools enabled definition')
+    elif damage == 'file-mode':
+        agent.chmod(0o644)
+    elif damage == 'parent-mode':
+        agent.parent.chmod(0o755)
+    elif damage == 'parent-symlink':
+        other = home / '.gemini/original-config'
+        (home / '.gemini/config').rename(other)
+        (home / '.gemini/config').symlink_to(other, target_is_directory=True)
+    elif damage in ('symlink', 'fifo'):
+        other = agent.with_name('original-agent')
+        agent.rename(other)
+        if damage == 'symlink':
+            agent.symlink_to(other)
+        else:
+            os.mkfifo(agent, 0o600)
+    elif damage == 'hardlink':
+        os.link(agent, agent.with_name('alias-agent'))
+    else:
+        original = os.fstat
+        def foreign_owner(fd):
+            info = original(fd)
+            return SimpleNamespace(**{key: getattr(info, key) for key in
+                ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_size')}, st_uid=info.st_uid + 1)
+        monkeypatch.setattr(os, 'fstat', foreign_owner)
+    before = agent.lstat()
+    content = agent.read_bytes() if stat.S_ISREG(before.st_mode) else None
+    for operation in (create, verify):
+        with pytest.raises((SystemExit, OSError)):
+            _run_quality_agent_script(operation, home, monkeypatch)
+    after = agent.lstat()
+    assert (before.st_dev, before.st_ino, before.st_mode) == (after.st_dev, after.st_ino, after.st_mode)
+    if content is not None:
+        assert agent.read_bytes() == content
+
+
+@pytest.mark.parametrize('damage', ['named-mode', 'named-substitution', 'parent-mode',
+    'parent-substitution', 'same-size-bytes'])
+def test_quality_container_agent_named_object_is_rechecked_after_actual_read(tmp_path, monkeypatch, damage):
+    from shared.lib.fanout import container_boundary as module
+    handle = ContainerHandle('a' * 64, 'b' * 64, 'workspace-volume', 'session-volume')
+    home = tmp_path / 'session'
+    home.mkdir(mode=0o700)
+    _run_quality_agent_script(module.quality_agy_agent_command(handle), home, monkeypatch)
+    agent = home / '.gemini/config/agents/eval-no-tools.md'
+    replacement = agent.with_name('replacement')
+    replacement.write_bytes(agent.read_bytes())
+    replacement.chmod(0o600)
+    foreign_parent = tmp_path / 'foreign-agents'
+    foreign_parent.mkdir(mode=0o700)
+    (foreign_parent / 'eval-no-tools.md').write_bytes(agent.read_bytes())
+    (foreign_parent / 'eval-no-tools.md').chmod(0o600)
+    actual = os.read
+
+    def changed_after_read(fd, size):
+        raw = actual(fd, size)
+        if damage == 'named-mode':
+            agent.chmod(0o644)
+        elif damage == 'named-substitution':
+            os.replace(replacement, agent)
+        elif damage == 'parent-mode':
+            agent.parent.chmod(0o755)
+        elif damage == 'parent-substitution':
+            agent.parent.rename(agent.parent.with_name('original-agents'))
+            foreign_parent.rename(agent.parent)
+        else:
+            agent.write_bytes(b'?' + raw[1:])
+        return raw
+
+    monkeypatch.setattr(os, 'read', changed_after_read)
+    with pytest.raises(SystemExit):
+        _run_quality_agent_script(module.quality_agy_agent_command(handle, verify_only=True), home, monkeypatch)
+
+
 def test_quality_docker_constructor_bounds_every_attempt_before_transport(tmp_path, monkeypatch):
     from shared.lib.fanout import container_boundary as module
     controller = create_lifecycle_controller(tmp_path / "quality-owner")
@@ -78,6 +442,413 @@ def test_quality_docker_constructor_bounds_every_attempt_before_transport(tmp_pa
     with pytest.raises(ProviderRequestError, match="context"):
         module.quality_docker_runner(controller, allocation_digest="b" * 64,
             max_commands=1, command_seconds=5, outer_seconds=30)(("docker", "ps"), None)
+
+
+def _inert_quality_docker(monkeypatch, module):
+    actual = module._run_bounded_command
+    calls = []
+
+    def inert(command, **kwargs):
+        calls.append(command)
+        return actual(replace(command, argv=(sys.executable, "-B", "-I", "-S", "-c",
+            "import sys;sys.stdout.buffer.write(b'inert quality control\\n');"
+            "sys.stderr.buffer.write(b'inert stderr\\n')")), **kwargs)
+
+    monkeypatch.setattr(module, "_run_bounded_command", inert)
+    return calls
+
+
+def _cold_quality_docker(controller, controls, *, max_commands=2, command_seconds=5,
+                         outer_seconds=30, allocation='a' * 64, argv=None):
+    code = r'''
+import json,pathlib,sys
+sys.path.insert(0,sys.argv[1])
+from dataclasses import replace
+from shared.lib.fanout import container_boundary as module
+from shared.lib.fanout.controller import LifecycleCapability,resume_lifecycle_controller
+value=json.load(sys.stdin)
+controller=resume_lifecycle_controller(pathlib.Path(value['root']),LifecycleCapability(value['capability']))
+actual=module._run_bounded_command
+calls=[]
+def inert(command,**kwargs):
+    calls.append(True)
+    return actual(replace(command,argv=(sys.executable,'-B','-I','-S','-c',
+        "import sys;sys.stdout.buffer.write(b'inert quality control\\n');sys.stderr.buffer.write(b'inert stderr\\n')")),**kwargs)
+module._run_bounded_command=inert
+try:
+    original={'original_controls':tuple(value['controls'])} if value['controls'] is not None else {}
+    runner=module.quality_docker_runner(controller,allocation_digest=value['allocation'],
+        max_commands=value['max_commands'],command_seconds=value['command_seconds'],
+        outer_seconds=value['outer_seconds'],**original)
+    result=runner(tuple(value['argv']),None)
+    output={'state':'settled','stdout':result.stdout.decode(),'calls':len(calls)}
+except Exception as error:
+    output={'state':'refused','error':str(error),'kind':type(error).__name__,'calls':len(calls)}
+print(json.dumps(output))
+'''
+    value = {'root': str(controller.root), 'capability': controller.capability.export_token(),
+        'controls': list(controls) if controls is not None else None,
+        'allocation': allocation, 'max_commands': max_commands,
+        'command_seconds': command_seconds, 'outer_seconds': outer_seconds,
+        'argv': list(argv or ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'))}
+    result = subprocess.run([sys.executable, '-B', '-I', '-S', '-c', code, str(ROOT)],
+        input=json.dumps(value).encode(), cwd=controller.root.parent, capture_output=True,
+        timeout=10, env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C',
+                        'PYTHONDONTWRITEBYTECODE': '1'})
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_quality_docker_actual_fresh_child_preserves_consumed_count_and_captures(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    calls = _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    result = runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    assert result.stdout == b'inert quality control\n'
+    cold = _cold_quality_docker(controller, runner.controls)
+    assert cold == {'state': 'settled', 'stdout': 'inert quality control\n', 'calls': 1}
+    exhausted = _cold_quality_docker(controller, runner.controls)
+    assert exhausted['state'] == 'refused' and exhausted['calls'] == 0
+    assert 'exhausted' in exhausted['error']
+    assert len(calls) == 1
+    with ArtifactStore.open_existing(controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64)) as retained:
+        from shared.lib.fanout.artifacts import ArtifactRef
+        import hashlib
+        for attempt in (1, 2):
+            raw = b'inert quality control\n'
+            assert retained.read_bytes(ArtifactRef(f'{attempt}/stdout.bin',
+                hashlib.sha256(raw).hexdigest(), len(raw))) == raw
+
+
+@pytest.mark.parametrize('removed', ['attempt', 'store'])
+def test_quality_docker_retained_attempt_refuses_marker_and_capture_rollback(
+    tmp_path, monkeypatch, removed,
+):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    calls = _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=1, command_seconds=5, outer_seconds=30)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    prefix, inode = marker.read_bytes(), marker.stat().st_ino
+    runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    receipts = {path.name: path.read_bytes() for path in (controller.root / 'receipts').iterdir()}
+    retained = controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64)
+    target = retained / '1' if removed == 'attempt' else retained
+    target.rename(tmp_path / 'retained-original')
+    with marker.open('r+b') as handle:
+        handle.write(prefix)
+        handle.truncate()
+    assert marker.stat().st_ino == inode
+    cold = _cold_quality_docker(controller, runner.controls, max_commands=1)
+    assert cold['state'] == 'refused' and cold['calls'] == 0
+    assert len(calls) == 1
+    assert {path.name: path.read_bytes() for path in (controller.root / 'receipts').iterdir()} == receipts
+
+
+@pytest.mark.parametrize('mutation', ['missing', 'foreign', 'mode', 'hardlink', 'symlink', 'extra'])
+def test_quality_docker_retained_claim_tamper_refuses_without_subprocess(
+    tmp_path, monkeypatch, mutation,
+):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.artifacts import canonical_json
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    calls = _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    claim = controller.root / 'locks' / ('quality-docker-' + 'a' * 64 + '-attempt-1')
+    if mutation == 'missing':
+        claim.rename(tmp_path / 'original-claim')
+    elif mutation == 'foreign':
+        claim.write_bytes(canonical_json({'attempt': list(runner.controls)}))
+    elif mutation == 'mode':
+        claim.chmod(0o644)
+    elif mutation == 'hardlink':
+        os.link(claim, tmp_path / 'claim-link')
+    elif mutation == 'symlink':
+        claim.rename(tmp_path / 'original-claim')
+        claim.symlink_to(tmp_path / 'original-claim')
+    else:
+        extra = claim.with_name(claim.name[:-1] + '3')
+        extra.write_bytes(claim.read_bytes())
+        extra.chmod(0o600)
+    cold = _cold_quality_docker(controller, runner.controls)
+    assert cold['state'] == 'refused' and cold['calls'] == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('allowed', [200, 256])
+def test_quality_docker_full_declared_capacity_crosses_old_limit_and_cold_reopens(tmp_path, monkeypatch, allowed):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.artifacts import canonical_json
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    calls = _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=allowed, command_seconds=1, outer_seconds=3600)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    prefix = marker.stat().st_size
+    pair_bytes = sum(len(canonical_json({kind: list(runner.controls)}))
+                     for kind in ('attempt', 'terminal'))
+    crossover = min(213, allowed)
+    command = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+    for _ in range(crossover - 1):
+        assert runner(command, None).stdout == b'inert quality control\n'
+    cold = _cold_quality_docker(controller, runner.controls, max_commands=allowed,
+                               command_seconds=1, outer_seconds=3600)
+    assert cold == {'state': 'settled', 'stdout': 'inert quality control\n', 'calls': 1}
+    for _ in range(crossover, allowed):
+        assert runner(command, None).stdout == b'inert quality control\n'
+    assert len(calls) == allowed - 1
+    assert marker.stat().st_size == prefix + allowed * pair_bytes
+    assert marker.stat().st_size == (61696 if allowed == 200 else 78888)
+    exhausted = _cold_quality_docker(controller, runner.controls, max_commands=allowed,
+                                    command_seconds=1, outer_seconds=3600)
+    assert exhausted['state'] == 'refused' and exhausted['calls'] == 0
+    assert 'exhausted' in exhausted['error']
+    retained = controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64)
+    assert {path.name for path in retained.iterdir()} - {'.artifact.lock', '.fanout-artifact-tmp'} == {
+        str(index) for index in range(1, allowed + 1)}
+    for index in (1, crossover, allowed):
+        assert (retained / str(index) / 'stdout.bin').read_bytes() == b'inert quality control\n'
+        assert (retained / str(index) / 'stderr.bin').read_bytes() == b'inert stderr\n'
+
+
+def test_quality_docker_oversized_declared_capacity_refuses_before_any_allocation_state(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.artifacts import ArtifactLimits
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    too_many = ArtifactLimits().max_file_bytes // 307 + 1
+    with pytest.raises(ProviderRequestError, match='capacity'):
+        module.quality_docker_runner(controller, allocation_digest='a' * 64,
+            max_commands=too_many, command_seconds=1, outer_seconds=3600)
+    assert tuple((controller.root / 'locks').iterdir()) == ()
+    assert tuple((controller.root / 'receipts').iterdir()) == ()
+    assert tuple((controller.root / 'quarantine').iterdir()) == ()
+
+
+def test_quality_docker_exact_artifact_capacity_ceiling_is_checked_before_creation(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.artifacts import ArtifactLimits, canonical_json
+    ceiling = ArtifactLimits().max_file_bytes
+    reference = ['0' * 64 + '.json', '0' * 64]
+    pair_bytes = sum(len(canonical_json({kind: reference})) for kind in ('attempt', 'terminal'))
+
+    def declared_bytes(count):
+        limits = {'allocation': 'a' * 64, 'max_commands': count,
+                  'command_seconds': 1, 'outer_seconds': 3600}
+        return (len(canonical_json(limits)) + len(canonical_json({'controls': reference}))
+                + count * pair_bytes)
+
+    largest = ceiling // pair_bytes
+    while declared_bytes(largest) > ceiling:
+        largest -= 1
+    assert declared_bytes(largest) <= ceiling < declared_bytes(largest + 1)
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=largest, command_seconds=1, outer_seconds=3600)
+    cold = _cold_quality_docker(controller, runner.controls, max_commands=largest,
+                               command_seconds=1, outer_seconds=3600)
+    assert cold == {'state': 'settled', 'stdout': 'inert quality control\n', 'calls': 1}
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    assert proof['limits']['max_commands'] == largest
+    refused = create_lifecycle_controller(tmp_path / 'refused-owner')
+    with pytest.raises(ProviderRequestError, match='capacity'):
+        module.quality_docker_runner(refused, allocation_digest='a' * 64,
+            max_commands=largest + 1, command_seconds=1, outer_seconds=3600)
+    for directory in ('locks', 'receipts', 'quarantine'):
+        assert tuple((refused.root / directory).iterdir()) == ()
+
+
+@pytest.mark.parametrize('changed', [
+    {'max_commands': 3}, {'command_seconds': 5.0}, {'outer_seconds': 31},
+    {'allocation': 'b' * 64},
+])
+def test_quality_docker_cold_changed_original_limits_or_allocation_refuse(tmp_path, changed):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    result = _cold_quality_docker(controller, runner.controls, **changed)
+    assert result['state'] == 'refused' and result['calls'] == 0
+
+
+def test_quality_docker_cold_foreign_or_resigned_controls_and_duplicate_initial_refuse(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    foreign = create_lifecycle_controller(tmp_path / 'foreign-owner')
+    result = _cold_quality_docker(foreign, runner.controls)
+    assert result['state'] == 'refused' and result['calls'] == 0
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    proof['started_monotonic'] += 1
+    proof['deadline_monotonic'] += 1
+    proof['started_wall'] += 1
+    proof['deadline_wall'] += 1
+    changed = write_evidence(controller, 'quality-docker-controls', proof)
+    result = _cold_quality_docker(controller, changed)
+    assert result['state'] == 'refused' and result['calls'] == 0
+    duplicate = _cold_quality_docker(controller, None)
+    assert duplicate['state'] == 'refused' and duplicate['calls'] == 0
+    assert 'already attempted' in duplicate['error']
+
+
+@pytest.mark.parametrize('damage', ['marker-inode', 'marker-mode', 'marker-symlink',
+    'marker-fifo', 'marker-hardlink', 'marker-rewind', 'marker-oversized', 'terminal-missing', 'stdout',
+    'stderr', 'attempt-claim'])
+def test_quality_docker_cold_tampering_never_replenishes_or_invokes(tmp_path, monkeypatch, damage):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    if damage == 'marker-inode':
+        replacement = marker.with_name('replacement')
+        replacement.write_bytes(marker.read_bytes())
+        replacement.chmod(0o600)
+        os.replace(replacement, marker)
+    elif damage == 'marker-mode':
+        marker.chmod(0o644)
+    elif damage in ('marker-symlink', 'marker-fifo'):
+        original = marker.with_name('original-marker')
+        marker.rename(original)
+        if damage == 'marker-symlink':
+            marker.symlink_to(original)
+        else:
+            os.mkfifo(marker, 0o600)
+    elif damage == 'marker-hardlink':
+        os.link(marker, marker.with_name('marker-link'))
+    elif damage in ('marker-rewind', 'terminal-missing'):
+        lines = marker.read_bytes().splitlines(keepends=True)
+        marker.write_bytes(b''.join(lines[:2] if damage == 'marker-rewind' else lines[:-1]))
+    elif damage == 'marker-oversized':
+        from shared.lib.fanout.artifacts import canonical_json
+        proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+        limit = (len(canonical_json(proof['limits']))
+                 + len(canonical_json({'controls': list(runner.controls)}))
+                 + 2 * sum(len(canonical_json({kind: list(runner.controls)}))
+                           for kind in ('attempt', 'terminal')))
+        marker.write_bytes(marker.read_bytes().ljust(limit + 1, b'x'))
+    else:
+        retained = controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64) / '1'
+        name = 'attempt.json' if damage == 'attempt-claim' else damage + '.bin'
+        item = retained / name
+        item.write_bytes(item.read_bytes() + b'changed retained bytes')
+    result = _cold_quality_docker(controller, runner.controls)
+    assert result['state'] == 'refused' and result['calls'] == 0
+
+
+def test_quality_docker_durable_pending_attempt_blocks_even_in_fresh_child(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+
+    def interrupted(command, **kwargs):
+        item = json.loads(marker.read_bytes().splitlines()[-1])
+        proof = read_evidence(controller, 'quality-docker-attempt', *item['attempt'])
+        assert proof['attempt'] == 1 and proof['controls'] == list(runner.controls)
+        assert (controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64) / '1/attempt.json').is_file()
+        raise OSError('owned test interruption after durable consumption')
+
+    monkeypatch.setattr(module, '_run_bounded_command', interrupted)
+    with pytest.raises(OSError):
+        runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    result = _cold_quality_docker(controller, runner.controls)
+    assert result['state'] == 'refused' and result['calls'] == 0
+    assert 'pending' in result['error']
+
+
+def test_quality_docker_actual_timeout_terminal_does_not_authorize_continuation(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    actual = module._run_bounded_command
+
+    def timeout(command, **kwargs):
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "import sys,time;print('bounded timeout output',flush=True);time.sleep(2)")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', timeout)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=0.05, outer_seconds=30)
+    with pytest.raises(ProviderRequestError, match='did not settle'):
+        runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    result = _cold_quality_docker(controller, runner.controls, command_seconds=0.05)
+    assert result['state'] == 'refused' and result['calls'] == 0
+    assert 'did not settle' in result['error']
+    assert (controller.root / 'quarantine' / ('quality-docker-' + 'a' * 64) / '1/stdout.bin').read_bytes() == b'bounded timeout output\n'
+
+
+@pytest.mark.parametrize('clock', ['monotonic', 'wall'])
+def test_quality_docker_either_original_deadline_exhausts_without_new_command(tmp_path, monkeypatch, clock):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    monkeypatch.setattr(module.time, 'monotonic' if clock == 'monotonic' else 'time',
+        lambda: proof['deadline_monotonic' if clock == 'monotonic' else 'deadline_wall'])
+    with pytest.raises(ProviderRequestError, match='exhausted'):
+        module.quality_docker_runner(controller, allocation_digest='a' * 64,
+            max_commands=2, command_seconds=5, outer_seconds=30, original_controls=runner.controls)
+
+
+def test_quality_docker_actual_cold_deadline_is_not_restarted_and_unknown_operation_is_free(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    calls = _inert_quality_docker(monkeypatch, module)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=0.1, outer_seconds=0.4)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    before = marker.read_bytes()
+    with pytest.raises(ProviderRequestError, match='unknown'):
+        runner(('docker', '--context', 'colima-fanout-isolated', 'system', 'prune'), None)
+    assert marker.read_bytes() == before and calls == []
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    time.sleep(max(0, proof['deadline_monotonic'] - time.monotonic()) + 0.03)
+    result = _cold_quality_docker(controller, runner.controls, command_seconds=0.1, outer_seconds=0.4)
+    assert result['state'] == 'refused' and result['calls'] == 0
+    assert 'exhausted' in result['error']
+
+
+def test_quality_docker_fresh_child_cannot_open_an_active_original_marker(tmp_path):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    descriptor = os.open(marker, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        module.fcntl.flock(descriptor, module.fcntl.LOCK_EX)
+        result = _cold_quality_docker(controller, runner.controls)
+        assert result['state'] == 'refused' and result['calls'] == 0
+        assert 'pending' in result['error']
+    finally:
+        os.close(descriptor)
+
+
+def test_quality_docker_actual_nonzero_exit_remains_settled_and_consumed(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    actual = module._run_bounded_command
+
+    def nonzero(command, **kwargs):
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "import sys;sys.stdout.buffer.write(b'observed nonzero output');sys.exit(7)")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', nonzero)
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    result = runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    assert result.returncode == 7 and result.stdout == b'observed nonzero output'
+    assert _cold_quality_docker(controller, runner.controls)['state'] == 'settled'
+    assert _cold_quality_docker(controller, runner.controls)['calls'] == 0
 
 
 def _private_failure_control(module, tmp_path):
@@ -1294,6 +2065,53 @@ def test_model_docker_exec_uses_sealed_published_repo_workdir(
         transport.handle.container_id,
     )
     assert boundary.input_workdir.endswith("/published/repo")
+
+
+@pytest.mark.parametrize("stdout_bytes,stderr_bytes,limit,refused", [
+    (1025, 0, 1024, True), (0, 1025, 1024, True), (600, 600, 1024, True),
+    (600, 424, 1024, False), (600, 600, None, False),
+])
+def test_model_docker_exec_honors_original_combined_capture_limit(
+    boundary_module, tmp_path, monkeypatch, stdout_bytes, stderr_bytes, limit, refused,
+):
+    _, boundary, transport, _, _, _ = _launched_seat(boundary_module, tmp_path)
+    real_popen = subprocess.Popen
+    pid_file = tmp_path / "bounded-child.pid"
+    script = (
+        "import os,sys,time;"
+        "open(sys.argv[1],'w').write(str(os.getpid()));"
+        "os.write(1,b'a'*int(sys.argv[2]));"
+        "os.write(2,b'b'*int(sys.argv[3]));"
+        "time.sleep(0.5)"
+    )
+
+    def inert_container(argv, **kwargs):
+        assert tuple(argv[:10]) == (
+            "docker", "--context", "colima-fanout-isolated", "exec", "-i",
+            "--user", "65532:65532", "--workdir", boundary.input_workdir,
+            transport.handle.container_id,
+        )
+        return real_popen(
+            (sys.executable, "-c", script, str(pid_file),
+             str(stdout_bytes), str(stderr_bytes)), **kwargs,
+        )
+
+    monkeypatch.setattr(boundary_module.subprocess, "Popen", inert_container)
+    command = ProcessCommand(
+        ("claude", "--print"), b"", cwd=tmp_path, timeout=3,
+        slot_root=tmp_path / "slots", term_grace=0.01, reap_timeout=1,
+        max_output_bytes=limit,
+    )
+    if refused:
+        with pytest.raises(ProviderRequestError, match="output limit"):
+            transport._docker_exec(transport.handle, command, boundary.input_workdir)
+    else:
+        result = transport._docker_exec(transport.handle, command, boundary.input_workdir)
+        assert result.status == ProcessStatus.EXIT and result.returncode == 0
+        assert result.stdout == b"a" * stdout_bytes
+        assert result.stderr == b"b" * stderr_bytes
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
 
 
 def test_fixed_docker_execution_retains_raw_result_and_clears_failed_attempt(

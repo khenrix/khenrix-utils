@@ -13,7 +13,7 @@ import re
 import secrets
 import stat
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Callable
 
@@ -64,6 +64,7 @@ class ContainerSpec:
     session_volume: str
     socket_path: str
     cli_digest: str
+    workspace_readonly: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +92,7 @@ class _InventoryScope:
 
 
 def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHandle,
-                         *, recover: bool) -> _RecoveryAssociation | None:
+                         *, recover: bool, handoff: bool = False) -> _RecoveryAssociation | None:
     """Decode an already controller-authenticated exact launch association."""
     ContainerLauncher._validate_spec(spec)
     if (not isinstance(handle, ContainerHandle)
@@ -99,22 +100,32 @@ def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHa
             or not isinstance(handle.inspect_sha256, str) or _SHA.fullmatch(handle.inspect_sha256) is None
             or (handle.workspace_volume, handle.session_volume) != (spec.workspace_volume, spec.session_volume)):
         raise ProviderRequestError("container launch handle differs")
-    keys = {"spec", "handle", "route", "volumes"} | ({"recovery", "original_input"} if recover else set())
-    if (not isinstance(value, dict) or set(value) != keys
+    if handoff and (recover or spec.workspace_readonly is not True):
+        raise ProviderRequestError("container handoff launch policy differs")
+    keys = {"spec", "handle", "route", "volumes"} | ({"recovery", "original_input"} if recover else set()) | ({"handoff", "original_handoff"} if handoff else set())
+    allowed_keys = (keys, keys | {"handoff_scope"}) if handoff else (keys,)
+    if (not isinstance(value, dict) or set(value) not in allowed_keys
             or value["spec"] != asdict(spec) or value["handle"] != asdict(handle)
-            or value["route"] != ("recover" if recover else "start")):
+            or value["spec"]["workspace_readonly"] is not spec.workspace_readonly
+            or value["route"] != ("quality-handoff" if handoff else "recover" if recover else "start")):
         raise ProviderRequestError("container launch association differs")
     ContainerLauncher._validate_volume_records(spec, value["volumes"])
-    if not recover:
+    if not recover and not handoff:
         return None
-    ref = value["original_input"]
+    if handoff and "handoff_scope" in value:
+        pointer = value["handoff_scope"]
+        if (type(pointer) is not list or len(pointer) != 2 or type(pointer[1]) is not str
+                or _SHA.fullmatch(pointer[1]) is None or pointer[0] != pointer[1] + ".json"):
+            raise ProviderRequestError("container handoff scope reference differs")
+    ref = value["original_handoff" if handoff else "original_input"]
     if (not isinstance(ref, list) or len(ref) != 2
             or not isinstance(ref[1], str) or _SHA.fullmatch(ref[1]) is None
             or ref[0] != ref[1] + ".json"):
         raise ProviderRequestError("original input receipt reference is invalid")
-    recovery = value["recovery"]
+    recovery = value["handoff" if handoff else "recovery"]
     if (not isinstance(recovery, dict) or set(recovery) != {"spec", "handle", "predecessors"}
             or recovery["spec"] != asdict(spec) or recovery["handle"] != asdict(handle)
+            or recovery["spec"]["workspace_readonly"] is not spec.workspace_readonly
             or not isinstance(recovery["predecessors"], list)
             or len(recovery["predecessors"]) > _MAX_INVENTORY_IDS):
         raise ProviderRequestError("container recovery association differs")
@@ -273,12 +284,16 @@ class ContainerLauncher:
         self._docker = docker_runner or _default_docker
         self._socket_attestor = guest_socket_attestor
         self._recovery: _RecoveryAssociation | None = None
+        self._handoff: _RecoveryAssociation | None = None
         self._volume_expectations = None
         self._volume_handle = None
         self._observed_volumes = {}
 
     def restore_launch(self, value, spec, handle, *, recover):
-        self._recovery = decode_launch_record(value, spec, handle, recover=recover)
+        handoff = isinstance(value, dict) and value.get("route") == "quality-handoff"
+        association = decode_launch_record(value, spec, handle, recover=recover, handoff=handoff)
+        self._recovery = None if handoff else association
+        self._handoff = association if handoff else None
         self._volume_expectations = (spec, json.loads(canonical_json(value["volumes"])))
         self._volume_handle = (spec, handle)
 
@@ -298,6 +313,8 @@ class ContainerLauncher:
     def _validate_spec(spec: ContainerSpec) -> None:
         if not isinstance(spec, ContainerSpec):
             raise ProviderRequestError("container specification is invalid")
+        if type(spec.workspace_readonly) is not bool:
+            raise ProviderRequestError("container workspace mount policy differs")
         expected = private_volume_names(spec.run_id, spec.task_id, spec.target_id,
                                         spec.seat_id)
         if (spec.workspace_volume, spec.session_volume) != expected:
@@ -418,7 +435,8 @@ class ContainerLauncher:
     @staticmethod
     def _mount_args(spec: ContainerSpec) -> tuple[str, ...]:
         return (
-            "--mount", f"type=volume,src={spec.workspace_volume},dst=/workspace",
+            "--mount", f"type=volume,src={spec.workspace_volume},dst=/workspace"
+            + (",readonly" if spec.workspace_readonly else ""),
             "--mount", f"type=volume,src={spec.session_volume},dst=/session",
             "--mount", f"type=bind,src={spec.socket_path},dst=/run/fanout/broker.sock,readonly",
         )
@@ -504,7 +522,7 @@ class ContainerLauncher:
             raise ProviderRequestError("container host mount specification differs")
         host_by_target = {mount.get("Target"): mount for mount in host_mounts}
         expected_host = {
-            "/workspace": ("volume", spec.workspace_volume, False),
+            "/workspace": ("volume", spec.workspace_volume, spec.workspace_readonly),
             "/session": ("volume", spec.session_volume, False),
             "/run/fanout/broker.sock": ("bind", spec.socket_path, True),
         }
@@ -522,7 +540,7 @@ class ContainerLauncher:
             raise ProviderRequestError("container mount inventory differs")
         by_destination = {mount.get("Destination"): mount for mount in mounts}
         expected_mounts = {
-            "/workspace": ("volume", volume_sources[0], spec.workspace_volume, "local", True),
+            "/workspace": ("volume", volume_sources[0], spec.workspace_volume, "local", not spec.workspace_readonly),
             "/session": ("volume", volume_sources[1], spec.session_volume, "local", True),
             "/run/fanout/broker.sock": ("bind", spec.socket_path, "", "", False),
         }
@@ -954,7 +972,7 @@ class ContainerLauncher:
                 or any(labels.get(key) != value for key, value in expected_labels.items())):
             raise ProviderRequestError("failed launch container ownership differs")
         expected = {
-            "/workspace": ("volume", spec.workspace_volume, sources[0], "local", True),
+            "/workspace": ("volume", spec.workspace_volume, sources[0], "local", not spec.workspace_readonly),
             "/session": ("volume", spec.session_volume, sources[1], "local", True),
             "/run/fanout/broker.sock": ("bind", "", spec.socket_path, "", False),
         }
@@ -1009,17 +1027,17 @@ class ContainerLauncher:
         return container_id
 
     def _launch(self, spec: ContainerSpec, *, recover: bool,
-                scope: _InventoryScope | None = None) -> ContainerHandle:
+                scope: _InventoryScope | None = None, handoff: bool = False) -> ContainerHandle:
         if self._socket_attestor is None:
             raise ProviderRequestError("authenticated guest socket attestor is required")
-        if recover:
+        if recover or handoff:
             if self._volume_expectations is None or self._volume_expectations[0] != spec:
                 raise ProviderRequestError("authenticated original volume authority is absent")
             self._validate_volume_records(spec, self._volume_expectations[1])
         image_id = self._image_id(spec)
-        workspace_source = self._volume(spec, "workspace", create=not recover)
-        session_source = self._volume(spec, "session", create=not recover)
-        if not recover:
+        workspace_source = self._volume(spec, "workspace", create=not (recover or handoff))
+        session_source = self._volume(spec, "session", create=not (recover or handoff))
+        if not recover and not handoff:
             self._volume_expectations = (spec, json.loads(canonical_json({
                 "workspace": self._observed_volumes[spec.workspace_volume],
                 "session": self._observed_volumes[spec.session_volume]})))
@@ -1056,6 +1074,8 @@ class ContainerLauncher:
                                      spec.workspace_volume, spec.session_volume)
             if recover:
                 self._recovery = _RecoveryAssociation(spec, handle, predecessors)
+            if handoff:
+                self._handoff = _RecoveryAssociation(spec, handle, predecessors)
             self._volume_handle = (spec, handle)
             return handle
         except BaseException as primary:
@@ -1072,6 +1092,7 @@ class ContainerLauncher:
 
     def start(self, spec: ContainerSpec, *, scope: _InventoryScope | None = None) -> ContainerHandle:
         self._recovery = None
+        self._handoff = None
         self._volume_expectations = None
         self._volume_handle = None
         self._validate_spec(spec)
@@ -1079,8 +1100,29 @@ class ContainerLauncher:
 
     def recover(self, spec: ContainerSpec, *, scope: _InventoryScope | None = None) -> ContainerHandle:
         self._recovery = None
+        self._handoff = None
         self._validate_spec(spec)
         return self._launch(spec, recover=True, scope=scope)
+
+    def _start_readonly_handoff(self, spec, original_spec, original_handle, origin, stopped, *, scope=None):
+        self._validate_spec(spec)
+        self._validate_spec(original_spec)
+        if (original_spec.workspace_readonly is not False
+                or spec != replace(original_spec, workspace_readonly=True)
+                or type(stopped) is not tuple or len(stopped) != 2
+                or stopped[0] != original_handle.container_id):
+            raise ProviderRequestError("container readonly handoff policy differs")
+        if scope is not None and (type(scope) is not _InventoryScope
+                or scope.stopped.count(stopped) != 1
+                or any(handle.container_id == original_handle.container_id for _, handle in scope.active)):
+            raise ProviderRequestError("container readonly handoff scope differs")
+        decode_launch_record(origin, original_spec, original_handle, recover=False)
+        self._recovery = None
+        self._handoff = None
+        self._volume_expectations = (spec, json.loads(canonical_json(origin["volumes"])))
+        self._volume_handle = None
+        return self._launch(spec, recover=False, handoff=True,
+                            scope=_InventoryScope((stopped,), ()) if scope is None else scope)
 
     def attest_running(self, spec: ContainerSpec, handle: ContainerHandle, *,
                        scope: _InventoryScope | None = None) -> ContainerHandle:
@@ -1106,10 +1148,11 @@ class ContainerLauncher:
         if observed != handle.inspect_sha256:
             raise ProviderRequestError("container security digest differs")
         predecessors = None
-        if self._recovery is not None:
-            if self._recovery.spec != spec or self._recovery.handle != handle:
+        association = self._handoff if self._handoff is not None else self._recovery
+        if association is not None:
+            if association.spec != spec or association.handle != handle:
                 raise ProviderRequestError("container recovery association differs")
-            predecessors = self._recovery.predecessors
+            predecessors = association.predecessors
         if scope is not None:
             if (type(scope) is not _InventoryScope or (spec, handle) not in scope.active
                     or any(dict(scope.stopped).get(cid) != digest for cid, digest in predecessors or ())):

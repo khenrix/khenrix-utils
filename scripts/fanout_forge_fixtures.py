@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import ast
+from contextvars import ContextVar
 import importlib
 import importlib.abc
 import types
@@ -17,6 +18,7 @@ import json
 import os
 import pwd
 import re
+import runpy
 import secrets
 import shutil
 import socket
@@ -32,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1] / "evals" / "llm-fanout" / "forge-fix
 CASEBOOK = ROOT.parent / "quality-cases.json"
 _SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 _SYSTEM_GIT = Path("/usr/bin/git")
+_ORACLE_INPUTS = ContextVar("forge_oracle_inputs", default=None)
 
 
 class FixtureError(ValueError):
@@ -811,9 +814,9 @@ def _seed_dirty_workspace(workspace: Path, seed: dict[str, Any]) -> None:
         path.write_text(note["text"], encoding="utf-8")
 
 
-def materialize(case_id: str, workspace: Path, root: Path = ROOT) -> None:
+def materialize(case_id: str, workspace: Path, root: Path = ROOT, *, casebook: Path = CASEBOOK) -> None:
     """Copy only one public fixture and its declared caller-owned dirty baseline."""
-    verify_pin(CASEBOOK, root)
+    verify_pin(casebook, root)
     cases = {case["id"]: case for case in _manifest(Path(root))}
     if case_id not in cases:
         raise FixtureError(f"unknown Forge fixture {case_id}")
@@ -1190,7 +1193,7 @@ def _reject_hardlinked_sibling_files(workspace: Path) -> None:
                 raise FixtureError("hard-link alias in Forge sibling seat; executor is blocked")
 
 
-def _validate_boundary(case_id: str, workspace: Path, root: Path) -> str:
+def _validate_boundary(case_id: str, workspace: Path, root: Path, casebook: Path = CASEBOOK) -> str:
     cases = {case["id"]: case for case in _manifest(root)}
     if case_id not in cases:
         raise FixtureError(f"unknown Forge fixture {case_id}")
@@ -1206,12 +1209,12 @@ def _validate_boundary(case_id: str, workspace: Path, root: Path) -> str:
     _reject_hardlinked_sibling_files(workspace)
     checkout = root.resolve().parents[2]
     hidden = root / "held-out" / f"{case_id}.py"
-    private_files = [hidden, CASEBOOK, checkout / "tests" / "test_fanout_forge_fixtures.py"]
+    private_files = [hidden, Path(casebook), checkout / "tests" / "test_fanout_forge_fixtures.py"]
     private_files.extend((root / "held-out").glob("*.py"))
     for path in private_files:
         if path.is_file() and path.stat().st_nlink != 1:
             raise FixtureError("Forge private fixture has a hard-link alias; executor is blocked")
-    policy = _sandbox_policy(roots, _seat_private_paths(workspace))
+    policy = _sandbox_policy(roots, (*_seat_private_paths(workspace), Path(casebook).resolve()))
     read = "import sys;open(sys.argv[1],'rb').read(1)"
     denied = "import sys\ntry: open(sys.argv[1],'rb').read(1)\nexcept PermissionError: sys.exit(17)\nsys.exit(0)"
     write = "import sys\ntry: open(sys.argv[1],'rb+').close()\nexcept PermissionError: sys.exit(17)\nsys.exit(0)"
@@ -1259,11 +1262,12 @@ def _validate_boundary(case_id: str, workspace: Path, root: Path) -> str:
 
 def executor_argv(case_id: str, workspace: Path, argv: list[str],
                   root: Path = ROOT, *,
+                  casebook: Path = CASEBOOK,
                   boundary: ForgeBoundaryDescriptor | None = None) -> list[str]:
     """Return a sealed native wrapper for a live Forge executor seat."""
     if not isinstance(boundary, ForgeBoundaryDescriptor):
         raise FixtureError("sealed Forge boundary is required for a live executor wrapper")
-    verify_pin(CASEBOOK, root)
+    verify_pin(casebook, root)
     if not isinstance(argv, list) or not argv or any(not isinstance(x, str) or not x for x in argv):
         raise FixtureError("Forge executor argv must be a non-empty argument list")
     workspace = Path(workspace)
@@ -1309,12 +1313,13 @@ def _declared_check_executable(name: str, workspace: Path, path_value: str | Non
 
 def run_declared_check(case_id: str, workspace: Path,
                        root: Path = ROOT, *,
+                       casebook: Path = CASEBOOK,
                        boundary: ForgeBoundaryDescriptor | None = None) -> subprocess.CompletedProcess[str]:
     """Run the public check supplied to every seat by the fixture bundle."""
     workspace = Path(workspace)
     if boundary is None and _is_campaign_verifier(workspace):
         raise FixtureError("sealed Forge verifier boundary is required")
-    verify_pin(CASEBOOK, root)
+    verify_pin(casebook, root)
     cases = {case["id"]: case for case in _manifest(Path(root))}
     if case_id not in cases:
         raise FixtureError(f"unknown Forge fixture {case_id}")
@@ -1335,9 +1340,9 @@ def run_declared_check(case_id: str, workspace: Path,
                           timeout=check["timeout"], env=env)
 
 
-def ingress_packet(case_id: str, root: Path = ROOT) -> dict[str, Any]:
+def ingress_packet(case_id: str, root: Path = ROOT, *, casebook: Path = CASEBOOK) -> dict[str, Any]:
     """Return a Forge-style bundle; owner review must still arrive out of band."""
-    verify_pin(CASEBOOK, root)
+    verify_pin(casebook, root)
     cases = {case["id"]: case for case in _manifest(Path(root))}
     if case_id not in {"forge-09", "forge-10"} or case_id not in cases:
         raise FixtureError("Forge fixture has no ingress bundle")
@@ -1384,18 +1389,22 @@ def ingress_packet(case_id: str, root: Path = ROOT) -> dict[str, Any]:
 
 
 def run_held_out(case_id: str, workspace: Path, root: Path = ROOT, *,
+                 casebook: Path = CASEBOOK,
                  boundary: ForgeBoundaryDescriptor | None = None) -> subprocess.CompletedProcess[str]:
     """Run a controller oracle against a fresh verifier copy, not the caller seat."""
     workspace = Path(workspace)
     if boundary is None and _is_campaign_verifier(workspace):
         raise FixtureError("sealed Forge verifier boundary is required")
-    verify_pin(CASEBOOK, root)
+    selected = verify_pin(casebook, root)
     if case_id not in {case["id"] for case in _manifest(Path(root))}:
         raise FixtureError(f"unknown Forge fixture {case_id}")
-    oracle = Path(root) / "held-out" / f"{case_id}.py"
+    context = _canonical({"schema_version": "fanout-forge-oracle-inputs-v1", "case_id": case_id,
+        "casebook": str(Path(casebook).resolve(strict=True)), "root": str(Path(root).resolve(strict=True)),
+        "casebook_sha256": hashlib.sha256(Path(casebook).read_bytes()).hexdigest(),
+        "fixture_manifest_sha256": _digest([selected[key] for key in sorted(selected)])}).decode("utf-8")
+    argv = [sys.executable, "-I", str(Path(__file__).resolve()), "--oracle", case_id]
     env = {key: os.environ[key] for key in ("PATH", "TMPDIR", "LANG", "LC_ALL") if key in os.environ}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
     if boundary is not None:
         _require_unprotected_verifier_python(boundary)
         _verifier_policy(boundary, workspace)
@@ -1403,25 +1412,67 @@ def run_held_out(case_id: str, workspace: Path, root: Path = ROOT, *,
             str(boundary.run_root), str(boundary.baseline_root),
             str(boundary.consumer_root), boundary.seal,
         ], separators=(",", ":"))
-        return subprocess.run([sys.executable, str(oracle), str(workspace)],
+        return subprocess.run([*argv, str(workspace), context],
                               capture_output=True, text=True, timeout=60, env=env)
     with tempfile.TemporaryDirectory(prefix="forge-fresh-verifier-") as temporary:
         verifier = Path(temporary) / "verifier"
         shutil.copytree(workspace, verifier, symlinks=True)
-        return subprocess.run([sys.executable, str(oracle), str(verifier)],
+        return subprocess.run([*argv, str(verifier), context],
                               capture_output=True, text=True, timeout=60, env=env)
 
 
-def probe_observation(case_id: str, workspace: Path, root: Path = ROOT) -> dict[str, Any]:
+def _oracle_child(case_id: str, workspace: Path, encoded: str) -> None:
+    if len(encoded.encode("utf-8")) > 16 * 1024:
+        raise FixtureError("Forge oracle input context exceeds its bound")
+    try:
+        value = json.loads(encoded)
+        if (type(value) is not dict or set(value) != {"schema_version", "case_id", "casebook", "root",
+                "casebook_sha256", "fixture_manifest_sha256"}
+                or value["schema_version"] != "fanout-forge-oracle-inputs-v1" or value["case_id"] != case_id
+                or _canonical(value).decode("utf-8") != encoded
+                or any(type(value[key]) is not str or re.fullmatch(r"[0-9a-f]{64}", value[key]) is None
+                       for key in ("casebook_sha256", "fixture_manifest_sha256"))):
+            raise ValueError("closed context")
+        book, root = (Path(value[key]) for key in ("casebook", "root"))
+        if any(not path.is_absolute() or path.resolve(strict=True) != path for path in (book, root)):
+            raise ValueError("canonical paths")
+        if hashlib.sha256(book.read_bytes()).hexdigest() != value["casebook_sha256"]:
+            raise ValueError("casebook bytes")
+        selected = verify_pin(book, root)
+        if (_digest([selected[key] for key in sorted(selected)]) != value["fixture_manifest_sha256"]
+                or case_id not in selected):
+            raise ValueError("fixture bytes")
+    except (OSError, TypeError, ValueError) as error:
+        raise FixtureError("Forge oracle selected input context differs") from error
+    token = _ORACLE_INPUTS.set((case_id, book, root))
+    previous = sys.argv
+    try:
+        oracle = root / "held-out" / f"{case_id}.py"
+        sys.argv = [str(oracle), str(workspace)]
+        runpy.run_path(str(oracle), run_name="__main__")
+    finally:
+        sys.argv = previous
+        _ORACLE_INPUTS.reset(token)
+
+
+def probe_observation(case_id: str, workspace: Path, root: Path | None = None, *,
+                      casebook: Path | None = None) -> dict[str, Any]:
     """Measure candidate behavior in a sandboxed child; oracle assertions stay outside."""
-    root = Path(root)
+    selected = _ORACLE_INPUTS.get()
+    if selected is not None:
+        if (case_id != selected[0] or root is not None and Path(root) != selected[2]
+                or casebook is not None and Path(casebook) != selected[1]):
+            raise FixtureError("Forge probe differs from its selected oracle context")
+        _, casebook, root = selected
+    root = Path(ROOT if root is None else root)
+    casebook = Path(CASEBOOK if casebook is None else casebook)
     workspace = Path(workspace)
     boundary = _verifier_boundary_from_environment()
     if boundary is None and _is_campaign_verifier(workspace):
         raise FixtureError("sealed Forge verifier boundary is required")
-    verify_pin(CASEBOOK, root)
+    verify_pin(casebook, root)
     if boundary is None:
-        policy = _validate_boundary(case_id, workspace, root)
+        policy = _validate_boundary(case_id, workspace, root, casebook)
         state = None
     else:
         _require_unprotected_verifier_python(boundary)
@@ -1449,3 +1500,10 @@ def probe_observation(case_id: str, workspace: Path, root: Path = ROOT) -> dict[
     if not isinstance(value, dict):
         raise FixtureError("sandboxed candidate probe returned a non-object")
     return value
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 5 or sys.argv[1] != "--oracle":
+        raise FixtureError("Forge oracle child requires its closed selected context")
+    sys.modules["fanout_forge_fixtures"] = sys.modules[__name__]
+    _oracle_child(sys.argv[2], Path(sys.argv[3]), sys.argv[4])

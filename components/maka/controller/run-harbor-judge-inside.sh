@@ -48,6 +48,21 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 docker compose --project-name "$project" -f "$compose" config --quiet
+judge_command=(docker compose --project-name "$project" -f "$compose" run --rm -T judge)
+if test -n "${MAKA_JUDGE_CAPTURE_ID:-}"; then
+  test -n "${MAKA_JUDGE_CAPTURE_CONTROLLER_NAME:-}"
+  test -n "${MAKA_JUDGE_CAPTURE_CHANNEL:-}"
+  test -n "${MAKA_JUDGE_CAPTURE_ACK:-}"
+  docker compose --project-name "$project" -f "$compose" create judge >/dev/null
+  docker compose --project-name "$project" -f "$compose" up -d --wait maka-eval-mitmproxy >/dev/null
+  proxy_id=$(docker compose --project-name "$project" -f "$compose" ps -aq maka-eval-mitmproxy)
+  judge_id=$(docker compose --project-name "$project" -f "$compose" ps -aq judge)
+  "$MAKA_EVAL_HARBOR_PYTHON" "$MAKA_LAB_ROOT/scripts/harbor_judge_input.py" capture-native-emit \
+    "$MAKA_JUDGE_CAPTURE_ID" "$project" "$MAKA_EVAL_SECRET_VOLUME" \
+    "$MAKA_JUDGE_CAPTURE_CONTROLLER_NAME" "$proxy_id" "$judge_id" \
+    "$MAKA_JUDGE_CAPTURE_CHANNEL" "$MAKA_JUDGE_CAPTURE_ACK"
+  judge_command=(docker start -a -i "$judge_id")
+fi
 set +e
 "$MAKA_EVAL_HARBOR_PYTHON" -c '
 import os
@@ -75,8 +90,7 @@ if request_fd != 0:
     os.close(request_fd)
 os.set_inheritable(0, True)
 os.execvp(sys.argv[2], sys.argv[2:])
-' "$MAKA_JUDGE_REQUEST_FILE" docker compose --project-name "$project" -f "$compose" \
-  run --rm -T judge > "$envelope_file"
+' "$MAKA_JUDGE_REQUEST_FILE" "${judge_command[@]}" > "$envelope_file"
 judge_status=$?
 set -e
 if test "$judge_status" -ne 0; then
@@ -88,8 +102,8 @@ if test "$judge_status" -ne 0; then
   exit "$judge_status"
 fi
 expected_boundary=$MAKA_JUDGE_EXPECTED_BOUNDARY
-jq -e --arg boundary "$expected_boundary" '
-  (keys | sort) == ["evidence", "result"]
+jq -e --arg boundary "$expected_boundary" --arg capture "${MAKA_JUDGE_CAPTURE_ID:-}" '
+  (keys | sort) == (if $capture == "" then ["evidence", "result"] else ["capture", "evidence", "result"] end)
   and (.result | keys | sort) == (["auth_route", "effort", "observed_model", "requested_model", "tool_boundary_sha256", "tool_calls", "winner"] | sort)
   and .result.auth_route == "harbor-lab"
   and .result.requested_model == "gpt-6.1-sol"
@@ -113,8 +127,21 @@ jq -e --arg boundary "$expected_boundary" '
   and .evidence.relay_receipt.tool_count == 0
   and (.evidence.relay_receipt.request_marker_sha256 | test("^[0-9a-f]{64}$"))
   and (.evidence.relay_receipt.prompt_sha256 | test("^[0-9a-f]{64}$"))
+  and (if $capture == "" then true else
+    (.capture | keys | sort) == (["schema", "invocation_id", "input_sha256", "boundary_before", "boundary_after", "session_id", "prompt_sha256", "response_answer_sha256"] | sort)
+    and .capture.schema == "khenrix-maka-harbor-capture-runtime-v1"
+    and .capture.invocation_id == $capture
+    and .capture.boundary_before == $boundary and .capture.boundary_after == $boundary
+    and (.capture.input_sha256 | test("^[0-9a-f]{64}$"))
+    and (.capture.session_id | test("^fanout-judge-[0-9a-f]{32}$"))
+    and .capture.prompt_sha256 == .evidence.relay_receipt.prompt_sha256
+    and .capture.response_answer_sha256 == .evidence.relay_receipt.response_answer_sha256
+  end)
 ' "$envelope_file" >/dev/null
 jq -c .result "$envelope_file" > "$result_file"
 jq -c .evidence "$envelope_file" > "$judge_evidence_file"
+if test -n "${MAKA_JUDGE_CAPTURE_ID:-}"; then
+  jq -c .capture "$envelope_file" > "$MAKA_EVIDENCE_DIR/capture-runtime.json"
+fi
 rm -f "$envelope_file"
 cat "$result_file"

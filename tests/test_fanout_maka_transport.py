@@ -62,6 +62,15 @@ def _response(boundary: str, panel_id: str = "interactive") -> dict[str, object]
     }
 
 
+def test_harbor_plausible_claims_without_a_native_capture_reservation_are_not_an_invoke_route(tmp_path):
+    launcher, _ = _launcher(tmp_path, _response('a' * 64, 'harbor'), command='judge-harbor')
+    with pytest.raises(evaluation.JudgeTransportError, match='capture'):
+        transport_module._invoke(launcher, 'judge-harbor', {
+            'panel_id': 'harbor', 'criterion': 'correctness', 'answer_a': 'A', 'answer_b': 'B',
+            'expected_boundary_sha256': 'a' * 64}, timeout=600,
+            environment={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C', 'MAKA_JUDGE_PAID_RUN': '1'})
+
+
 def test_interactive_transport_uses_managed_judge_command_with_blind_answers(tmp_path):
     boundary = "a" * 64
     launcher, captured = _launcher(tmp_path, _response(boundary))
@@ -114,7 +123,7 @@ def test_harbor_transport_requires_explicit_paid_authorization(tmp_path):
 def test_harbor_refuses_historical_model_before_launch(tmp_path):
     launcher, captured = _launcher(tmp_path, _response("a" * 64, "harbor"), command="judge-harbor")
     transport = transport_module.HarborMakaTransport(
-        launcher=launcher, no_tools_characterization_sha256="a" * 64, paid_authorized=True,
+        launcher=launcher, no_tools_characterization_sha256="a" * 64,
     )
     request = _request("harbor")
     with pytest.raises(evaluation.JudgeTransportError, match="pinned"):
@@ -125,7 +134,7 @@ def test_harbor_refuses_historical_model_before_launch(tmp_path):
     assert not captured.exists()
 
 
-def test_harbor_transport_uses_managed_paid_route_and_scrubs_ambient_keys(tmp_path, monkeypatch):
+def test_paid_boolean_and_plausible_shell_response_without_original_root_never_launch(tmp_path, monkeypatch):
     boundary = "a" * 64
     launcher, captured = _launcher(
         tmp_path, _response(boundary, "harbor"), command="judge-harbor",
@@ -142,27 +151,10 @@ def test_harbor_transport_uses_managed_paid_route_and_scrubs_ambient_keys(tmp_pa
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "test-ambient-secret")
-    transport = transport_module.HarborMakaTransport(
-        launcher=launcher, no_tools_characterization_sha256=boundary,
-        paid_authorized=True,
-    )
-
-    ballot = evaluation.MakaJudgeAdapter(transport).judge(evaluation.JudgeRequest(
-        "case-1", "harbor", "Which answer handles NULL?",
-        "NOT IN", "NOT EXISTS", "gpt-6.1-sol", "xhigh", "harbor-lab",
-    ))
-
-    assert ballot["winner"] == "B"
-    assert ballot["observed_model"] == "gpt-6.1-sol"
-    assert "OPENAI_API_KEY" not in environment_capture.read_text(encoding="utf-8")
-    presented = {
-        "panel_id": "harbor", "criterion": "Which answer handles NULL?",
-        "answer_a": "NOT IN", "answer_b": "NOT EXISTS",
-        "expected_boundary_sha256": boundary,
-    }
-    assert captured.read_text(encoding="ascii").split()[0] == hashlib.sha256(
-        json.dumps(presented, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    with pytest.raises(evaluation.JudgeTransportError, match='capture root'):
+        transport_module.HarborMakaTransport(
+            launcher=launcher, no_tools_characterization_sha256=boundary, paid_authorized=True)
+    assert not captured.exists() and not environment_capture.exists()
 
 
 @pytest.mark.parametrize("change", [
@@ -176,14 +168,8 @@ def test_harbor_transport_rejects_unobserved_or_unsafe_evidence(tmp_path, change
     boundary = "a" * 64
     result = _response(boundary, "harbor")
     change(result)
-    launcher, _ = _launcher(tmp_path, result, command="judge-harbor")
-    transport = transport_module.HarborMakaTransport(
-        launcher=launcher, no_tools_characterization_sha256=boundary,
-        paid_authorized=True,
-    )
-
     with pytest.raises(evaluation.JudgeTransportError):
-        transport.judge(_request("harbor"))
+        transport_module._validate_response(result, auth_route='harbor-lab', model='gpt-6.1-sol', boundary=boundary)
 
 
 @pytest.mark.parametrize("change", [
