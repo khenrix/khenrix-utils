@@ -118,6 +118,107 @@ def _dormant_service(tmp_path):
     return helper, module, fanout, opened, value
 
 
+def _guarded_dormant_quality_entry(tmp_path, monkeypatch, *, attached=True):
+    from test_fanout_execute_skill import fanout, _NeverMemory
+    guard_module = importlib.import_module(fanout.__name__ + ".agy_guard")
+    binary = tmp_path / "version-only-agy"
+    binary.write_bytes(b"synthetic version-only guard fixture\n")
+    binary.chmod(0o700)
+    monkeypatch.setattr(guard_module, "_BINARY", binary)
+    monkeypatch.setattr(guard_module, "default_claude_adc_path", lambda: tmp_path / "unused-adc-reference")
+    monkeypatch.setenv("AGY_ADC_AUTH", "true")
+    real_run = subprocess.run
+
+    def version_only(argv, *args, **kwargs):
+        if argv[0] == str(binary):
+            assert tuple(argv) == (str(binary), "--version")
+            return subprocess.CompletedProcess(argv, 0, b"1.2.13\n", b"")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(guard_module.subprocess, "run", version_only)
+    helper, module, runtime, opened, value = _dormant_service(tmp_path)
+    registry = opened.service.coordinator.registry
+    monkeypatch.setattr(helper, "_runtime", lambda: runtime)
+    monkeypatch.setattr(helper, "_real_memory", lambda _runtime: (_NeverMemory, lambda: True))
+    monkeypatch.setattr(runtime.ProviderRegistry, "default", lambda **_kwargs: registry)
+    monkeypatch.setattr(module.HostCredentialSource, "load", lambda *_args: pytest.fail("credentials loaded"))
+    with opened:
+        preparation = next(iter(opened.service.preparations.values()))
+        seat = next(seat for seat in preparation.seats if seat.executor_id == "agy")
+        assert seat.agy_guard is None
+        assert seat.agy_guard_receipt_sha256 is not None
+        if attached:
+            proof = module.write_evidence(opened.service.lifecycle_controller,
+                "quality-installed-case-attachment", value)
+            helper.save_private_descriptor(tmp_path / "private", {
+                "schema_version": "fanout-quality-case-pointer-v1", "attachment": list(proof)},
+                name="quality-case.json")
+    return helper, module, runtime, preparation.digest, seat.agy_guard_receipt_sha256
+
+
+def test_closed_quality_entry_restores_actual_agy_guard_before_coordinator_dispatch(tmp_path, monkeypatch):
+    helper, module, runtime, preparation_digest, guard_digest = _guarded_dormant_quality_entry(tmp_path, monkeypatch)
+    real_bind = module.QualityCaseRunner.bind
+    observed = []
+
+    def inspect_dispatch_then_bind(runner, service):
+        preparation = next(iter(service.preparations.values()))
+        seat = next(seat for seat in preparation.seats if seat.executor_id == "agy")
+        evidence = service.coordinator._dispatch_evidence(preparation.packet, seat, 1, preparation.policy)
+        assert len(evidence) == 64
+        assert type(seat.agy_guard) is runtime.AgyReadOnlyGuard
+        assert seat.agy_guard.receipt_sha256 == guard_digest
+        assert preparation.digest == preparation_digest
+        assert not service.journal.state.seat_phases
+        assert not (service.lifecycle_controller.root / "locks/spend").exists()
+        observed.append(evidence)
+        return real_bind(runner, service)
+
+    monkeypatch.setattr(module.QualityCaseRunner, "bind", inspect_dispatch_then_bind)
+    with pytest.raises(runtime.ProviderRequestError, match="installed helper"):
+        helper.open_quality_case(tmp_path / "private")
+    assert len(observed) == 1
+
+
+@pytest.mark.parametrize("tamper", ["policy", "binary", "adc-mode"])
+def test_closed_quality_entry_rejects_tampered_guard_before_binding_or_dispatch(tmp_path, monkeypatch, tamper):
+    helper, module, runtime, _, _ = _guarded_dormant_quality_entry(tmp_path, monkeypatch)
+    if tamper == "policy":
+        policy = next((tmp_path / "run/lifecycle/agy-homes").glob("*/policy.json"))
+        policy.chmod(0o600)
+        policy.write_bytes(b"{}\n")
+        policy.chmod(0o400)
+    elif tamper == "binary":
+        (tmp_path / "version-only-agy").write_bytes(b"changed synthetic binary\n")
+    else:
+        monkeypatch.delenv("AGY_ADC_AUTH")
+    monkeypatch.setattr(module.QualityCaseRunner, "bind", lambda *_args: pytest.fail("tampered guard bound runner"))
+    with pytest.raises(runtime.ProviderRequestError, match="guard"):
+        helper.open_quality_case(tmp_path / "private")
+    assert not (tmp_path / "run/lifecycle/locks/spend").exists()
+    assert not list((tmp_path / "run/lifecycle/locks").glob("quality-row-*"))
+
+
+def test_ordinary_cold_status_keeps_receipt_only_guard_without_live_auth_or_mutation(tmp_path, monkeypatch):
+    from test_fanout_execute_skill import _private_inventory
+    helper, _, _, preparation_digest, guard_digest = _guarded_dormant_quality_entry(
+        tmp_path, monkeypatch, attached=False)
+    monkeypatch.delenv("AGY_ADC_AUTH")
+    (tmp_path / "version-only-agy").write_bytes(b"changed synthetic binary\n")
+    roots = tuple(tmp_path / name for name in ("private", "run", "authority", "repo"))
+    before = _private_inventory(*roots)
+    with helper.open_run(tmp_path / "private") as opened:
+        preparation = next(iter(opened.service.preparations.values()))
+        seat = next(seat for seat in preparation.seats if seat.executor_id == "agy")
+        assert seat.agy_guard is None
+        assert seat.agy_guard_receipt_sha256 == guard_digest
+        assert preparation.digest == preparation_digest
+        status = opened.service.status()
+        assert status.tasks[0].task_id == preparation.packet.task_id
+        assert status.tasks[0].completed_rounds == 0
+    assert _private_inventory(*roots) == before
+
+
 @pytest.mark.parametrize("tamper", ["foreign-owner", "input", "identity", "repo-write", "extra-field", "checkout-attestation"])
 def test_real_dormant_service_attachment_refuses_before_credentials_or_turns(tmp_path, monkeypatch, tamper):
     helper, module, runtime, opened, value = _dormant_service(tmp_path)

@@ -2168,7 +2168,8 @@ def open_run(private_root: Path | str, *, runtime=None, registry=None, memory_fa
 
 
 def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memory_factory=None,
-                 memory_preflight=None, provider_runner=None, for_dispatch=False, trial_certificate=None):
+                 memory_preflight=None, provider_runner=None, for_dispatch=False, trial_certificate=None,
+                 require_provider_guards=False):
     """Rebuild the same service from private bytes and every authenticated store."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
@@ -2271,7 +2272,7 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
             controller=lifecycle, artifacts=artifacts, registry=registry,
             restore=True, workspace_evidence=workspace_evidence,
             plan_revision=plan_revision,
-            require_provider_guards=for_dispatch,
+            require_provider_guards=for_dispatch or require_provider_guards,
         )
         scheduler = runtime.resume_scheduler_from_amendments(
             initial_plan=initial_plan, journal=journal, backend=scheduler_backend,
@@ -2337,7 +2338,8 @@ def open_quality_case(private_root):
     module = importlib.import_module(runtime.__name__ + ".quality_case")
     attachment = module.QualityCaseAttachment(*pointer)
     runner = module.QualityCaseRunner(attachment, helper=Path(__file__), runtime_digest=_runtime_digest(runtime))
-    opened = _rebuild_run(private_root, runtime=runtime, provider_runner=runner)
+    opened = _rebuild_run(private_root, runtime=runtime, provider_runner=runner,
+        require_provider_guards=True)
     try:
         runner.bind(opened.service)
         return opened
