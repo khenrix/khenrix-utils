@@ -71,10 +71,20 @@ def _runtime():
             elif (getattr(parent, "__file__", None) is not None or
                   {Path(path).resolve() for path in getattr(parent, "__path__", ())} != {root.resolve()}):
                 raise ValueError("fanout runtime has a foreign parent package")
+            owner_name, _, child_name = name.rpartition(".")
+            if owner_name:
+                owner = sys.modules[owner_name]
+                if child_name in vars(owner) and vars(owner)[child_name] is not parent:
+                    raise ValueError("fanout runtime has a foreign parent package")
+                setattr(owner, child_name, parent)
         existing = sys.modules.get("shared.lib.fanout")
+        owner = sys.modules["shared.lib"]
+        if "fanout" in vars(owner) and (existing is None or owner.fanout is not existing):
+            raise ValueError("fanout runtime imported a foreign package")
         if existing is not None:
             if Path(existing.__file__).resolve().parent != runtime_root.resolve():
                 raise ValueError("fanout runtime imported a foreign package")
+            owner.fanout = existing
             return existing
         spec = importlib.util.spec_from_file_location("shared.lib.fanout", runtime_root / "__init__.py",
             submodule_search_locations=[str(runtime_root)])
@@ -82,6 +92,7 @@ def _runtime():
             raise ValueError("fanout runtime imported a foreign package")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
+        owner.fanout = module
         spec.loader.exec_module(module)
         return module
     spec = importlib.util.spec_from_file_location(
