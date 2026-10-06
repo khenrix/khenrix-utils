@@ -4198,10 +4198,19 @@ def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_
             exported_root, handle.container_id, handle.inspect_sha256, workspace, session, *export_ref)
         inspect = [{"Id": handle.container_id, "Config": {"Image": spec.image_digest,
             "Labels": runtime.ContainerLauncher._labels(spec)}, "State": {"Running": False},
-            "HostConfig": {"RestartPolicy": {"Name": "no"}}, "Mounts": [
-                {"Destination": "/workspace", "Type": "volume", "Name": workspace},
-                {"Destination": "/session", "Type": "volume", "Name": session},
-                {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path}]}]
+            "HostConfig": {"RestartPolicy": {"Name": "no"}, "Mounts": [
+                {"Target": "/workspace", "Type": "volume", "Source": spec.workspace_volume,
+                 "ReadOnly": spec.workspace_readonly},
+                {"Target": "/session", "Type": "volume", "Source": spec.session_volume,
+                 "ReadOnly": False},
+                {"Target": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path,
+                 "ReadOnly": True}]}, "Mounts": [
+                {"Destination": "/workspace", "Type": "volume", "Name": spec.workspace_volume,
+                 "RW": not spec.workspace_readonly},
+                {"Destination": "/session", "Type": "volume", "Name": spec.session_volume,
+                 "RW": True},
+                {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path,
+                 "RW": False}]}]
         with ArtifactStore(controller.root / "quarantine" / "runtime-proofs") as raw:
             raw_ref = raw.write_json(f"stopped/{handle.container_id}.json", inspect)
         stop_ref = controller_module.write_evidence(controller, "container-seat-stopped", {

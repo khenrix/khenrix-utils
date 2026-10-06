@@ -40,7 +40,9 @@ class _NativeFakeAdapter(fanout.ProviderAdapter):
         session = request.session_id or f"local-{request.executor_id}-{request.seat_id}"
         script = (
             "IFS= read -r header; IFS= read -r guidance; "
-            "IFS= read -r context_digest; IFS= read -r marker; IFS= read -r context; "
+            "IFS= read -r context_digest; IFS= read -r marker; context=; "
+            "while IFS= read -r line && [ \"$line\" != END_TASK_CONTEXT_BYTES ]; do "
+            "context=\"$context$line\"; done; "
             "if [ \"$4\" != no-dependency ]; then "
             "case \"$context\" in *\"$4\"*) ;; *) exit 96;; esac; fi; "
             "while IFS= read -r rest || [ -n \"$rest\" ]; do :; done; "
@@ -50,7 +52,7 @@ class _NativeFakeAdapter(fanout.ProviderAdapter):
             "\"context_ok\":true}\\n' \"$3\""
         )
         return self._command(request, (
-            "/bin/sh", "-c", script, "sh", str(other / "README.md"),
+            "/bin/bash", "--noprofile", "--norc", "-c", script, "bash", str(other / "README.md"),
             request.target_id, session,
             self.expected_dependency.get(request.target_id, "no-dependency"),
         ))
@@ -222,7 +224,7 @@ def _admitted_native_fake_service(tmp_path, packet, skill_root, repositories, mo
     fake_bin = tmp_path / "native-fake-bin"
     fake_bin.mkdir()
     for executor_id in ("claude", "codex", "agy"):
-        (fake_bin / executor_id).symlink_to("/bin/sh")
+        (fake_bin / executor_id).symlink_to("/bin/bash")
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
 
     spec = importlib.util.spec_from_file_location("multirepo_native_execute", cli_cases.CLI)
