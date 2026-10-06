@@ -19,6 +19,7 @@ import stat
 import subprocess
 import threading
 import time
+import weakref
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -70,6 +71,8 @@ _AGY_SETTINGS_BYTES = b'{"modelProvider":"gemini"}\n'
 _MAX_CLI_STDOUT = 4 * 1024 * 1024
 _MAX_CLI_STDERR = 512 * 1024
 _SSH_OPERATIONS = frozenset({"vm_mounts", "vm_nonce", "relay_directory_prepare", "relay_source_transfer", "socket_attestation", "relay_drain", "socket_closed_check"})
+_QUALITY_DOCKER_THREAD_LOCKS = weakref.WeakValueDictionary()
+_QUALITY_DOCKER_THREAD_LOCKS_GUARD = threading.Lock()
 _AGY_SETTINGS_SCRIPT = """import hashlib,json,os,stat,sys
 root=sys.argv[1]; uid=int(sys.argv[2]); data=b'{"modelProvider":"gemini"}\\n'; limit=4096
 def check_dir(fd):
@@ -340,24 +343,51 @@ def _quality_docker_marker(marker, descriptor, identity=None):
 
 
 @contextmanager
-def _quality_docker_lock(controller, allocation, *, create=False, identity=None):
+def _quality_docker_lock(controller, allocation, *, create=False, identity=None, proof=None):
     marker = controller_directory(controller, "locks") / f"quality-docker-{allocation}"
-    try:
-        descriptor = os.open(marker, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
-            | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
-    except FileExistsError as error:
-        raise ProviderRequestError("quality Docker allocation already attempted") from error
-    except OSError as error:
-        raise ProviderRequestError("quality Docker marker is unavailable") from error
-    try:
+    thread_lock = None
+    waited = False
+    if proof is not None:
+        if not _QUALITY_DOCKER_THREAD_LOCKS_GUARD.acquire(blocking=False):
+            waited = True
+            if not _QUALITY_DOCKER_THREAD_LOCKS_GUARD.acquire(
+                    timeout=min(_quality_docker_remaining(proof), threading.TIMEOUT_MAX)):
+                raise ProviderRequestError("quality Docker attempt or outer deadline exhausted")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise ProviderRequestError("quality Docker command is pending") from error
-        _quality_docker_marker(marker, descriptor, identity)
-        yield marker, descriptor
+            key = (controller.controller_id, allocation, *proof['marker_identity'])
+            thread_lock = _QUALITY_DOCKER_THREAD_LOCKS.get(key)
+            if thread_lock is None:
+                thread_lock = threading.Lock()
+                _QUALITY_DOCKER_THREAD_LOCKS[key] = thread_lock
+        finally:
+            _QUALITY_DOCKER_THREAD_LOCKS_GUARD.release()
+        if not thread_lock.acquire(blocking=False):
+            waited = True
+            if not thread_lock.acquire(
+                    timeout=min(_quality_docker_remaining(proof), threading.TIMEOUT_MAX)):
+                raise ProviderRequestError("quality Docker attempt or outer deadline exhausted")
+    try:
+        if waited:
+            _quality_docker_remaining(proof)
+        try:
+            descriptor = os.open(marker, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+                | (os.O_CREAT | os.O_EXCL if create else 0), 0o600)
+        except FileExistsError as error:
+            raise ProviderRequestError("quality Docker allocation already attempted") from error
+        except OSError as error:
+            raise ProviderRequestError("quality Docker marker is unavailable") from error
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ProviderRequestError("quality Docker command is pending") from error
+            _quality_docker_marker(marker, descriptor, identity)
+            yield marker, descriptor
+        finally:
+            os.close(descriptor)
     finally:
-        os.close(descriptor)
+        if thread_lock is not None:
+            thread_lock.release()
 
 
 def _quality_docker_capacity(limits):
@@ -533,7 +563,7 @@ def quality_docker_runner(controller: LifecycleController, *, allocation_digest:
                 or proof['deadline_wall'] != proof['started_wall'] + outer_seconds):
             raise ProviderRequestError('quality Docker original controls differ')
         with _quality_docker_lock(controller, allocation_digest,
-                identity=proof['marker_identity']) as (_, descriptor):
+                identity=proof['marker_identity'], proof=proof) as (_, descriptor):
             _quality_docker_consumed(controller, descriptor, proof, authority)
             _quality_docker_remaining(proof)
 
@@ -542,7 +572,7 @@ def quality_docker_runner(controller: LifecycleController, *, allocation_digest:
         if canonical_json(read_evidence(controller, 'quality-docker-controls', *authority)) != canonical_json(proof):
             raise ProviderRequestError('quality Docker controls changed')
         with _quality_docker_lock(controller, allocation_digest,
-                identity=proof['marker_identity']) as (marker, descriptor):
+                identity=proof['marker_identity'], proof=proof) as (marker, descriptor):
             attempted = _quality_docker_consumed(controller, descriptor, proof, authority)
             if attempted >= max_commands:
                 raise ProviderRequestError('quality Docker attempt or outer deadline exhausted')
@@ -2614,7 +2644,7 @@ def _quality_cli_terminal(controller, pointer, controls, handle, provider, diges
             or terminal['capture_complete'] is not True):
         raise ProviderRequestError('quality original guest CLI observation differs')
     proof = read_evidence(controller, 'quality-docker-controls', *controls)
-    with _quality_docker_lock(controller, proof['limits']['allocation'], identity=proof['marker_identity']) as (_, fd):
+    with _quality_docker_lock(controller, proof['limits']['allocation'], identity=proof['marker_identity'], proof=proof) as (_, fd):
         if _quality_docker_consumed(controller, fd, proof, controls) < terminal['attempt']:
             raise ProviderRequestError('quality guest CLI original attempt is missing')
     with ArtifactStore.open_existing(controller_directory(controller, 'quarantine') /

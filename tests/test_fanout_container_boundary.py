@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import hashlib
 import json
 import os
 import socket
@@ -831,6 +832,436 @@ def test_quality_docker_fresh_child_cannot_open_an_active_original_marker(tmp_pa
         assert 'pending' in result['error']
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize('workers', [2, 3])
+@pytest.mark.parametrize('operation', ['reopen', 'run'])
+def test_quality_docker_threads_reopen_one_original_allocation_without_replenishing(
+        tmp_path, monkeypatch, workers, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    original = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=workers, command_seconds=5, outer_seconds=30)
+    unrelated = module.quality_docker_runner(controller, allocation_digest='b' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    actual = module._run_bounded_command
+    entered, release = threading.Event(), threading.Event()
+    starts = [threading.Event() for _ in range(workers)]
+    calls = []
+
+    def external(command, **kwargs):
+        calls.append(command)
+        if len(calls) == 2:
+            entered.set()
+            assert release.wait(5)
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('owned concurrent control')")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', external)
+    argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+    unrelated(argv, None)
+    ready = [module.quality_docker_runner(
+        resume_lifecycle_controller(controller.root, controller.capability),
+        allocation_digest='a' * 64, max_commands=workers, command_seconds=5,
+        outer_seconds=30, original_controls=original.controls)
+        for _ in range(workers)] if operation == 'run' else []
+
+    def invoke(index):
+        resumed = resume_lifecycle_controller(controller.root, controller.capability)
+        starts[index].set()
+        runner = ready[index] if ready else module.quality_docker_runner(resumed, allocation_digest='a' * 64,
+            max_commands=workers, command_seconds=5, outer_seconds=30,
+            original_controls=original.controls)
+        return runner(argv, None)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(invoke, 0)]
+        try:
+            assert entered.wait(5)
+            futures.extend(pool.submit(invoke, index) for index in range(1, workers))
+            assert all(event.wait(5) for event in starts)
+            # Creating a different allocation cannot wait on the existing command.
+            fresh = module.quality_docker_runner(controller, allocation_digest='c' * 64,
+                max_commands=1, command_seconds=5, outer_seconds=30)
+            assert read_evidence(controller, 'quality-docker-controls', *fresh.controls)['limits']['allocation'] == 'c' * 64
+            with pytest.raises(ProviderRequestError, match='already attempted'):
+                module.quality_docker_runner(controller, allocation_digest='a' * 64,
+                    max_commands=workers, command_seconds=5, outer_seconds=30)
+            time.sleep(0.05)
+        finally:
+            release.set()
+        results = [future.result(timeout=5) for future in futures]
+    assert [result.stdout for result in results] == [b'owned concurrent control\n'] * workers
+    unrelated(argv, None)
+    for allocation, count in (('a', workers), ('b', 2)):
+        marker = controller.root / 'locks' / ('quality-docker-' + allocation * 64)
+        lines = [json.loads(line) for line in marker.read_bytes().splitlines()]
+        assert len(lines) == 2 + 2 * count
+        for number in range(1, count + 1):
+            attempt = read_evidence(controller, 'quality-docker-attempt', *lines[2 * number]['attempt'])
+            terminal = read_evidence(controller, 'quality-docker-terminal', *lines[2 * number + 1]['terminal'])
+            assert attempt['attempt'] == terminal['attempt'] == number
+            assert terminal['status'] == 'exit' and terminal['capture_complete'] is True
+            assert terminal['returncode'] == 0
+        assert len(list((controller.root / 'locks').glob(
+            'quality-docker-' + allocation * 64 + '-attempt-*'))) == count
+    with pytest.raises(ProviderRequestError, match='exhausted'):
+        original(argv, None)
+    assert len(calls) == workers + 2
+
+
+def test_quality_docker_thread_wait_uses_original_deadline_without_invoking(
+        tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    original = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=0.5, outer_seconds=0.5)
+    actual = module._run_bounded_command
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def external(command, **kwargs):
+        calls.append(command)
+        entered.set()
+        assert release.wait(5)
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('owned deadline control')")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', external)
+    argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        active = pool.submit(original, argv, None)
+        try:
+            assert entered.wait(5)
+            resumed = resume_lifecycle_controller(controller.root, controller.capability)
+            started = time.monotonic()
+            with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+                module.quality_docker_runner(resumed, allocation_digest='a' * 64,
+                    max_commands=2, command_seconds=0.5, outer_seconds=0.5,
+                    original_controls=original.controls)
+            assert 0.2 < time.monotonic() - started < 1
+        finally:
+            release.set()
+        active.result(timeout=5)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    assert len(marker.read_bytes().splitlines()) == 4
+    assert len(calls) == 1
+    with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+        original(argv, None)
+    assert len(calls) == 1
+
+
+
+@pytest.mark.parametrize('provider', ('claude', 'codex', 'agy'))
+def test_quality_cli_terminal_cold_read_outlives_both_execution_deadlines(tmp_path, monkeypatch, provider):
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.container_runtime import ContainerHandle
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=1, outer_seconds=30)
+    handle = ContainerHandle('c' * 64, 'e' * 64, 'workspace', 'session')
+    digest = 'd' * 64
+    actual = module._run_bounded_command
+    calls = []
+
+    def inert(command, **kwargs):
+        calls.append(command.argv)
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('" + digest + "')")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', inert)
+    result = runner(module._quality_cli_command(handle, provider).argv, b'')
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    before = {str(path.relative_to(controller.root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in controller.root.rglob('*') if path.is_file()}
+    program = """import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from shared.lib.fanout import container_boundary as b
+from shared.lib.fanout.controller import LifecycleCapability, resume_lifecycle_controller, read_evidence
+from shared.lib.fanout.container_runtime import ContainerHandle
+v = json.loads(sys.argv[2])
+c = resume_lifecycle_controller(Path(v['root']), LifecycleCapability(v['capability']))
+p = read_evidence(c, 'quality-docker-controls', *v['controls'])
+b.time.monotonic = lambda: p['deadline_monotonic'] + 1
+b.time.time = lambda: p['deadline_wall'] + 1
+b._run_bounded_command = lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError('unexpected dispatch'))
+b._quality_cli_terminal(c, tuple(v['terminal']), tuple(v['controls']),
+    ContainerHandle(*v['handle']), v['provider'], 'd' * 64)
+print(json.dumps({'authenticated_cold_read': True, 'provider': v['provider']}))
+"""
+    child = subprocess.run((sys.executable, '-B', '-I', '-S', '-c', program,
+        str(Path(__file__).resolve().parents[1]),
+        json.dumps({'root': str(controller.root), 'capability': controller.capability.export_token(),
+            'controls': runner.controls, 'terminal': result.quality_terminal,
+            'handle': [handle.container_id, handle.inspect_sha256, handle.workspace_volume, handle.session_volume],
+            'provider': provider})), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    assert child.returncode == 0, child.stderr.decode()
+    assert json.loads(child.stdout) == {'authenticated_cold_read': True, 'provider': provider}
+    monkeypatch.setattr(module.time, 'monotonic', lambda: proof['deadline_monotonic'] + 1)
+    monkeypatch.setattr(module.time, 'time', lambda: proof['deadline_wall'] + 1)
+    with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+        runner(('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq'), None)
+    with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+        module.quality_docker_runner(controller, allocation_digest='a' * 64,
+            max_commands=2, command_seconds=1, outer_seconds=30, original_controls=runner.controls)
+    with pytest.raises(ProviderRequestError, match='already attempted'):
+        module.quality_docker_runner(controller, allocation_digest='a' * 64,
+            max_commands=2, command_seconds=1, outer_seconds=30)
+    after = {str(path.relative_to(controller.root)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in controller.root.rglob('*') if path.is_file()}
+    assert len(calls) == 1 and after == before
+
+
+@pytest.mark.parametrize('clock', ('monotonic', 'wall', 'both'))
+@pytest.mark.parametrize('contention', ('marker', 'registry'))
+def test_quality_expired_cold_reader_does_not_wait_for_contended_original(
+        tmp_path, monkeypatch, clock, contention):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.container_runtime import ContainerHandle
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=1, outer_seconds=30)
+    handle = ContainerHandle('c' * 64, 'e' * 64, 'workspace', 'session')
+    actual = module._run_bounded_command
+    monkeypatch.setattr(module, '_run_bounded_command', lambda command, **kwargs:
+        actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('" + 'd' * 64 + "')")), **kwargs))
+    result = runner(module._quality_cli_command(handle, 'claude').argv, b'')
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    before = marker.read_bytes()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold():
+        if contention == 'registry':
+            with module._QUALITY_DOCKER_THREAD_LOCKS_GUARD:
+                entered.set()
+                assert release.wait(5)
+        else:
+            with module._quality_docker_lock(controller, 'a' * 64,
+                    identity=proof['marker_identity'], proof=proof):
+                entered.set()
+                assert release.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        active = pool.submit(hold)
+        try:
+            assert entered.wait(5)
+            if clock in ('monotonic', 'both'):
+                monkeypatch.setattr(module.time, 'monotonic', lambda: proof['deadline_monotonic'] + 1)
+            if clock in ('wall', 'both'):
+                monkeypatch.setattr(module.time, 'time', lambda: proof['deadline_wall'] + 1)
+            started = time.perf_counter()
+            with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+                module._quality_cli_terminal(controller, result.quality_terminal,
+                    runner.controls, handle, 'claude', 'd' * 64)
+            assert time.perf_counter() - started < 1
+        finally:
+            release.set()
+        active.result(timeout=5)
+    assert marker.read_bytes() == before
+
+
+
+
+@pytest.mark.parametrize('contention', ('marker', 'registry'))
+def test_quality_cold_reader_rechecks_original_deadlines_after_timed_acquisition(
+        tmp_path, monkeypatch, contention):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=1, outer_seconds=30)
+    proof = read_evidence(controller, 'quality-docker-controls', *runner.controls)
+    entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
+    remaining = module._quality_docker_remaining
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    before = marker.read_bytes()
+
+    def hold():
+        if contention == 'registry':
+            with module._QUALITY_DOCKER_THREAD_LOCKS_GUARD:
+                entered.set()
+                assert release.wait(5)
+        else:
+            with module._quality_docker_lock(controller, 'a' * 64,
+                    identity=proof['marker_identity'], proof=proof):
+                entered.set()
+                assert release.wait(5)
+
+    def observed_remaining(value):
+        value = remaining(value)
+        waiting.set()
+        return value
+
+    def read():
+        with module._quality_docker_lock(controller, 'a' * 64,
+                identity=proof['marker_identity'], proof=proof) as (_, descriptor):
+            module._quality_docker_consumed(controller, descriptor, proof, runner.controls)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        active = pool.submit(hold)
+        try:
+            assert entered.wait(5)
+            monkeypatch.setattr(module, '_quality_docker_remaining', observed_remaining)
+            reader = pool.submit(read)
+            assert waiting.wait(5)
+            monkeypatch.setattr(module.time, 'monotonic', lambda: proof['deadline_monotonic'] + 1)
+            monkeypatch.setattr(module.time, 'time', lambda: proof['deadline_wall'] + 1)
+            release.set()
+            with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+                reader.result(timeout=5)
+        finally:
+            release.set()
+        active.result(timeout=5)
+    assert marker.read_bytes() == before
+
+
+
+def test_quality_docker_same_process_durable_pending_attempt_still_refuses(
+        tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    calls = []
+
+    def interrupted(command, **kwargs):
+        calls.append(command)
+        raise OSError('owned command interruption')
+
+    monkeypatch.setattr(module, '_run_bounded_command', interrupted)
+    argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+    with pytest.raises(OSError):
+        runner(argv, None)
+    with pytest.raises(ProviderRequestError, match='pending'):
+        runner(argv, None)
+    with pytest.raises(ProviderRequestError, match='pending'):
+        module.quality_docker_runner(controller, allocation_digest='a' * 64,
+            max_commands=2, command_seconds=5, outer_seconds=30,
+            original_controls=runner.controls)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('separate_controller', [False, True])
+@pytest.mark.parametrize('operation', ['run', 'reopen'])
+def test_quality_docker_existing_original_is_independent_of_another_active_marker(
+        tmp_path, monkeypatch, separate_controller, operation):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    controller_a = create_lifecycle_controller(tmp_path / 'owner-a')
+    controller_b = create_lifecycle_controller(tmp_path / 'owner-b') if separate_controller else controller_a
+    allocation_b = ('a' if separate_controller else 'b') * 64
+    runner_a = module.quality_docker_runner(controller_a, allocation_digest='a' * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    runner_b = module.quality_docker_runner(controller_b, allocation_digest=allocation_b,
+        max_commands=2, command_seconds=0.5, outer_seconds=0.5)
+    actual = module._run_bounded_command
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+
+    def external(command, **kwargs):
+        assert command.argv == argv
+        calls.append(command)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('independent owned control')")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', external)
+
+    def invoke_b():
+        runner = runner_b
+        if operation == 'reopen':
+            runner = module.quality_docker_runner(
+                resume_lifecycle_controller(controller_b.root, controller_b.capability),
+                allocation_digest=allocation_b, max_commands=2, command_seconds=0.5,
+                outer_seconds=0.5, original_controls=runner_b.controls)
+        return runner(argv, None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        active = pool.submit(runner_a, argv, None)
+        try:
+            assert entered.wait(5)
+            independent = pool.submit(invoke_b)
+            result = independent.result(timeout=1)
+            assert result.stdout == b'independent owned control\n'
+            assert not active.done()
+            terminal = read_evidence(controller_b, 'quality-docker-terminal', *result.quality_terminal)
+            assert terminal['attempt'] == 1 and terminal['controls'] == list(runner_b.controls)
+            assert terminal['status'] == 'exit' and terminal['capture_complete'] is True
+        finally:
+            release.set()
+        active.result(timeout=5)
+    assert len(calls) == 2
+    for controller, allocation in ((controller_a, 'a' * 64), (controller_b, allocation_b)):
+        marker = controller.root / 'locks' / ('quality-docker-' + allocation)
+        assert len(marker.read_bytes().splitlines()) == 4
+        assert len(list((controller.root / 'locks').glob(
+            'quality-docker-' + allocation + '-attempt-*'))) == 1
+
+
+def test_quality_cli_terminal_readers_wait_for_their_original_active_control(
+        tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / 'quality-owner')
+    runner = module.quality_docker_runner(controller, allocation_digest='a' * 64,
+        max_commands=4, command_seconds=5, outer_seconds=30)
+    handle = ContainerHandle('c' * 64, 'd' * 64, 'workspace-volume', 'session-volume')
+    digest = 'b' * 64
+    actual = module._run_bounded_command
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    control_argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+
+    def external(command, **kwargs):
+        calls.append(command)
+        if command.argv == control_argv:
+            entered.set()
+            assert release.wait(5)
+        else:
+            assert command.argv in [module._quality_cli_command(handle, provider).argv
+                for provider in ('claude', 'codex', 'agy')]
+        return actual(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('" + digest + "')")), **kwargs)
+
+    monkeypatch.setattr(module, '_run_bounded_command', external)
+    observations = [(provider, runner(module._quality_cli_command(handle, provider).argv,
+        b'').quality_terminal) for provider in ('claude', 'codex', 'agy')]
+    starts = [threading.Event() for _ in observations]
+
+    def verify(index):
+        provider, pointer = observations[index]
+        starts[index].set()
+        return module._quality_cli_terminal(controller, pointer, runner.controls,
+            handle, provider, digest)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        active = pool.submit(runner, control_argv, None)
+        try:
+            assert entered.wait(5)
+            readers = [pool.submit(verify, index) for index in range(3)]
+            assert all(event.wait(5) for event in starts)
+            time.sleep(0.05)
+            completed_while_active = [reader.done() for reader in readers]
+        finally:
+            release.set()
+        active.result(timeout=5)
+        assert [reader.result(timeout=5) for reader in readers] == [None, None, None]
+    assert completed_while_active == [False, False, False]
+    marker = controller.root / 'locks' / ('quality-docker-' + 'a' * 64)
+    assert len(marker.read_bytes().splitlines()) == 10
+    assert len(calls) == 4
 
 
 def test_quality_docker_actual_nonzero_exit_remains_settled_and_consumed(tmp_path, monkeypatch):

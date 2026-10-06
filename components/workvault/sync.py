@@ -12,7 +12,7 @@ import sys
 import uuid
 
 from curation import (_path, _reject_constant, _strings, _unique_object,
-                      MAX_INVENTORY_PATHS, parse_publication,
+                      MAX_BATCH_BYTES, MAX_INVENTORY_PATHS, parse_publication,
                       validate_curated_batch, validate_repository)
 from workvault import (_directory, _file, _identity, _private, _read, _root_path,
                        _unlink_owned, _write_private, publish_curated_batch, status)
@@ -37,6 +37,65 @@ class SyncConfig:
     project: str
     location: str
     model: str
+
+
+def _topic_name(value):
+    if (type(value) is not str or not value or value.strip() != value
+            or len(value.encode('utf-8')) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise SyncError('invalid topic name')
+    return value
+
+
+@dataclass(frozen=True)
+class SyncTopics:
+    repository: str
+    topics: tuple
+
+    def __post_init__(self):
+        validate_repository(self.repository)
+        if type(self.topics) is not tuple or len(self.topics) > MAX_INVENTORY_PATHS:
+            raise SyncError('invalid topic mapping')
+        names = set()
+        for row in self.topics:
+            if type(row) is not tuple or len(row) != 2:
+                raise SyncError('invalid topic mapping')
+            name, paths = row
+            _topic_name(name)
+            if name in names or type(paths) is not tuple:
+                raise SyncError('invalid topic mapping')
+            names.add(name)
+            _strings(list(paths), _path, MAX_INVENTORY_PATHS)
+
+
+def parse_topics(data):
+    """Copy a bounded owner-declared map; topic selection grants no source access."""
+    try:
+        if type(data) is not bytes or len(data) > MAX_BATCH_BYTES:
+            raise SyncError('invalid topic mapping bytes')
+        value = _json(data)
+        if (type(value) is not dict or set(value) != {'schema_version', 'repository', 'topics'}
+                or value['schema_version'] != 'workvault-sync-topics-v1'
+                or type(value['topics']) is not dict
+                or any(type(paths) is not list for paths in value['topics'].values())):
+            raise SyncError('invalid topic mapping schema')
+        return SyncTopics(value['repository'], tuple((name, tuple(paths))
+            for name, paths in value['topics'].items()))
+    except Exception:
+        raise SyncError('topic mapping refused') from None
+
+
+def _selected_topic(config, topic, topics):
+    if topic is None:
+        if topics is not None:
+            raise SyncError('topic mapping requires a topic')
+        return None
+    _topic_name(topic)
+    if type(topics) is not SyncTopics or topics.repository != config.repository:
+        raise SyncError('topic requires configured source mapping')
+    selected = dict(topics.topics)
+    if topic not in selected:
+        raise SyncError('undeclared topic')
+    return selected[topic]
 
 
 def _config(config):
@@ -289,7 +348,18 @@ def _maintain_status(config):
         raise SyncError('maintenance refused') from None
 
 
-def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
+def _topic_status(config, state, topic, selected, commit):
+    result = _status(config, state)
+    covered = set(result.get('covered_paths', ())) if result.get('target_commit') == commit else set()
+    uncovered = sorted(set(selected) - covered)
+    result['topic_selection'] = {'topic': topic, 'target_commit': commit,
+        'requested_paths': list(selected), 'uncovered_paths': uncovered,
+        'full_topic_coverage': bool(selected) and not uncovered,
+        'outcome': 'no_match' if not selected else 'partial' if uncovered else 'complete'}
+    return result
+
+
+def sync_all(config, *, source=None, curator=None, ref=None, progress=None, topic=None, topics=None):
     """Curate at most five pages per call; publish one stable note per source page.
 
     A failed batch stops further paid work. Repeating the command only processes
@@ -298,6 +368,7 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
     """
     try:
         config = _config(config)
+        selected = _selected_topic(config, topic, topics)
         if source is None or curator is None:
             from collector import GitHubSource, VertexCurator
             source = source if source is not None else GitHubSource()
@@ -305,19 +376,31 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
         with _lock(config.state) as directory:
             recover_publication_batch(config.vault, config.snapshots)
             previous = _load_state(directory, config.repository)
-            if previous is not None and _status(config, previous)['uncertain_paths']:
+            if previous is not None and (_status(config, previous)['uncertain_paths']
+                    or (topic is not None and previous['uncertain_paths'])):
                 raise SyncError('uncertain provider work requires explicit inspection')
             snapshot = source.snapshot(config.repository, ref=ref)
+            if selected is not None:
+                if (snapshot.repository != config.repository or any(not set(paths) <= set(snapshot.discovered_paths)
+                        for _, paths in topics.topics)):
+                    raise SyncError('topic mapping differs from pinned inventory')
+                if not selected:
+                    return _topic_status(config, previous, topic, selected, snapshot.commit)
             state = _state({'schema_version': SCHEMA, 'repository': snapshot.repository,
                 'target_commit': snapshot.commit,
                 'discovered_paths': sorted(snapshot.discovered_paths),
                 'indexed_paths': sorted(snapshot.indexed_paths),
                 'tracked_paths': sorted(set(snapshot.discovered_paths) |
                     set(previous['tracked_paths'] if previous else [])),
-                'failed_paths': [], 'uncertain_paths': [], 'provider_evidence': {'outcome': 'not_started'},
+                'failed_paths': sorted(set(previous['failed_paths']) & set(snapshot.discovered_paths))
+                    if selected is not None and previous is not None else [],
+                'uncertain_paths': [], 'provider_evidence': previous['provider_evidence']
+                    if selected is not None and previous is not None else {'outcome': 'not_started'},
                 'broken_index_references': list(snapshot.broken_index_references)}, config.repository)
             _save_state(directory, state)
             pending = _status(config, state)['uncovered_paths']
+            if selected is not None:
+                pending = [path for path in pending if path in selected]
             for start in range(0, len(pending), 5):
                 paths = pending[start:start + 5]
                 dispatched = False
@@ -344,6 +427,8 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
                             publish_curated_batch(config.vault, config.snapshots / name[:-3],
                                                   single, publication=name)
                     state['uncertain_paths'] = []
+                    if selected is not None:
+                        state['failed_paths'] = sorted(set(state['failed_paths']) - set(paths))
                     _save_state(directory, state)
                     if progress is not None:
                         progress({'published_count': len(paths), 'remaining_count': len(pending) - start - len(paths)})
@@ -354,10 +439,10 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
                                 and (not publication_started or isinstance(error, BatchPublicationRejected))
                                 and not publication_pending(config.vault)):
                             state['uncertain_paths'] = []
-                    state['failed_paths'] = paths
+                    state['failed_paths'] = sorted(set(state['failed_paths']) | set(paths)) if selected is not None else paths
                     _save_state(directory, state)
                     break
-            return _status(config, state)
+            return _status(config, state) if selected is None else _topic_status(config, state, topic, selected, snapshot.commit)
     except Exception:
         raise SyncError('sync refused; existing notes retained; inspect status') from None
 
@@ -387,11 +472,21 @@ def load_config(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain'))
+    parser.add_argument('topic', nargs='?')
     parser.add_argument('--config', required=True)
     parser.add_argument('--ref')
+    parser.add_argument('--topic-map')
     args = parser.parse_args(argv)
     try:
+        if ((args.topic is not None or args.topic_map is not None) and args.command != 'sync'
+                or (args.topic is None) != (args.topic_map is None)):
+            raise SyncError('topic and map are required together for sync only')
         config = load_config(args.config)
+        topics = None
+        if args.topic_map is not None:
+            path = _root_path(args.topic_map)
+            with _directory(path.parent) as directory:
+                topics = parse_topics(_read(directory, path.name))
         if args.command in ('status', 'maintain'):
             if args.ref is not None:
                 raise SyncError('offline report does not fetch a ref')
@@ -404,8 +499,11 @@ def main(argv=None):
                 'broken_index_references': list(snapshot.broken_index_references)}
         else:
             result = sync_all(config, ref=args.ref,
-                progress=lambda p: print(json.dumps(p), file=sys.stderr, flush=True))
+                progress=lambda p: print(json.dumps(p), file=sys.stderr, flush=True),
+                topic=args.topic, topics=topics)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        if args.topic is not None:
+            return 0 if result['topic_selection']['full_topic_coverage'] else 1
         return 1 if result.get('full_source_coverage') is False else 0
     except Exception:
         print('WorkVault operation refused; inspect configuration or last published status.', file=sys.stderr)

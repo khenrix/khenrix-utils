@@ -543,7 +543,7 @@ def register_quality_permit(controller, store, authority, ledger, *, role, phase
         quality_docker_runner(controller, allocation_digest=authority[1],
             max_commands=limits["max_commands"], command_seconds=limits["command_seconds"],
             outer_seconds=limits["outer_seconds"], original_controls=controls)
-        with _quality_docker_lock(controller, authority[1], identity=original["marker_identity"]) as (_, descriptor):
+        with _quality_docker_lock(controller, authority[1], identity=original["marker_identity"], proof=original) as (_, descriptor):
             if _quality_docker_consumed(controller, descriptor, original, controls) >= limits["max_commands"]:
                 raise ProviderRequestError("quality Docker original command allocation is exhausted")
             _quality_docker_remaining(original)

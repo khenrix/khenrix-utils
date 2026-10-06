@@ -524,7 +524,8 @@ def test_quality_question_join_uses_actual_planner_source_not_generic_task_objec
         assert not opened.journal.state.seat_phases
 
 
-def _full_frozen_allocation(tmp_path, *, work_tamper=None, bindings=None, owner_seat=None, route_digest=None):
+def _full_frozen_allocation(tmp_path, *, work_tamper=None, bindings=None, owner_seat=None,
+                            route_digest=None, placeholder="synthetic-placeholder"):
     from shared.lib import fanout
     from shared.lib.fanout import diagnostic
     from shared.lib.fanout.broker import BrokerPermit
@@ -536,7 +537,7 @@ def _full_frozen_allocation(tmp_path, *, work_tamper=None, bindings=None, owner_
     for index, provider in enumerate(("claude", "codex", "agy")):
         profile = fanout.ProviderRegistry.default().select(provider, "read-only", "standard")
         permit = BrokerPermit(provider, "run", "question", "quality-normal-01", provider + "-seat",
-            "initial", profile.requested_model, "synthetic-placeholder", 1, 1024, 2048, 8192,
+            "initial", profile.requested_model, placeholder, 1, 1024, 2048, 8192,
             inputs_digest="a" * 64,
             session_id="fd6f840b-4b79-4fd2-91d0-14d3d8fba655" if provider == "claude" else None,
             upstream_route_digest=route_digest,
@@ -569,7 +570,8 @@ def _full_frozen_allocation(tmp_path, *, work_tamper=None, bindings=None, owner_
     return diagnostic, controller, store, bindings, ref, authority, document
 
 
-def _declared_container_backend(tmp_path, *, shared_owner=False, route_digest=None):
+def _declared_container_backend(tmp_path, *, shared_owner=False, route_digest=None,
+                                placeholder="disposable-placeholder"):
     from shared.lib.fanout import quality_case as module
     from shared.lib.fanout.artifacts import canonical_json
     from shared.lib.fanout.container_source import runtime_source_digest
@@ -592,7 +594,7 @@ def _declared_container_backend(tmp_path, *, shared_owner=False, route_digest=No
     bindings.update(source=runtime_source_digest(), projection=hashlib.sha256(canonical_json(projection)).hexdigest())
     _, controller, store, _, _, authority, allocation = _full_frozen_allocation(tmp_path,
         bindings=bindings, owner_seat="claude-seat" if shared_owner else "claude-seat-quality-owner",
-        route_digest=route_digest)
+        route_digest=route_digest, placeholder=placeholder)
     value.update(allocation=list(authority), bindings=bindings)
     return module, controller, store, authority, allocation, value, bindings
 

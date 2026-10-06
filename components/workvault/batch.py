@@ -36,6 +36,35 @@ def publication_pending(path):
         return False
 
 
+def read_curated_cards(path, repository, paths):
+    """Internal source-qualified read, not session authority or a client endpoint."""
+    try:
+        curation.validate_repository(repository)
+        _require(type(paths) is list and 1 <= len(paths) <= curation.MAX_INVENTORY_PATHS)
+        paths = [curation._path(item) for item in paths]
+        _require(len(set(paths)) == len(paths))
+        result, records = [], {}
+        with vault._publication_lock(vault._root_path(path), shared=True, required=True) as directory:
+            for source_path in paths:
+                name = publication_name(repository, source_path)
+                raw, info = _record(directory, name)
+                checkpoint = curation.parse_publication(raw)
+                clean = checkpoint['batch']
+                _require(clean['repository'] == repository
+                         and clean['requested_paths'] == [source_path]
+                         and len(clean['cards']) == 1 and clean['cards'][0]['path'] == source_path)
+                records[name] = info
+                result.append({'id': name[:-3], 'repository': repository, 'commit': clean['commit'],
+                    'published_at': checkpoint['published_at'], 'card': clean['cards'][0],
+                    'source_url': f"https://github.com/{repository}/blob/{clean['commit']}/"
+                                  + curation.quote(source_path, safe='/')})
+            for name, expected in records.items():
+                _require(_record(directory, name)[1] == expected)
+        return result
+    except Exception:
+        raise vault.WorkVaultError('curated read refused') from None
+
+
 def _require(value):
     if not value:
         raise vault.WorkVaultError('batch recovery is ambiguous')

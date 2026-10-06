@@ -182,6 +182,7 @@ def _read_quality_backend_attachment(controller, store, pointer, *, authority, b
     expected_seat = selected["seat_id"] + ("-quality-owner" if row["role"] == "owner-synthesis" else "")
     if row["permit"]["seat_id"] != expected_seat or row["profile"] != selected["profile_digest"]:
         raise ProviderRequestError("quality container backend row identity differs")
+    _require_quality_container_placeholder((row,))
     return value
 
 
@@ -248,6 +249,12 @@ def _candidate_work_rows(allocation):
     return rows
 
 
+def _require_quality_container_placeholder(rows):
+    # The guest image ENV and fixed Codex loopback header use this inert dummy.
+    if any(row["permit"]["placeholder_key"] != "disposable-placeholder" for row in rows):
+        raise ProviderRequestError("quality container placeholder differs from immutable guest route")
+
+
 def _case(service, value, *, helper, runtime_digest):
     backend = _quality_backend(value)
     if (type(service) is not ExecutionService or type(service.artifacts) is not ArtifactStore
@@ -277,6 +284,9 @@ def _case(service, value, *, helper, runtime_digest):
             or bindings["source"] != runtime_source_digest()
             or bindings["profile"] != hashlib.sha256(canonical_json(dict(service.inputs.provider_profiles))).hexdigest()):
         raise ProviderRequestError("quality allocation source, profiles or inputs differ")
+    rows = _candidate_work_rows(allocation)
+    if backend == "container-read-only":
+        _require_quality_container_placeholder(rows)
     book_ref = _ref(value["casebook"], 2 * 1024 * 1024)
     if book_ref.digest != _CASEBOOK or bindings["casebook"] != _CASEBOOK:
         raise ProviderRequestError("quality casebook is not the approved original")
@@ -309,7 +319,6 @@ def _case(service, value, *, helper, runtime_digest):
         routes[seat.executor_id] = select_route(manifest, route_id=selected["route_id"],
             provider=seat.executor_id, requested_model=profile.requested_model,
             execution_class="read-only", data_classification="protected")
-    rows = _candidate_work_rows(allocation)
     seats = [row for row in rows if row["role"] == "candidate-seat"]
     owners = [row for row in rows if row["role"] == "owner-synthesis"]
     for seat in preparation.seats:

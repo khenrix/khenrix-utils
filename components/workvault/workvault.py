@@ -150,9 +150,11 @@ def _identity(info):
 
 
 @contextmanager
-def _publication_lock(path, *, create=False, shared=False, recovery=False):
+def _publication_lock(path, *, create=False, shared=False, recovery=False, required=False):
     active = _ACTIVE_BATCH.get()
     if active is not None:
+        if required:
+            raise WorkVaultError('batch recovery required')
         _private(path.lstat(), directory=True)
         _private(os.fstat(active.directory), directory=True)
         if path != active.vault or _identity(path.lstat()) != _identity(os.fstat(active.directory)):
@@ -165,7 +167,7 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False):
                 lock = stack.enter_context(_file(directory, LOCK, os.O_RDONLY if shared else os.O_RDWR,
                                                  create=not shared))
             except FileNotFoundError:
-                if not shared:
+                if not shared or required:
                     raise
                 if any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
                     raise WorkVaultError('batch recovery required')
@@ -180,6 +182,15 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False):
                 if not recovery and any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
                     raise WorkVaultError('batch recovery required')
                 yield directory
+                if required:
+                    root_info = path.lstat()
+                    lock_info = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
+                    _private(root_info, directory=True)
+                    _private(lock_info)
+                    if (_identity(root_info) != _identity(os.fstat(directory))
+                            or _identity(lock_info) != _identity(os.fstat(lock))
+                            or any(name.startswith('.workvault-batch') for name in os.listdir(directory))):
+                        raise WorkVaultError('runtime file changed')
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 

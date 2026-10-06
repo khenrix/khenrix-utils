@@ -76,6 +76,7 @@ def _vm_observation():
 @pytest.fixture
 def quality_container_provisioning(tmp_path, monkeypatch, request):
     """Real local owner authority, registry and importer; only daemon/relay I/O synthetic."""
+    registration_row_requested = getattr(request, 'param', None) == 'registration-container'
     provider = "agy" if getattr(request, "param", None) == "agy-container" else "claude"
     seat_id = "seat-" + provider
     profile = ProviderRegistry.default().select(provider, "read-only", "standard")
@@ -146,7 +147,7 @@ def quality_container_provisioning(tmp_path, monkeypatch, request):
     from test_fanout_container_upstream import _route
     route = _route(provider)
     permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
-        "initial", profile.requested_model, "inert-test-placeholder", 1, 100_000, 100_000, 8192,
+        "initial", profile.requested_model, "disposable-placeholder", 1, 100_000, 100_000, 8192,
         inputs_digest=inputs.digest, session_id=request.session_id,
         upstream_route_digest=route.digest, upstream_origin=route.profile.origin,
         upstream_model=route.profile.effective_model,
@@ -173,9 +174,13 @@ def quality_container_provisioning(tmp_path, monkeypatch, request):
     bindings = dict.fromkeys(("campaign", "casebook", "source", "projection", "profile", "inputs"), "b" * 64)
     bindings.update(source=runtime_source_digest(), profile=profile.digest, inputs=inputs.digest,
                     projection=_sha(quality_case._quality_input_projection(value)))
+    rows = [row, resume_row, dict(row, role="owner-grade", epoch=3)]
+    if registration_row_requested:
+        rows.append(dict(row, role='owner-synthesis', epoch=4,
+            permit=asdict(replace(permit, seat_id=seat_id + '-quality-owner'))))
     allocation = store.write_json("quality/case.json", {"schema": "fanout-quality-case-allocation-v1",
         "case_id": "normal-01", "controller_id": controller.controller_id, "bindings": bindings,
-        "maka_output_tokens": 8192, "rows": [row, resume_row, dict(row, role="owner-grade", epoch=3)]})
+        "maka_output_tokens": 8192, "rows": rows})
     authority = diagnostic.seal_quality_allocation(controller, store, allocation, bindings=bindings)
     runner = boundary.quality_docker_runner(controller, allocation_digest=authority[1],
         max_commands=200, command_seconds=5, outer_seconds=60)
@@ -231,6 +236,72 @@ def quality_container_provisioning(tmp_path, monkeypatch, request):
         stack.close()
         store.close()
         journal.close()
+
+
+@pytest.mark.parametrize('quality_container_provisioning', ('registration-container',), indirect=True)
+def test_quality_registration_waits_for_control_started_after_original_reopen(
+        quality_container_provisioning, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    q = quality_container_provisioning
+    row = q.store.read_json(q.allocation)['rows'][-1]
+    permit = BrokerPermit(**row['permit'])
+    from shared.lib.fanout.process import run_command
+    ready, entered, release = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    argv = ('docker', '--context', 'colima-fanout-isolated', 'ps', '-aq')
+
+    def external(command, **kwargs):
+        assert command.argv == argv
+        calls.append(command)
+        entered.set()
+        assert release.wait(5)
+        return run_command(replace(command, argv=(sys.executable, '-B', '-I', '-S', '-c',
+            "print('owned registration control')"), slot_root=q.tmp_path / 'inert-registration-slots'))
+
+    monkeypatch.setattr(boundary, '_run_bounded_command', external)
+
+    def register():
+        def reopened(frame, event, _result):
+            if event == 'return' and frame.f_code is boundary.quality_docker_runner.__code__:
+                sys.setprofile(None)
+                ready.set()
+                assert entered.wait(5)
+        sys.setprofile(reopened)
+        try:
+            return diagnostic.register_quality_permit(q.controller, q.store, q.authority, q.ledger,
+                role=row['role'], phase=row['phase'], condition=row['condition'], permit=permit,
+                epoch=row['epoch'], bindings=q.bindings, backend_attachment=q.attachment)
+        finally:
+            sys.setprofile(None)
+
+    def control():
+        assert ready.wait(5)
+        return q.runner(argv, None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        consumer = pool.submit(register)
+        active = pool.submit(control)
+        try:
+            assert entered.wait(5)
+            threading.Event().wait(0.05)
+            completed_while_active = consumer.done()
+        finally:
+            release.set()
+        active.result(timeout=5)
+        permit_id = consumer.result(timeout=5)
+    assert not completed_while_active
+    assert q.ledger.attempt_counts(permit_id, row['epoch']) == (0, 0)
+    state = q.ledger._load()
+    assert len(state['permits']) == 2 and not state['requests'] and not state['send_claims']
+    claim = {'allocation': q.authority[1], 'row': row}
+    pointer = json.loads((q.controller.root / 'locks' / (
+        'quality-registration-' + _sha(claim))).read_bytes())['authority']
+    registered = read_evidence(q.controller, 'quality-permit-registration', *pointer)
+    assert registered['row'] == row and registered['permit_id'] == permit_id
+    assert registered['backend_attachment'] == list(q.attachment)
+    marker = q.controller.root / 'locks' / ('quality-docker-' + q.authority[1])
+    assert len(marker.read_bytes().splitlines()) == 4 and len(calls) == 1
+    assert not q.model_calls
 
 
 @pytest.mark.parametrize("operation", ["reservation", "exclusion"])
@@ -802,3 +873,34 @@ def test_quality_container_consumed_permit_fenced_on_actual_bounded_prompt_refus
         assert state["permits"][q.admission.permit_id]["fenced"] is True
     assert q.admission.ledger.attempt_counts(q.admission.permit_id, 1) == (0, 0)
     assert q.model_calls == []
+
+@pytest.mark.parametrize('quality_container_provisioning', ('registration-container',), indirect=True)
+def test_quality_completed_turn_cold_read_outlives_both_execution_deadlines(
+        quality_container_provisioning, connection_factory, monkeypatch):
+    q = quality_container_provisioning
+    _, pointer = _turn(q, connection_factory)
+    request = replace(q.request, artifact_store=q.store)
+    before_record = boundary.validate_quality_container_readonly_turn(q.controller, q.store,
+        request, pointer, backend_attachment=q.attachment)
+    controls = read_evidence(q.controller, 'quality-docker-controls', *q.runner.controls)
+    before = {str(path.relative_to(q.tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in q.tmp_path.rglob('*') if path.is_file() and not path.is_symlink()}
+    monkeypatch.setattr(boundary.time, 'monotonic', lambda: controls['deadline_monotonic'] + 1)
+    monkeypatch.setattr(boundary.time, 'time', lambda: controls['deadline_wall'] + 1)
+    assert boundary.validate_quality_container_readonly_turn(q.controller, q.store,
+        request, pointer, backend_attachment=q.attachment) == before_record
+    reopened = diagnostic.reopen_quality_container_delivery_turn(q.controller, q.store,
+        request, pointer, authority=q.authority, bindings=q.bindings,
+        row=q.row, backend_attachment=q.attachment)
+    assert reopened[0] == before_record
+    owner = q.store.read_json(q.allocation)['rows'][-1]
+    assert owner['role'] == 'owner-synthesis'
+    with pytest.raises(ProviderRequestError, match='deadline exhausted'):
+        diagnostic.register_quality_permit(q.controller, q.store, q.authority, q.ledger,
+            role=owner['role'], phase=owner['phase'], condition=owner['condition'],
+            permit=diagnostic._quality_row_permit(owner), epoch=owner['epoch'],
+            bindings=q.bindings, backend_attachment=q.attachment)
+    after = {str(path.relative_to(q.tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in q.tmp_path.rglob('*') if path.is_file() and not path.is_symlink()}
+    assert after == before
+    assert len(q.model_calls) == 1  # Only the original synthetic fixture response.

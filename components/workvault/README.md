@@ -25,6 +25,43 @@ knowledge pages per model call, validates structured curation, and publishes a s
 note per page. `status` is offline. Both inventory and sync accept `--ref` for an
 explicit commit or ref.
 
+An optional topic selects an owner-declared path set, not a model-generated category:
+
+```bash
+mise exec -- python -B components/workvault/sync.py sync shipping --config /absolute/private/sync.json --topic-map /absolute/private/topics.json
+```
+
+The explicit topic map is an owner-only `0600` regular file in an owner-only directory:
+
+```json
+{
+  "schema_version": "workvault-sync-topics-v1",
+  "repository": "example/team-wiki",
+  "topics": {"shipping": ["knowledge/example.md"], "empty": []}
+}
+```
+
+Its repository must equal the already configured source, and every mapped path must
+belong to the complete inventory at the pinned source commit. A map never admits a
+new source or linked document. Topic names are exact and case-sensitive; undeclared
+names, missing maps, unsafe paths, duplicate fields/paths and stale inventory mappings
+refuse collection. An explicitly empty topic returns `topic_selection.outcome: no_match`
+and exit1 without page reads, publication or source-state replacement. It never falls
+back to all pages. No real topics or path labels are supplied by this component.
+
+Topic sync retains full-source discovery, uncovered/tracked/failed-path accounting,
+nonselected cards/checkpoints and uncertain-work fencing. `topic_selection` separately
+reports the requested commit, selected paths, uncovered paths and topic completion;
+topic success exits0 even if `full_source_coverage` remains false. Offline status still
+reports source-wide coverage, not topic success. An empty selection reports against its
+newly inspected commit while retaining the prior source state, if any. Repeating a
+successful topic at the same commit reads no pages and spends no model calls. Omitting
+the topic and map preserves the original full-source sync. Topic/map arguments are
+not accepted by status, inventory or maintain. The library accepts the immutable
+`SyncTopics` returned by `parse_topics(bytes)` as `sync_all(..., topic=..., topics=...)`.
+Machine skill delivery must explicitly adopt this contract; existing installed helpers
+do not gain topic support merely because the component source changes.
+
 `maintain` is offline and report-only. It compares managed publications with the
 last observed pinned inventory, reports missing publications, stale commit identities
 and retained removed paths, and groups exact duplicate curated payloads among active
@@ -155,6 +192,15 @@ coverage.
 Both functions operate only on supplied metadata. They perform no collection,
 MCP connection, publication, state update, or retrieval authorization. Directory
 pin assertions alone do not prove an authenticated read or approved access.
+
+The internal `batch.read_curated_cards` primitive reads an explicit source-path
+selection under one required shared publication lock. It preserves stable note IDs,
+each card's exact source revision, draft status and uncertainty; a topic refresh may
+legitimately leave different cards at different revisions. It refuses partial or
+recovering publications and does not enumerate human notes. It is not exposed by
+the CLI or MCP and establishes no session or consuming-route authority. Its existing
+limits are 4,096 selected paths and 4 MiB per publication, not an aggregate recall
+budget; the separate two-summary/500-token injection limit remains unimplemented.
 
 This component does not enable Obsidian Sync, vault Git, community plugins, semantic
 retrieval or automatic prompt/memory injection. Those require separate integration
