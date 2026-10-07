@@ -37,10 +37,10 @@ import tomllib
 import memory_ingress
 
 PACKAGE = "claude-mem"
-PACKAGE_VERSION = "13.25.3"
-SOURCE_COMMIT = "4520de9e0f8d6cdc20597520e383d8b51d93137f"
-ARTIFACT_URL = "https://registry.npmjs.org/claude-mem/-/claude-mem-13.25.3.tgz"
-ARTIFACT_INTEGRITY = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
+PACKAGE_VERSION = "13.34.2"
+SOURCE_COMMIT = "a80767e975dde7131cefaee46a90c130acec30d2"
+ARTIFACT_URL = "https://registry.npmjs.org/claude-mem/-/claude-mem-13.34.2.tgz"
+ARTIFACT_INTEGRITY = "sha512-UrAZzPh3MlEQwkJKuo08pb3GA0RNbpC9FjxNIBHOJEIjbLBP5bVO2+mBMy9/MH3/SWRWrYJTq0TCHSrMWUfg3Q=="
 BUN_VERSION = "1.4.2"
 OPENAI_MODEL = "gpt-6.1-sol"
 RELAY_PORT = 48174
@@ -407,6 +407,7 @@ def _common_settings() -> dict[str, str]:
         "CLAUDE_MEM_RUNTIME": "worker",
         "CLAUDE_MEM_SEMANTIC_INJECT": "false",
         "CLAUDE_MEM_CHROMA_ENABLED": "false",
+        "CLAUDE_MEM_DEDUP_ENABLED": "false",
         "CLAUDE_MEM_CHROMA_API_KEY": "",
         "CLAUDE_MEM_TIER_ROUTING_ENABLED": "false",
         "CLAUDE_MEM_TIER_SIMPLE_MODEL": "",

@@ -67,20 +67,24 @@ def _observation(
         "files_read": "[]",
         "generated_by_model": None,
         "id": observation_id,
+        "last_reinforced": None,
         "memory_session_id": "manual-fanout-run-task-seat",
         "merged_into_project": None,
         "metadata": None,
         "narrative": f"checkpoint {observation_id}",
+        "occurrence_count": 1,
         "origin_device_id": None,
         "origin_local_id": None,
         "project": "fanout/run/task/seat",
         "prompt_number": None,
         "relevance_count": 0,
+        "reinforcement_dates": None,
         "subtitle": "Manual memory",
         "sync_rev": "1",
         "synced_at": None,
         "text": None,
         "title": f"fanout checkpoint {observation_id}",
+        "title_norm_key": None,
         "type": observation_type,
     }
 
@@ -311,6 +315,59 @@ def test_fetch_normalizes_pinned_date_desc_rows_to_requested_id_order(
     assert json.loads(sent["body"]) == {"ids": [41, 42]}
     assert "/api/search" not in sent["path"]
     assert "/context/inject" not in sent["path"]
+
+
+def test_fetch_preserves_new_columns_and_distinct_authors_of_identical_checkpoints(token_path):
+    rows = []
+    for observation_id, author in [(41, "claude"), (42, "codex")]:
+        rows.append({
+            **_observation(observation_id),
+            "agent_id": author,
+            "agent_type": "executor",
+            "title": "same checkpoint title",
+            "narrative": "same checkpoint text; prior conclusion withdrawn",
+            "content_hash": "a" * 16,
+            "occurrence_count": 2,
+            "title_norm_key": "b" * 32,
+            "reinforcement_dates": '["2026-10-05","2026-10-07"]',
+            "last_reinforced": "2026-10-07",
+        })
+    with _gateway((200, _canonical(list(reversed(rows))), {})) as gateway:
+        status, encoded, response = _run(_canonical(_fetch_request()), gateway, token_path=token_path)
+    assert status == 0
+    assert encoded == _canonical(response)
+    assert [(row["id"], row["agent_id"]) for row in response["result"]] == [(41, "claude"), (42, "codex")]
+    assert response["result"] == rows
+    assert len(gateway.requests) == 1
+    assert json.loads(gateway.requests[0]["body"]) == {"ids": [41, 42]}
+
+
+@pytest.mark.parametrize("field,value", [
+    ("occurrence_count", None), ("occurrence_count", True), ("occurrence_count", 0),
+    ("occurrence_count", -1), ("occurrence_count", 1.5), ("occurrence_count", "1"),
+    ("occurrence_count", 2**53),
+    ("title_norm_key", 1), ("title_norm_key", {}), ("title_norm_key", "x" * 1025),
+    ("reinforcement_dates", ["2026-10-07"]), ("reinforcement_dates", "not-json"),
+    ("reinforcement_dates", '{}'), ("reinforcement_dates", '["2026-10-07",1]'),
+    ("last_reinforced", 1), ("last_reinforced", []), ("last_reinforced", "x" * 129),
+])
+def test_new_observation_columns_fail_closed_on_type_or_size_drift(token_path, field, value):
+    observation = {**_observation(41), field: value}
+    with _gateway((200, _canonical([observation]), {})) as gateway:
+        status, encoded, response = _run(_canonical(_fetch_request([41])), gateway, token_path=token_path)
+    assert status == 1
+    assert response["error"]["code"] == "invalid-worker-response"
+    assert b"checkpoint" not in encoded
+
+
+@pytest.mark.parametrize("field", ["occurrence_count", "title_norm_key", "reinforcement_dates", "last_reinforced"])
+def test_new_pinned_observation_columns_cannot_be_missing(token_path, field):
+    observation = _observation(41)
+    observation.pop(field)
+    with _gateway((200, _canonical([observation]), {})) as gateway:
+        status, _, response = _run(_canonical(_fetch_request([41])), gateway, token_path=token_path)
+    assert status == 1
+    assert response["error"]["code"] == "invalid-worker-response"
 
 
 @pytest.mark.parametrize(

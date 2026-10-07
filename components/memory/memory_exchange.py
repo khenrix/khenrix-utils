@@ -44,7 +44,7 @@ _OBSERVATION_TYPES = frozenset(
     }
 )
 # Exact columns returned by SELECT o.* at the repository's claude-mem pin:
-# 13.25.3 / 4520de9e0f8d6cdc20597520e383d8b51d93137f.
+# 13.34.2 / a80767e975dde7131cefaee46a90c130acec30d2.
 _OBSERVATION_FIELDS = frozenset(
     {
         "agent_id",
@@ -59,20 +59,24 @@ _OBSERVATION_FIELDS = frozenset(
         "files_read",
         "generated_by_model",
         "id",
+        "last_reinforced",
         "memory_session_id",
         "merged_into_project",
         "metadata",
         "narrative",
+        "occurrence_count",
         "origin_device_id",
         "origin_local_id",
         "project",
         "prompt_number",
         "relevance_count",
+        "reinforcement_dates",
         "subtitle",
         "sync_rev",
         "synced_at",
         "text",
         "title",
+        "title_norm_key",
         "type",
     }
 )
@@ -446,7 +450,7 @@ def _validate_observation(value: Any) -> dict[str, Any]:
         raise ExchangeError("invalid-worker-response", "observation subtitle is invalid")
     if not _nullable_string(value["narrative"], maximum=MAX_TEXT_BYTES):
         raise ExchangeError("invalid-worker-response", "observation narrative is invalid")
-    if not all(_validate_embedded_list(value[name]) for name in ("facts", "concepts", "files_read", "files_modified")):
+    if not all(_validate_embedded_list(value[name]) for name in ("facts", "concepts", "files_read", "files_modified", "reinforcement_dates")):
         raise ExchangeError("invalid-worker-response", "observation list field is invalid")
     for name in ("prompt_number", "synced_at"):
         if value[name] is not None and not _is_int(value[name], minimum=0):
@@ -454,11 +458,15 @@ def _validate_observation(value: Any) -> dict[str, Any]:
     for name in ("created_at_epoch", "discovery_tokens", "relevance_count"):
         if not _is_int(value[name], minimum=0):
             raise ExchangeError("invalid-worker-response", f"observation {name} is invalid")
+    if not _is_int(value["occurrence_count"], minimum=1):
+        raise ExchangeError("invalid-worker-response", "observation occurrence_count is invalid")
+    if not _nullable_string(value["last_reinforced"], maximum=128):
+        raise ExchangeError("invalid-worker-response", "observation last_reinforced is invalid")
     if not _bounded_string(value["created_at"], maximum=128):
         raise ExchangeError("invalid-worker-response", "observation timestamp is invalid")
     if not isinstance(value["content_hash"], str) or not _CONTENT_HASH_RE.fullmatch(value["content_hash"]):
         raise ExchangeError("invalid-worker-response", "observation hash is invalid")
-    for name in ("generated_by_model", "merged_into_project", "agent_type", "agent_id", "origin_device_id", "origin_local_id"):
+    for name in ("generated_by_model", "merged_into_project", "agent_type", "agent_id", "origin_device_id", "origin_local_id", "title_norm_key"):
         if not _nullable_string(value[name], maximum=1024):
             raise ExchangeError("invalid-worker-response", f"observation {name} is invalid")
     if not _validate_embedded_metadata(value["metadata"]):

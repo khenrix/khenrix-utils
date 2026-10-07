@@ -22,6 +22,9 @@ still a local single-user process, so other processes running as your operating
 system user can reach it. Nothing syncs history to Khenrix or claude-mem cloud
 services. Chroma, cloud sync, telemetry, hosted memory fallback, Telegram,
 transcript watching, and semantic prompt injection are disabled.
+Near-duplicate/title-based merging is explicitly disabled. Native exact-write
+idempotency remains unchanged; exact fetches retain every requested row's ID,
+author, and complete checkpoint text.
 
 Managed Claude/Codex/agy hooks sanitize prompts, nested tool input/response
 strings, agy tool arguments/errors, and transcript-backed turns before dispatch
@@ -186,8 +189,8 @@ an empty denylist.
 
 ## Upgrade contract
 
-The package is pinned to version 13.25.3, source commit
-`4520de9e0f8d6cdc20597520e383d8b51d93137f`, and the SHA-512 integrity in
+The package is pinned to version 13.34.2, source commit
+`a80767e975dde7131cefaee46a90c130acec30d2`, and the SHA-512 integrity in
 `provenance.json`. An upgrade must update all three together, stage into a new
 version directory, back up SQLite, verify package identity and search, then
 change the declared pin. Never replace the active runtime with an unverified

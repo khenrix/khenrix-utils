@@ -42,7 +42,7 @@ def _private_json(path: pathlib.Path, value: object) -> None:
 
 def _fixture_artifact() -> bytes:
     files = {
-        "package/package.json": json.dumps({"name": "claude-mem", "version": "13.25.3"}).encode(),
+        "package/package.json": json.dumps({"name": "claude-mem", "version": "13.34.2"}).encode(),
         "package/plugin/scripts/worker-service.cjs": b"console.log('fixture')\n",
         "package/plugin/ui/viewer.html": b"fixture\n",
     }
@@ -60,7 +60,7 @@ def test_pin_and_public_source_are_exact() -> None:
     provenance = json.loads((MEMORY_ROOT / "provenance.json").read_text())
     assert provenance == {
         "package": "claude-mem",
-        "version": "13.25.3",
+        "version": "13.34.2",
         "registry_url": memoryctl.ARTIFACT_URL,
         "integrity": memoryctl.ARTIFACT_INTEGRITY,
         "source_repository": "https://github.com/thedotmack/claude-mem.git",
@@ -69,10 +69,10 @@ def test_pin_and_public_source_are_exact() -> None:
         "license_file": "LICENSE.claude-mem.txt",
         "bun_version": "1.4.2",
     }
-    assert memoryctl.SOURCE_COMMIT == "4520de9e0f8d6cdc20597520e383d8b51d93137f"
+    assert memoryctl.SOURCE_COMMIT == "a80767e975dde7131cefaee46a90c130acec30d2"
     assert (
         memoryctl.ARTIFACT_INTEGRITY
-        == "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
+        == "sha512-UrAZzPh3MlEQwkJKuo08pb3GA0RNbpC9FjxNIBHOJEIjbLBP5bVO2+mBMy9/MH3/SWRWrYJTq0TCHSrMWUfg3Q=="
     )
     tracked = "\n".join(path.read_text(errors="ignore") for path in MEMORY_ROOT.iterdir() if path.is_file())
     assert "smp-rc-engineering" not in tracked
@@ -103,6 +103,15 @@ def test_routes_are_explicit_private_and_have_no_fallback(
     assert settings["CLAUDE_MEM_PROVIDER"] == "claude"
     assert settings["CLAUDE_MEM_CLAUDE_AUTH_METHOD"] == "subscription"
     assert settings["CLAUDE_MEM_OPENROUTER_API_KEY"] == ""
+
+
+@pytest.mark.parametrize("route", ["codex-subscription", "claude-subscription"])
+def test_disabled_dedup_survives_route_selection_and_inherited_environment(private_home, monkeypatch, route):
+    monkeypatch.setenv("CLAUDE_MEM_DEDUP_ENABLED", "true")
+    monkeypatch.setattr(memoryctl, "worker_health", lambda: False)
+    selected = memoryctl.select_route(route, restart=False)
+    assert json.loads(memoryctl.settings_path().read_text())["CLAUDE_MEM_DEDUP_ENABLED"] == "false"
+    assert memoryctl.runtime_environment(selected)["CLAUDE_MEM_DEDUP_ENABLED"] == "false"
 
 
 def test_setup_is_dry_run_by_default(private_home: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
