@@ -188,17 +188,18 @@ runtime, or removes it when that runtime had no final receipt.
 
 ## Managed policy
 
-Both routes use `gpt-6.1-sol`, `ask` permissions, and `xhigh` by default for
-interactive and headless work. The launcher adds `--thinking xhigh` to
+Both routes use `gpt-6.1-sol` and `ask` permissions. Execution defaults to medium;
+planning, review, and merging explicitly select xhigh. Existing explicit native
+chat effort is preserved. The launcher adds `--thinking medium` to
 `maka run` when no explicit value is present. `gpt-6-sol` and `gpt-5.6-sol` remain selectable
 so existing sessions can resume.
 
-The API relay declares exactly `xhigh` and `max`; an explicit
-`maka run --thinking max ...` is the highest supported planning setting. The
+The API relay declares `medium`, `xhigh`, and `max` and preserves admitted effort.
+An explicit `maka run --thinking max ...` remains supported. The
 ChatGPT subscription route exposes only up to `xhigh` for GPT-6.1 Sol until a
 live `max` probe proves that entitlement. Therefore
 `max` and `ultra` are unavailable there. Its closest honest planning setting is
-therefore `xhigh`. Ordinary execution uses `xhigh` on both routes.
+therefore `xhigh`. The separate no-tools judge still requires xhigh.
 
 The launcher clears provider API-key variables, Node injection, mise injection,
 and ambient XDG overrides before it starts Maka. It fixes the account home,

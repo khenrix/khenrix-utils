@@ -1244,8 +1244,8 @@ def enforce_outbound_policy(raw: bytes) -> bytes:
 
     The pinned headless and TUI clients do not apply Runtime Policy's
     chatDefaults.thinkingLevel when a Session omits an explicit level. The
-    relay accepts only that known SDK fallback, xhigh, or max. It sends xhigh
-    for the fallback and preserves an explicit xhigh or max selection.
+    relay accepts medium, xhigh, or max and preserves the admitted effort.
+    Callers select medium for execution and xhigh for planning/review/merge.
     """
 
     body = json.loads(
@@ -1254,8 +1254,6 @@ def enforce_outbound_policy(raw: bytes) -> bytes:
         parse_constant=_reject_json_constant,
         parse_float=_strict_json_float,
     )
-    if body["reasoning"]["effort"] == "medium":
-        body["reasoning"]["effort"] = "xhigh"
     # The pinned AI SDK defaults an omitted reasoningSummary to 'detailed'.
     # Keep the reviewed wire contract at 'auto' even on that client path.
     body["reasoning"]["summary"] = "auto"

@@ -132,7 +132,7 @@ function sameProxy(left, right) {
 
 function desiredModelOverrides() {
   return Object.fromEntries(MODEL_IDS.map((model) => [model, {
-    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
     capabilities: { parallelToolCalls: true },
   }]));
 }
@@ -143,7 +143,7 @@ function legacyModelOverrides() {
   }]));
 }
 
-function hasDesiredModelOverrides(value, withCapability = true, modelIds = MODEL_IDS) {
+function hasDesiredModelOverrides(value, withCapability = true, modelIds = MODEL_IDS, legacy = false) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);
   if (!sameStrings(entries.map(([model]) => model), modelIds)) return false;
@@ -152,8 +152,8 @@ function hasDesiredModelOverrides(value, withCapability = true, modelIds = MODEL
     typeof profile === 'object' &&
     !Array.isArray(profile) &&
     Object.keys(profile).length === (withCapability ? 3 : 2) &&
-    sameStrings(profile.thinkingLevels, ['xhigh', 'max']) &&
-    profile.defaultThinkingLevel === 'xhigh' &&
+    sameStrings(profile.thinkingLevels, legacy ? ['xhigh', 'max'] : ['medium', 'xhigh', 'max']) &&
+    profile.defaultThinkingLevel === (legacy ? 'xhigh' : 'medium') &&
     (withCapability
       ? profile.capabilities !== null &&
         typeof profile.capabilities === 'object' &&
@@ -173,7 +173,9 @@ function isManagedRelayConnection(relay, port) {
     [MODEL_IDS, [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID]].some((modelIds) =>
       sameStrings(relay.enabledModelIds, modelIds) &&
       (hasDesiredModelOverrides(relay.modelOverrides, true, modelIds) ||
-        hasDesiredModelOverrides(relay.modelOverrides, false, modelIds))) &&
+        hasDesiredModelOverrides(relay.modelOverrides, false, modelIds) ||
+        hasDesiredModelOverrides(relay.modelOverrides, true, modelIds, true) ||
+        hasDesiredModelOverrides(relay.modelOverrides, false, modelIds, true))) &&
     relay.requestBodyOverlay === undefined;
 }
 
@@ -364,7 +366,7 @@ export async function restoreLegacyMakaRelayProfile(
     }
   }
   if (sameStrings(relay.enabledModelIds, previousModels) &&
-      hasDesiredModelOverrides(relay.modelOverrides, false, previousModels)) return;
+      hasDesiredModelOverrides(relay.modelOverrides, false, previousModels, true)) return;
   expectCommitted(
     'connection_update',
     await connection.request('connection.catalog.update', {
@@ -382,7 +384,7 @@ export async function restoreLegacyMakaRelayProfile(
   );
   if (!isManagedRelayConnection(updated, port) ||
       !sameStrings(updated.enabledModelIds, previousModels) ||
-      !hasDesiredModelOverrides(updated.modelOverrides, false, previousModels)) {
+      !hasDesiredModelOverrides(updated.modelOverrides, false, previousModels, true)) {
     throw new SafeConfigurationError('relay_profile_downgrade_failed');
   }
 }
@@ -475,14 +477,15 @@ async function ensureDenyProxy(connection, token, port) {
 async function ensureChatDefaults(connection) {
   const snapshot = await connection.request('runtime.policy.query', {});
   const current = snapshot.policy.chatDefaults;
-  if (current.permissionMode === 'ask' && current.thinkingLevel === 'xhigh') return;
+  const thinkingLevel = current.thinkingLevel ?? 'medium';
+  if (current.permissionMode === 'ask' && current.thinkingLevel === thinkingLevel) return;
   expectCommitted(
     'chat_defaults_update',
     await connection.request('runtime.policy.mutate', {
       expectedRevision: snapshot.revision,
       operation: {
         kind: 'set_chat_defaults',
-        value: { ...current, permissionMode: 'ask', thinkingLevel: 'xhigh' },
+        value: { ...current, permissionMode: 'ask', thinkingLevel },
       },
     }),
   );

@@ -15,6 +15,17 @@ response — e.g. Claude drafts a plan, then asks Codex (or agy) to review it be
 
 ## Per-CLI quick reference
 
+Select effort by role without changing the CLI's managed configuration: execution
+uses medium; planning, review, and merging use xhigh for Codex, Claude, and Maka.
+Gemini stays high for every role. Codex review/merger launches explicitly pass
+`-c 'model_reasoning_effort="xhigh"'`; Claude 2.1.284 uses `--effort xhigh` with
+its native model/provider capability gate. Maka selects medium or xhigh through
+the native session effort control. Existing explicit chat effort is preserved;
+the relay forwards admitted medium and xhigh unchanged. The separate Maka judge
+requires xhigh. No CLI automatically switches an existing session by inferred role.
+Preserve explicit user choices and native managed constraints; report unsupported
+selections instead of adding capability overrides.
+
 | CLI               | Headless command            | Full-perms flag                            |
 |-------------------|-----------------------------|--------------------------------------------|
 | Claude Code       | `claude -p "<prompt>"`      | `--dangerously-skip-permissions`           |
@@ -25,7 +36,7 @@ response — e.g. Claude drafts a plan, then asks Codex (or agy) to review it be
 
 ```bash
 claude -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)" \
-  --dangerously-skip-permissions
+  --effort xhigh --dangerously-skip-permissions
 ```
 
 - `-p` / `--print` runs a single prompt and prints the response, then exits.
@@ -36,10 +47,10 @@ claude -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)" \
 
 ```bash
 codex exec "Review this plan and flag risks/gaps:\n\n$(cat plan.md)" \
-  --dangerously-bypass-approvals-and-sandbox
+  -c 'model_reasoning_effort="xhigh"' --dangerously-bypass-approvals-and-sandbox
 
 # or feed the prompt/context via stdin:
-cat plan.md | codex exec --dangerously-bypass-approvals-and-sandbox \
+cat plan.md | codex exec -c 'model_reasoning_effort="xhigh"' --dangerously-bypass-approvals-and-sandbox \
   "Review this plan for risks, missing steps, and gaps"
 ```
 

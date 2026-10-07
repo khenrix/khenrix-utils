@@ -52,7 +52,7 @@ def test_registry_pins_distinct_standard_and_deep_class_profiles():
 
     assert (read.requested_model, read.requested_effort) == ("claude-opus-5-5", "medium")
     assert (write.requested_model, write.requested_effort) == ("claude-opus-5-5", "medium")
-    assert (deep.requested_model, deep.requested_effort) == ("claude-opus-5-5", "ultracode")
+    assert (deep.requested_model, deep.requested_effort) == ("claude-opus-5-5", "xhigh")
     assert read.cli_version == "2.1.284"
     assert len({read.digest, write.digest, deep.digest}) == 3
     assert read.default_timeout == read.timeout_ceiling == 900
@@ -155,7 +155,7 @@ def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
 
     for executor in ("claude", "agy"):
         assert registry.admit(executor, "read-only", "deep").characterized
-    for tier, effort in (("standard", "medium"), ("deep", "ultra")):
+    for tier, effort in (("standard", "medium"), ("deep", "xhigh")):
         profile = registry.admit("codex", "read-only", tier)
         assert profile.characterized is False
         assert profile.requested_model == "gpt-6.1-sol"
@@ -186,9 +186,9 @@ def test_deep_readonly_turn_preserves_effort_and_refuses_recorded_drift_before_s
     )
     profile = registry.admit("codex", "read-only", "deep")
     assert profile.characterized is False
-    assert profile.requested_effort == "ultra"
-    assert 'model_reasoning_effort="ultra"' in profile.initial_argv
-    assert 'model_reasoning_effort="ultra"' in profile.resume_argv
+    assert profile.requested_effort == "xhigh"
+    assert 'model_reasoning_effort="xhigh"' in profile.initial_argv
+    assert 'model_reasoning_effort="xhigh"' in profile.resume_argv
     current["version"] = "0.161.0"
 
     with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
@@ -204,13 +204,14 @@ def test_deep_readonly_turn_preserves_effort_and_refuses_recorded_drift_before_s
     ("codex", "codex-thread-1"),
     ("agy", "agy-conversation-1"),
 ])
+@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "xhigh")])
 def test_initial_and_resume_argv_pin_the_same_selected_model(
-    tmp_path, executor, session, _mock_clean_codex_host,
+    tmp_path, executor, session, tier, effort, _mock_clean_codex_host,
 ):
     """A resumed CLI falling back to ambient defaults could silently switch models."""
     registry = fanout.ProviderRegistry.default()
-    execution_class = "repo-write" if executor == "agy" else "read-only"
-    profile = registry.select(executor, execution_class, "standard")
+    execution_class = "repo-write" if executor == "agy" and tier == "standard" else "read-only"
+    profile = registry.select(executor, execution_class, tier)
     adapter = registry.require(executor)
     initial = fanout.ProviderRequest(
         executor, "secret", cwd=tmp_path, session_id=session if executor == "claude" else None,
@@ -221,8 +222,9 @@ def test_initial_and_resume_argv_pin_the_same_selected_model(
         execution_class=execution_class, profile=profile,
     )
 
-    first = adapter.build_command(initial)
-    next_turn = adapter.build_command(resumed)
+    options = {"brokered_diagnostic": True} if executor == "agy" and tier == "deep" else {}
+    first = adapter.build_command(initial, **options)
+    next_turn = adapter.build_command(resumed, **options)
 
     assert profile.requested_model in first.argv
     assert profile.requested_model in next_turn.argv
@@ -231,17 +233,17 @@ def test_initial_and_resume_argv_pin_the_same_selected_model(
         assert first.stdin == next_turn.stdin == b'{"event":"user","message":{"content":"secret"}}\n'
     else:
         assert first.stdin == next_turn.stdin == b"secret"
-    if executor == "agy":
+    if executor == "agy" and tier == "standard":
         assert "--dangerously-skip-permissions" in first.argv
         assert "--dangerously-skip-permissions" in next_turn.argv
         assert ("--mode", "accept-edits") == first.argv[first.argv.index("--mode"):][:2]
         assert ("--mode", "accept-edits") == next_turn.argv[next_turn.argv.index("--mode"):][:2]
     elif executor == "claude":
-        assert ("--effort", "medium") == first.argv[first.argv.index("--effort"):][:2]
-        assert ("--effort", "medium") == next_turn.argv[next_turn.argv.index("--effort"):][:2]
-    else:
-        assert 'model_reasoning_effort="medium"' in first.argv
-        assert 'model_reasoning_effort="medium"' in next_turn.argv
+        assert ("--effort", effort) == first.argv[first.argv.index("--effort"):][:2]
+        assert ("--effort", effort) == next_turn.argv[next_turn.argv.index("--effort"):][:2]
+    elif executor == "codex":
+        assert f'model_reasoning_effort="{effort}"' in first.argv
+        assert f'model_reasoning_effort="{effort}"' in next_turn.argv
         assert 'sandbox_mode="read-only"' in next_turn.argv
 
 

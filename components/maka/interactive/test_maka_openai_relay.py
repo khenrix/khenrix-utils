@@ -248,13 +248,16 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(forwarded)["tool_choice"], "auto")
         self.assertTrue(self.fixture.forwarder.exchanges[0].closed)
 
-    def test_model_default_medium_is_elevated_before_openai_forwarding(self) -> None:
-        request_body = valid_body(effort="medium")
-        status, _, _ = self.fixture.request("POST", "/v1/responses", request_body)
-        self.assertEqual(status, 200)
-        forwarded = json.loads(self.fixture.forwarder.calls[0][0])
-        self.assertEqual(forwarded["reasoning"], {"effort": "xhigh", "summary": "auto"})
-        self.assertEqual(self.fixture.key_loads, 1)
+    def test_execution_and_review_effort_are_preserved_on_outbound_wire(self) -> None:
+        for effort in ("medium", "xhigh"):
+            with self.subTest(effort=effort):
+                request_body = valid_body(effort=effort)
+                status, _, _ = self.fixture.request("POST", "/v1/responses", request_body)
+                self.assertEqual(status, 200)
+                forwarded = json.loads(self.fixture.forwarder.calls[-1][0])
+                self.assertEqual(forwarded["reasoning"], {"effort": effort, "summary": "auto"})
+                self.assertEqual(forwarded["model"], relay.MODEL_ID)
+                self.assertEqual(forwarded["service_tier"], "default")
 
     def test_explicit_max_is_preserved_for_api_key_planning(self) -> None:
         request_body = valid_body(effort="max")

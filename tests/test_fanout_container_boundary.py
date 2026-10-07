@@ -111,8 +111,8 @@ def test_quality_container_exact_canonical_guest_pair_preserves_request_and_cont
     assert request.profile.requested_model == {'claude': 'claude-opus-5-5',
         'codex': 'gpt-6.1-sol', 'agy': 'gemini-3.8-flash-high'}[provider]
     assert request.profile.requested_effort == {
-        ('claude', 'standard'): 'medium', ('claude', 'deep'): 'ultracode',
-        ('codex', 'standard'): 'medium', ('codex', 'deep'): 'ultra',
+        ('claude', 'standard'): 'medium', ('claude', 'deep'): 'xhigh',
+        ('codex', 'standard'): 'medium', ('codex', 'deep'): 'xhigh',
         ('agy', 'standard'): 'high', ('agy', 'deep'): 'high'}[provider, tier]
     if provider == 'agy':
         assert json.loads(pair.guest.stdin)['message']['content'] == request.prompt_bytes.decode()

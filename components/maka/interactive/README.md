@@ -35,13 +35,15 @@ Non-streaming title and recap calls are rejected, so auxiliary prompts cannot
 consume this provider capability.
 
 The reserved `custom` connection selects the `openai-responses` protocol and exposes
-all three models with `xhigh` and `max`, defaulting to `xhigh`. An explicit
-`--thinking max` remains `max`; the relay normalizes only the pinned client's
-known derived `medium` fallback to `xhigh`. The pinned SDK can also derive a
+all three models with `medium`, `xhigh`, and `max`, defaulting to `medium`.
+Execution selects medium; planning, review, and merging explicitly select xhigh.
+Existing explicit chat effort is preserved, and the relay forwards admitted
+effort unchanged. An explicit `--thinking max` remains `max`. The pinned SDK can also derive a
 `detailed` reasoning summary; the relay narrows that value to the reviewed
 `auto` summary before forwarding. Other summary values are rejected. It rejects inbound `service_tier`
 and adds `service_tier: "default"` to every admitted API request. The managed launcher supplies
-`--thinking xhigh` for a headless run that has no explicit value.
+`--thinking medium` for a headless run that has no explicit value. The separate
+no-tools judge still requires xhigh.
 The relay rejects a successful response before sending it to Maka if its
 initial `response.created` event omits or changes the requested model or
 `default` tier. It also stops forwarding if later response metadata changes.
@@ -59,7 +61,7 @@ CONNECT and absolute-form request, so an imported connection cannot use the
 proxy to reach another provider. Only `127.0.0.1` and `localhost` bypass it.
 The reconciler enables only the reserved `keychain-openai` connection, selects
 `gpt-6.1-sol`, keeps `gpt-6-sol` and `gpt-5.6-sol` selectable, and sets `ask` permissions with
-`xhigh` as the normal default.
+`medium` when chat effort is absent, preserving an explicit native chat effort.
 
 These checks cover traffic sent through Maka's configured model connection and
 Runtime Host proxy. They are not an operating-system firewall for another

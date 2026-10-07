@@ -285,9 +285,38 @@ class ComponentInstallerTests(unittest.TestCase):
             self.assertNotIn("@@", rendered)
             self.assertNotIn("git/agentic-setup", rendered)
             self.assertIn("dev.khenrix.maka-openai-relay", rendered)
-            self.assertIn("--thinking xhigh", rendered)
+            self.assertIn("--thinking medium", rendered)
             self.assertIn("'person with space'", rendered)
             self.assertIn(str(layout.component), rendered)
+
+    def test_wrapper_preserves_explicit_role_effort_and_defaults_workers_to_medium(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory) / "home"
+            layout = component.canonical_layout(home)
+            layout.component.mkdir(parents=True)
+            (layout.component / "mise.toml").write_text("")
+            package = home / "package"
+            package.mkdir()
+            (package / "package.json").write_text("{}")
+            mise = home / ".local/bin/mise"
+            mise.parent.mkdir(parents=True)
+            mise.write_text('#!/bin/sh\ncase "$*" in\n'
+                            '*maka_auth_mode.py*) echo chatgpt-subscription ;;\n'
+                            '*configure_maka_subscription.mjs*) exit 0 ;;\n'
+                            '*) printf "%s\\n" "$@" ;;\nesac\n')
+            mise.chmod(0o700)
+            template = (pathlib.Path(__file__).resolve().parent.parent / "wrapper/maka.in").read_text()
+            wrapper = home / "wrapper"
+            wrapper.write_text(component.render_wrapper(template, layout=layout,
+                account_name="test", mise=mise, package=package))
+            wrapper.chmod(0o700)
+            for args, wanted in ((["run", "work"], "medium"),
+                                 (["run", "work", "--thinking", "medium"], "medium"),
+                                 (["run", "review", "--thinking", "xhigh"], "xhigh")):
+                result = subprocess.run([str(wrapper), *args], capture_output=True, text=True, check=True)
+                argv = result.stdout.splitlines()
+                self.assertEqual(argv.count("--thinking"), 1)
+                self.assertEqual(argv[argv.index("--thinking") + 1], wanted)
 
     def test_judge_command_does_not_run_on_subscription_route(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

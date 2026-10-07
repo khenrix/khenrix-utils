@@ -218,7 +218,7 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
     ):
         require(template.count(placeholder) == 1, f"wrapper placeholder invalid: {placeholder}")
     require("dev.khenrix.maka-openai-relay" in template, "neutral relay service missing")
-    require("--thinking xhigh" in template, "headless xhigh default missing")
+    require("--thinking medium" in template, "headless medium default missing")
 
     layout = canonical_layout()
     account = pwd.getpwuid(os.getuid())

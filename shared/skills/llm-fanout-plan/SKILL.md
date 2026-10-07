@@ -7,12 +7,17 @@ description: Use when an approved implementation plan, a direct cross-model ques
 
 Produce one validated DAG. Planning never starts providers or approves amendments.
 
-Use higher reasoning effort for the invoking orchestrator's planning and reconciliation.
+Use xhigh for Codex, Claude, and Maka planning, review, and merging; Gemini stays high.
+Select the native launch/session effort explicitly for those roles, including reviewer
+and merger subagents: ordinary Codex execution and execution subagents default medium.
+Preserve explicit user choices and native managed model/provider capability constraints;
+report an unsupported role selection instead of forcing an override.
 Size standard work for medium-effort Sol and Opus seats; Gemini keeps its existing high
 effort. Give each task a bounded objective, the evidence it needs, a concrete deliverable,
 and acceptance checks. Split when a task spans distinct decisions or ownership boundaries,
 not merely to add parallel sessions. Keep dependent implementation and its immediate tests
-together. Explicit deep reviews remain a separate tier; do not silently downgrade them.
+together. Use deep read-only profiles for review: Claude and Codex request xhigh,
+Gemini high. Do not silently downgrade them or use ultra, ultracode, or max as substitutes.
 
 For a v2 plan, map each source Task's `**Target:**` to one exact repository target; distinct repositories may share a ticket key and relative path names. Keep each work task and source Step on its declared target. A repository writer owns only one target, with at most one repo-write work task per target. Compare owned paths by `(target_id, relative_path)`. Declare `artifact` or `handover` mode on every compiled task dependency, including same-target edges; `handover` requires a repo-write predecessor. Keep source cross-Task `**Dependency modes:**` declarations aligned with those compiled edges.
 

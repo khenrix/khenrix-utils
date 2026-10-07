@@ -23,7 +23,7 @@ if test "${1:-}" = update; then
   exit 64
 fi
 
-# The managed model catalog applies xhigh by default in interactive sessions.
+# Ordinary headless execution defaults to medium.
 # Keep the command boundary explicit for headless sessions while respecting an
 # intentional --thinking value (API-key planning may select max explicitly).
 case "${1:-}" in
@@ -35,7 +35,7 @@ case "${1:-}" in
       esac
     done
     if test "$thinking_specified" = false; then
-      set -- "$@" --thinking xhigh
+      set -- "$@" --thinking medium
     fi
     ;;
 esac

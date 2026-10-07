@@ -63,8 +63,8 @@ function hasExactApiOverride(value) {
     const model = value[id];
     return (
     exactKeys(model, ['thinkingLevels', 'defaultThinkingLevel', 'capabilities']) &&
-    sameStrings(model.thinkingLevels, ['xhigh', 'max']) &&
-    model.defaultThinkingLevel === 'xhigh' &&
+    sameStrings(model.thinkingLevels, ['medium', 'xhigh', 'max']) &&
+    model.defaultThinkingLevel === 'medium' &&
     exactKeys(model.capabilities, ['parallelToolCalls']) &&
     model.capabilities.parallelToolCalls === true
     );
@@ -77,7 +77,7 @@ function hasExactSubscriptionOverride(value) {
     const model = value[id];
     return (
     exactKeys(model, ['defaultThinkingLevel']) &&
-    model.defaultThinkingLevel === 'xhigh'
+    model.defaultThinkingLevel === 'medium'
     );
   });
 }
@@ -102,7 +102,7 @@ export function validateMakaRuntimeSnapshot(mode, { policySnapshot, catalog, enr
     chatDefaults === null ||
     typeof chatDefaults !== 'object' ||
     chatDefaults.permissionMode !== 'ask' ||
-    chatDefaults.thinkingLevel !== 'xhigh'
+    !(mode === 'api-key-relay' ? ['medium', 'xhigh', 'max'] : ['low', 'medium', 'high', 'xhigh']).includes(chatDefaults.thinkingLevel)
   ) {
     fail('chat_defaults_invalid');
   }
@@ -234,15 +234,15 @@ async function selfTest() {
     baseUrl: RELAY_BASE_URL,
     modelOverrides: {
       [MODEL_ID]: {
-        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
         capabilities: { parallelToolCalls: true },
       },
       [LEGACY_MODEL_ID]: {
-        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
         capabilities: { parallelToolCalls: true },
       },
       [PREVIOUS_MODEL_ID]: {
-        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
         capabilities: { parallelToolCalls: true },
       },
     },
@@ -271,9 +271,9 @@ async function selfTest() {
     ...base,
     providerType: 'openai-codex',
     modelOverrides: {
-      [MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
-      [LEGACY_MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
-      [PREVIOUS_MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
+      [MODEL_ID]: { defaultThinkingLevel: 'medium' },
+      [LEGACY_MODEL_ID]: { defaultThinkingLevel: 'medium' },
+      [PREVIOUS_MODEL_ID]: { defaultThinkingLevel: 'medium' },
     },
   };
   validateMakaRuntimeSnapshot('chatgpt-subscription', {

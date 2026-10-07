@@ -21,6 +21,27 @@ import eval_harness  # noqa: E402
 import fanout_baseline  # noqa: E402
 
 
+@pytest.mark.parametrize("judge,effort", [("codex", "xhigh"), ("claude", "xhigh"), ("agy", "high")])
+def test_judge_launch_uses_review_effort_without_changing_executor_config(tmp_path, monkeypatch, judge, effort):
+    cfg = {judge: {"model": "explicit-model", "thinking": "medium"}}
+    argv = []
+    def turn(provider, prompt, config, workdir, **kwargs):
+        spec = eval_harness.eval_runtime.build_spec(provider, prompt, config)
+        argv.append(spec.argv)
+        return '{"winner":"A"}', {"valid": True}
+    monkeypatch.setattr(eval_harness, "run_text", turn)
+    eval_harness._run_judge(judge, "review", cfg, tmp_path, timeout=30,
+                            verdict_ok=lambda raw: True)
+    assert cfg == {judge: {"model": "explicit-model", "thinking": "medium"}}
+    assert "explicit-model" in argv[0]
+    if judge == "codex":
+        assert 'model_reasoning_effort="xhigh"' in argv[0]
+    elif judge == "claude":
+        assert argv[0][argv[0].index("--effort") + 1] == effort
+    else:
+        assert "--effort" not in argv[0]  # no-tools agy tier stays in its model
+
+
 @pytest.mark.parametrize("providers,judge", [(("codex", "codex"), "claude"),
                                             (("codex",), "codex")])
 def test_development_versions_include_judge_and_probe_each_cli_once(providers, judge):
@@ -113,6 +134,8 @@ def test_real_eval_measures_before_spend_and_records_versions(measured_campaign,
     benchmark = json.loads((eval_dir / "workspace/iteration-1/benchmark.json").read_text())
     receipt = json.loads((eval_dir / "receipt.json").read_text())
     assert benchmark["metadata"]["cli_versions"] == expected
+    assert benchmark["metadata"]["judge_config"] == {"model": "requested-judge", "thinking": "xhigh"}
+    assert receipt["judge_config"] == {"model": "requested-judge", "thinking": "xhigh"}
     assert benchmark["metadata"]["cli_versions_after"] == expected
     assert receipt["cli_versions"] == expected
     assert receipt["provenance"] == "eval"

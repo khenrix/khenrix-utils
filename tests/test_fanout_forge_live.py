@@ -639,8 +639,8 @@ def test_real_fixture_preflight_builds_native_sandbox_command_without_provider_c
     ("claude", "standard", "claude-opus-5-5", "medium"),
     ("codex", "standard", "gpt-6.1-sol", "medium"),
     ("agy", "standard", "gemini-3.8-flash-high", "high"),
-    ("claude", "deep", "claude-opus-5-5", "ultracode"),
-    ("codex", "deep", "gpt-6.1-sol", "ultra"),
+    ("claude", "deep", "claude-opus-5-5", "xhigh"),
+    ("codex", "deep", "gpt-6.1-sol", "xhigh"),
     ("agy", "deep", "gemini-3.8-flash-high", "high"),
 ))
 def test_quality_original_spec_preserves_real_profile_model_and_effort(

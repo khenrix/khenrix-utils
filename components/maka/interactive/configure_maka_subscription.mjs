@@ -10,7 +10,7 @@ export const MODEL_ID = 'gpt-6.1-sol';
 export const LEGACY_MODEL_ID = 'gpt-5.6-sol';
 export const PREVIOUS_MODEL_ID = 'gpt-6-sol';
 export const MODEL_IDS = [MODEL_ID, PREVIOUS_MODEL_ID, LEGACY_MODEL_ID];
-const DEFAULT_THINKING_LEVEL = 'xhigh';
+const DEFAULT_THINKING_LEVEL = 'medium';
 const LEGACY_OPENCODE_BOOTSTRAP = {
   enabledModelIds: [
     'nemotron-3-ultra-free',
@@ -82,7 +82,7 @@ function desiredModelOverrides() {
     [model, { defaultThinkingLevel: DEFAULT_THINKING_LEVEL }]));
 }
 
-function isManagedOverride(value, modelIds) {
+function isManagedOverride(value, modelIds, legacy = false) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);
   if (!sameStrings(entries.map(([model]) => model), modelIds)) return false;
@@ -91,7 +91,7 @@ function isManagedOverride(value, modelIds) {
     typeof override === 'object' &&
     !Array.isArray(override) &&
     Object.keys(override).length === 1 &&
-    override.defaultThinkingLevel === DEFAULT_THINKING_LEVEL
+    override.defaultThinkingLevel === (legacy ? 'xhigh' : DEFAULT_THINKING_LEVEL)
   );
 }
 
@@ -107,7 +107,9 @@ function isSafeCodexConnection(candidate) {
     (candidate.modelOverrides === undefined ||
       isManagedOverride(candidate.modelOverrides, [LEGACY_MODEL_ID]) ||
       isManagedOverride(candidate.modelOverrides, [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID]) ||
-      hasDesiredModelOverrides(candidate.modelOverrides))
+      hasDesiredModelOverrides(candidate.modelOverrides) ||
+      [[LEGACY_MODEL_ID], [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID], MODEL_IDS].some((modelIds) =>
+        isManagedOverride(candidate.modelOverrides, modelIds, true)))
   );
 }
 
@@ -231,13 +233,14 @@ export async function reconcileMakaSubscriptionDefaults(
   if (!current || typeof current !== 'object') {
     throw new SafeConfigurationError('chat_defaults_missing');
   }
-  if (current.permissionMode === 'ask' && current.thinkingLevel === 'xhigh') return;
+  const thinkingLevel = current.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+  if (current.permissionMode === 'ask' && current.thinkingLevel === thinkingLevel) return;
   expectCommitted(
     await connection.request('runtime.policy.mutate', {
       expectedRevision: snapshot.revision,
       operation: {
         kind: 'set_chat_defaults',
-        value: { ...current, permissionMode: 'ask', thinkingLevel: 'xhigh' },
+        value: { ...current, permissionMode: 'ask', thinkingLevel },
       },
     }),
   );

@@ -115,6 +115,13 @@ that CLI's own config, not here.
 
 ## Sub-agents
 
+- Select xhigh for Codex, Claude, and Maka planning, review, and merging, including
+  reviewer and merger subagents. Execution uses medium; Gemini uses high for every
+  role. Ordinary Codex and execution subagent defaults are medium, so select xhigh
+  explicitly for a review or merger launch/session. Preserve explicit user choices
+  and native managed capability/requirements; report unsupported selections rather
+  than forcing a managed-setting override.
+
 - Enforce delegation structurally, not by prose: a coordinator agent should have its write
   tools removed rather than be instructed not to write.
 - Brief a verifier with the spec and the artifact only — never the producer's reasoning,

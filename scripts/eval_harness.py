@@ -1062,8 +1062,15 @@ class JudgeVerdictError(RuntimeError):
         self.comparison = None
 
 
+def _judge_config(judge: str, cfg: dict) -> dict:
+    """Select review effort without changing executor or explicit model choices."""
+    effort = "high" if judge == "agy" else "xhigh"
+    return {**cfg, judge: {**cfg.get(judge, {}), "thinking": effort}}
+
+
 def _run_judge(judge: str, prompt: str, cfg: dict, workdir: Path, *,
                timeout: int, verdict_ok):
+    cfg = _judge_config(judge, cfg)
     # The provider's transport retries cannot detect a malformed successful reply.
     text, rec = run_text(judge, prompt, cfg, workdir, timeout=timeout, retries=2,
                          readonly=False)
@@ -1262,7 +1269,8 @@ def _checks():
 
 
 def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None,
-                   models=None, summary=None, cli_versions: Mapping[str, str] | None = None):
+                   models=None, summary=None, cli_versions: Mapping[str, str] | None = None,
+                   judge_config=None):
     """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
     For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark.
     `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded).
@@ -1293,6 +1301,8 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         }
     if models:
         rec["models"] = models
+    if judge_config:
+        rec["judge_config"] = judge_config
     if not seeded:
         if cli_versions is not None:
             rec["cli_versions"] = dict(cli_versions)
@@ -1381,6 +1391,7 @@ def run(args) -> int:
 
     benchmark = {
         "metadata": {"skill_name": args.skill, "judge": args.judge,
+                     "judge_config": _judge_config(args.judge, cfg)[args.judge],
                      "providers": providers, "mode": args.mode,
                      "cli_versions": cli_versions,
                      "evals_run": [f"eval-{e['id']}-{e['name']}" for e in evals],
@@ -1458,7 +1469,8 @@ def run(args) -> int:
         models["judge"] = cfg.get(args.judge, {}).get("model")
         _write_receipt(args.skill, providers=providers, mode=args.mode,
                        judge=args.judge, delta=d, blind_winner=bw, seeded=False,
-                       models=models, summary=benchmark["run_summary"], cli_versions=cli_versions)
+                       models=models, summary=benchmark["run_summary"], cli_versions=cli_versions,
+                       judge_config=_judge_config(args.judge, cfg)[args.judge])
     return 0 if gate_ok else 1
 
 

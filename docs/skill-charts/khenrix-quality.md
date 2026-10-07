@@ -41,4 +41,4 @@ flowchart TD
 | G_EXPLICIT | agent | `evals/khenrix-quality/triggers.json::use the former ponytail-audit workflow on this repository` |
 | G_WRITING | agent | `evals/khenrix-quality/arena.json::humanize this cover letter and match the casual voice in my sample` |
 | G_OWNER | agent | `evals/khenrix-quality/evals.json::Does not provide a rewritten paragraph` |
-| G_WRITE | agent | `evals/khenrix-quality/evals.json::REVIEW reports an actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix` |
+| G_WRITE | agent | `evals/khenrix-quality/evals.json::REVIEW reports a numbered actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix` |

@@ -8,8 +8,11 @@ description: Use when a validated fanout admission packet needs durable Claude, 
 Run one accepted fanout DAG through isolated executor seats. The invoking CLI owns admission, recovery, reconciliation, and actions; seats contribute evidence, not authority.
 
 Standard Sol and Opus worker profiles request medium effort for both read-only and
-repo-write tasks; Gemini remains high. The invoking orchestrator uses higher effort for
-planning and reconciliation. Explicit deep profiles are unchanged. This is an effort
+repo-write tasks; Gemini remains high. The invoking orchestrator explicitly selects
+xhigh for Codex, Claude, or Maka planning, review, and merging, including reviewer and
+merger subagents; Gemini remains high for every role. Deep read-only profiles request
+xhigh for Sol and Opus. Preserve explicit user choices and native managed capability
+constraints; report an unsupported role selection instead of forcing an override. This is an effort
 policy, not a relaxed acceptance bar or a write certificate. Existing runs retain their
 recorded profiles; the new defaults apply only to freshly admitted runs.
 

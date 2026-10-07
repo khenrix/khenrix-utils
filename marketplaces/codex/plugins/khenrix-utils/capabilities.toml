@@ -533,24 +533,24 @@ trusted_paths = ["${HOME}", "${HOME}/git"]
 # them while preserving every unrelated setting, plugin, skill, MCP and secret.
 [settings.defaults.claude]
 model = "best"
-effortLevel = "xhigh"
+effortLevel = "medium"
 ultracode = false
 
-# Claude Code 2.1.280 does not apply a top-level user effortLevel to Opus 5.5.
-# Keep planning-only ultracode session-scoped: claude --effort ultracode.
+# Keep execution medium; planning/review/merge select --effort xhigh per launch.
+# Preserve Claude's native model/provider capability gate and managed settings.
 [settings.defaults.claude.modelSettings.claude-opus-5-5]
-effortLevel = "xhigh"
+effortLevel = "medium"
 
 [settings.defaults.codex]
 model = "gpt-6.1-sol"
 # Preferred API tier. Codex may omit the field on wire; observe effective tier
 # separately for routes that require a Standard residency or project contract.
 service_tier = "default"
-model_reasoning_effort = "xhigh"
-plan_mode_reasoning_effort = "ultra"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "xhigh"
 
 [settings.defaults.codex.agents]
-default_subagent_reasoning_effort = "xhigh"
+default_subagent_reasoning_effort = "medium"
 
 [settings.defaults.codex.notice.model_migrations]
 "gpt-5.6-sol" = "gpt-6.1-sol"

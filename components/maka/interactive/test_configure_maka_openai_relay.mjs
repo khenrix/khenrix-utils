@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { validateMakaRuntimeSnapshot } from './inspect_maka_runtime.mjs';
 
 import {
   CONNECTION_NAME,
@@ -361,7 +362,7 @@ test('fresh reconciliation installs only decoys and fails other providers closed
   assert.equal(relay.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
   assert.deepEqual(relay.enabledModelIds, MODEL_IDS);
   assert.deepEqual(relay.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
-    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
     capabilities: { parallelToolCalls: true },
   }])));
   assert.equal(relay.enabled, true);
@@ -382,7 +383,7 @@ test('fresh reconciliation installs only decoys and fails other providers closed
   });
   assert.deepEqual(host.policy.chatDefaults, {
     permissionMode: 'ask',
-    thinkingLevel: 'xhigh',
+    thinkingLevel: 'medium',
   });
 
   const storedSecrets = [...host.credentials.values()].map(({ secret }) => secret);
@@ -393,6 +394,22 @@ test('fresh reconciliation installs only decoys and fails other providers closed
       operationNames.lastIndexOf('connection.catalog.update'),
     'the deny proxy must commit before OpenCode is disabled',
   );
+});
+
+test('reconciliation preserves explicit native chat effort and unrelated defaults', async () => {
+  for (const thinkingLevel of ['medium', 'xhigh']) {
+    const host = new FakeRuntimeHost();
+    host.policy.chatDefaults = { permissionMode: 'ask', thinkingLevel, custom: 'keep' };
+    await reconcileMakaRelay(host, {
+      token: TOKEN, readCatalog: host.catalog,
+      providerAuthKind: testProviderAuthKind, assertReady: async () => {},
+    });
+    assert.deepEqual(host.policy.chatDefaults, { permissionMode: 'ask', thinkingLevel, custom: 'keep' });
+    assert.equal(host.operations.some(({ operation }) => operation === 'runtime.policy.mutate'), false);
+    validateMakaRuntimeSnapshot('api-key-relay', {
+      policySnapshot: { policy: host.policy }, catalog: await host.catalog(),
+    });
+  }
 });
 
 test('private token reads are bounded, owner-only, and no-follow', async () => {
@@ -634,7 +651,7 @@ test('legacy OpenAI relay is replaced by a narrow Responses relay', async () => 
   assert.equal(configured.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
   assert.deepEqual(configured.enabledModelIds, MODEL_IDS);
   assert.deepEqual(configured.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
-    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
     capabilities: { parallelToolCalls: true },
   }])));
   assert(!Object.hasOwn(configured, 'requestBodyOverlay'));
@@ -793,7 +810,7 @@ test('a migrated managed relay gains parallel calls without replacing its creden
   });
   assert.equal(host.connections[0].connectionId, RELAY_CONNECTION_ID);
   assert.deepEqual(host.connections[0].modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
-    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    thinkingLevels: ['medium', 'xhigh', 'max'], defaultThinkingLevel: 'medium',
     capabilities: { parallelToolCalls: true },
   }])));
   assert.equal(host.credentials.get(host.locatorKey(locator)).revision, 1);

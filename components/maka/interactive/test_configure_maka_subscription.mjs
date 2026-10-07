@@ -11,12 +11,13 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { MODEL_ID, LEGACY_MODEL_ID, MODEL_IDS, reconcileMakaSubscriptionDefaults } from './configure_maka_subscription.mjs';
+import { validateMakaRuntimeSnapshot } from './inspect_maka_runtime.mjs';
 
 const CODEX_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_ID = '00000000-0000-4000-8000-000000000002';
 const BOOTSTRAP_ID = '00000000-0000-4000-8000-000000000003';
 const MANAGED_OVERRIDE = Object.fromEntries(MODEL_IDS.map((model) =>
-  [model, { defaultThinkingLevel: 'xhigh' }]));
+  [model, { defaultThinkingLevel: 'medium' }]));
 const BOOTSTRAP_SEED = {
   enabledModelIds: [
     'nemotron-3-ultra-free',
@@ -221,6 +222,28 @@ test('a GPT-6 subscription profile gains 6.1 without changing old model identiti
     ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol']);
 });
 
+for (const thinkingLevel of [undefined, 'low', 'medium', 'high', 'xhigh']) {
+  test(`subscription role defaults preserve explicit effort and unrelated native fields (${thinkingLevel ?? 'missing'})`, async () => {
+    const host = fakeConnection(policy({ chatDefaults: {
+      permissionMode: 'ask', ...(thinkingLevel ? { thinkingLevel } : {}), custom: 'keep',
+    } }));
+    await reconcile(host);
+    const mutations = host.calls.filter((call) => call.operation === 'runtime.policy.mutate');
+    if (thinkingLevel) assert.equal(mutations.length, 0);
+    else assert.deepEqual(mutations[0].input.operation.value,
+      { permissionMode: 'ask', thinkingLevel: 'medium', custom: 'keep' });
+    validateMakaRuntimeSnapshot('chatgpt-subscription', {
+      policySnapshot: policy({ chatDefaults: {
+        permissionMode: 'ask', thinkingLevel: thinkingLevel ?? 'medium', custom: 'keep',
+      } }), catalog: await host.readCatalog(), enrollment: { enabled: true },
+    });
+    assert.throws(() => validateMakaRuntimeSnapshot('chatgpt-subscription', {
+      policySnapshot: policy({ chatDefaults: { permissionMode: 'ask', thinkingLevel: 'max' } }),
+      catalog: safeCatalog(), enrollment: { enabled: true },
+    }), /chat_defaults_invalid/u);
+  });
+}
+
 test('subscription reconciliation changes only safe chat defaults', async () => {
   const snapshot = policy({
     chatDefaults: {
@@ -238,7 +261,7 @@ test('subscription reconciliation changes only safe chat defaults', async () => 
         kind: 'set_chat_defaults',
         value: {
           permissionMode: 'ask',
-          thinkingLevel: 'xhigh',
+          thinkingLevel: 'medium',
         },
       },
     },
@@ -374,7 +397,7 @@ test('the pinned Runtime Host first launch reaches safe subscription onboarding'
     const runtimePolicy = inspected.policy;
     assert.equal(runtimePolicy.policy.networkProxy.enabled, false);
     assert.equal(runtimePolicy.policy.chatDefaults.permissionMode, 'ask');
-    assert.equal(runtimePolicy.policy.chatDefaults.thinkingLevel, 'xhigh');
+    assert.equal(runtimePolicy.policy.chatDefaults.thinkingLevel, 'medium');
   } finally {
     await rm(home, { recursive: true, force: true });
   }

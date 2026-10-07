@@ -835,8 +835,8 @@ class ProviderRegistry:
         adapters = (ClaudeAdapter(), CodexAdapter(), AgyAdapter())
         versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
         models = {
-            "claude": ("claude-opus-5-5", "medium", "medium", "ultracode"),
-            "codex": ("gpt-6.1-sol", "medium", "medium", "ultra"),
+            "claude": ("claude-opus-5-5", "medium", "medium", "xhigh"),
+            "codex": ("gpt-6.1-sol", "medium", "medium", "xhigh"),
             "agy": ("gemini-3.8-flash-high", "high", "high", "high"),
         }
         profiles = []

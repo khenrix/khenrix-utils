@@ -469,8 +469,8 @@ def test_adapter_commands_pin_explicit_sessions_posture_and_stdin_only(
 
 
 @pytest.mark.parametrize("executor,model,deep_effort,previous_read,previous_write", [
-    ("claude", "claude-opus-5-5", "ultracode", "max", "xhigh"),
-    ("codex", "gpt-6.1-sol", "ultra", "xhigh", "xhigh"),
+    ("claude", "claude-opus-5-5", "xhigh", "max", "xhigh"),
+    ("codex", "gpt-6.1-sol", "xhigh", "xhigh", "xhigh"),
 ])
 @pytest.mark.parametrize("execution_class", ["read-only", "repo-write"])
 @pytest.mark.parametrize("resume", [False, True])
@@ -511,7 +511,7 @@ def test_standard_workers_use_medium_without_rewriting_saved_profiles(
         assert f'model_reasoning_effort="{previous_effort}"' in old_argv
 
 
-@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "ultra")])
+@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "xhigh")])
 @pytest.mark.parametrize("resume", [False, True])
 def test_codex_read_only_profile_isolates_ambient_tools_on_both_turn_shapes(
     tmp_path, tier, effort, resume, _mock_clean_codex_host,

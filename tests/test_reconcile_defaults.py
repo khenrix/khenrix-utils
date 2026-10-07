@@ -27,16 +27,16 @@ def caps():
             "defaults": {
                 "claude": {
                     "model": "best",
-                    "effortLevel": "xhigh",
+                    "effortLevel": "medium",
                     "ultracode": False,
-                    "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
+                    "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}},
                 },
                 "codex": {
                     "model": "gpt-6.1-sol",
                     "service_tier": "default",
-                    "model_reasoning_effort": "xhigh",
-                    "plan_mode_reasoning_effort": "ultra",
-                    "agents": {"default_subagent_reasoning_effort": "xhigh"},
+                    "model_reasoning_effort": "medium",
+                    "plan_mode_reasoning_effort": "xhigh",
+                    "agents": {"default_subagent_reasoning_effort": "medium"},
                     "notice": {"model_migrations": {
                         "gpt-5.6-sol": "gpt-6.1-sol", "gpt-6-sol": "gpt-6.1-sol",
                     }},
@@ -45,6 +45,37 @@ def caps():
             }
         },
     }
+
+
+def test_owned_role_defaults_are_additive_and_keep_native_constraints(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    declared = tomllib.loads((ROOT / "capabilities.toml").read_text())
+    path = tmp_path / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text('model_reasoning_effort = "low"\n[profiles.review]\n'
+                    'model_reasoning_effort = "high"\n')
+    requirements = path.parent / "requirements.toml"
+    requirements.write_text('allowed_approval_policies = ["on-request"]\n')
+    _, apply = reconcile.portable_defaults_report("codex", declared)
+    apply(False)
+    live = tomllib.loads(path.read_text())
+    assert live["model_reasoning_effort"] == "low"
+    assert live["plan_mode_reasoning_effort"] == "xhigh"
+    assert live["agents"]["default_subagent_reasoning_effort"] == "medium"
+    assert live["profiles"]["review"]["model_reasoning_effort"] == "high"
+    assert requirements.read_text() == 'allowed_approval_policies = ["on-request"]\n'
+    apply(True)
+    assert tomllib.loads(path.read_text())["model_reasoning_effort"] == "medium"
+    claude = tmp_path / ".claude" / "settings.json"
+    claude.parent.mkdir()
+    managed = claude.parent / "managed-settings.json"
+    managed.write_text('{"effortLevel":"high"}')
+    _, apply = reconcile.portable_defaults_report("claude", declared)
+    apply(False)
+    live_claude = json.loads(claude.read_text())
+    assert live_claude["effortLevel"] == "medium"
+    assert live_claude["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "medium"
+    assert managed.read_text() == '{"effortLevel":"high"}'
 
 
 def test_claude_adds_missing_defaults_and_preserves_unrelated_config(tmp_path, monkeypatch):
@@ -65,9 +96,9 @@ def test_claude_adds_missing_defaults_and_preserves_unrelated_config(tmp_path, m
 
     live = json.loads(path.read_text())
     assert live["model"] == "best"
-    assert live["effortLevel"] == "xhigh"
+    assert live["effortLevel"] == "medium"
     assert live["ultracode"] is False
-    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "xhigh"
+    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "medium"
     assert live["modelSettings"]["claude-opus-5"] == original["modelSettings"]["claude-opus-5"]
     for key in ("permissions", "hooks", "plugins"):
         assert live[key] == original[key]
@@ -99,9 +130,9 @@ def test_claude_drift_requires_update_drift(tmp_path, monkeypatch):
     live = json.loads(path.read_text())
     assert live == {
         "model": "best",
-        "effortLevel": "xhigh",
+        "effortLevel": "medium",
         "ultracode": False,
-        "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
+        "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}},
         "unrelated": "keep",
     }
 
@@ -129,9 +160,9 @@ def test_codex_updates_root_and_nested_defaults_without_touching_other_tables(
 
     assert live["model"] == "gpt-6.1-sol"
     assert live["service_tier"] == "default"
-    assert live["model_reasoning_effort"] == "xhigh"
-    assert live["plan_mode_reasoning_effort"] == "ultra"
-    assert live["agents"]["default_subagent_reasoning_effort"] == "xhigh"
+    assert live["model_reasoning_effort"] == "medium"
+    assert live["plan_mode_reasoning_effort"] == "xhigh"
+    assert live["agents"]["default_subagent_reasoning_effort"] == "medium"
     assert live["agents"]["max_threads"] == 7
     assert live["mcp_servers"]["private"]["command"] == "private-command"
     assert live["private_token_reference"] == "op://Private/codex/token"
@@ -215,9 +246,9 @@ def test_full_settings_apply_keeps_baseline_and_defaults_from_the_same_file(
     live = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert live["theme"] == "dark-ansi"
     assert live["model"] == "best"
-    assert live["effortLevel"] == "xhigh"
+    assert live["effortLevel"] == "medium"
     assert live["ultracode"] is False
-    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "xhigh"
+    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "medium"
 
 
 def test_repository_declares_the_approved_defaults():

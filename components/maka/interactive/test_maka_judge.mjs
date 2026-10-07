@@ -473,6 +473,7 @@ test('a failed turn observation stops the started run', async (t) => {
 for (const [name, change] of [
   ['provider model', { observed_model: 'gpt-5.6-sol' }],
   ['outbound effort', { outbound_effort: 'medium' }],
+  ['outbound max effort', { outbound_effort: 'max' }],
   ['outbound tools', { tool_count: 1 }],
   ['service tier', { observed_service_tier: 'priority' }],
 ]) {
