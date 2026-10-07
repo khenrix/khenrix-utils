@@ -1,6 +1,6 @@
 {
   "skill_name": "khenrix-quality",
-  "notes": "Seven cases cover inherited behavior without conflating artifact owners: persistent ADHD shape and its exceptions, prose edit/detect separation, lite/full/ultra code scoping, all focused code workflows, and published benchmark provenance and handoffs. Prompts are answer-only and require no repository mutation.",
+  "notes": "Nine cases cover inherited behavior without conflating artifact owners: persistent ADHD shape and its exceptions, prose edit/detect separation, lite/full/ultra code scoping, focused code workflows with reuse and dynamic-reference safety, comment-only debt, and published benchmark provenance and handoffs. Prompts are answer-only and require no repository mutation.",
   "evals": [
     {
       "id": "adhd-action-shape",
@@ -72,11 +72,35 @@
       "prompt": "Answer four labeled mini-requests from the supplied evidence only; do not run tools or edit files. REVIEW: src/send.ts adds SenderFactory at line 20 with one implementation and one caller, while keeping a payload validator; tests/send.test.ts has two malformed-payload cases. AUDIT: pkg/ext.py has a real Provider interface with two production implementations at line 12, while pkg/build.py has an unused BuilderFactory at line 44 and no callers; removing it would delete about 38 lines and one dependency. DEBT: api.py:8 '# TODO remove v1 after 2027-01-01'; cache.py:19 '# HACK global lock'; ui.ts:7 '// keep menu open while focused'. HELP: explain every khenrix-quality mode and the deep-humanization handoff.",
       "files": [],
       "assertions": [
-        "REVIEW reports an actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix",
-        "AUDIT reports the unused BuilderFactory in audit format with its supported 38-line and one-dependency estimate while preserving the two-implementation Provider extension point",
+        "REVIEW reports a numbered actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix",
+        "AUDIT reports the unused BuilderFactory as a numbered finding in audit format with its supported 38-line and one-dependency estimate while preserving the two-implementation Provider extension point",
         "AUDIT remains a read-only simplification supplement rather than becoming a general correctness, security, or architecture review",
         "DEBT reports exactly the TODO and HACK, uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and gives totals of two markers and one missing trigger",
         "HELP covers ADHD, prose edit, prose detect, lite/full/ultra code, review, audit, debt, benchmark, and help; names full as the shared code default; and routes deep humanization or voice matching to khenrix-writing"
+      ]
+    },
+    {
+      "id": "audit-reuse-preserves-dynamic-callers",
+      "name": "Audit reuses an existing helper without deleting a dynamically selected handler",
+      "prompt": "Use khenrix-quality audit mode. Answer from this complete supplied snapshot only; do not run tools or edit files. src/new_customer.py:18 introduces a 13-line canonical_id helper whose string-input validation, trim, and lowercase behavior exactly match src/id_utils.py:7 canonical_id, already used by four production callers and tested with blank input. src/plugins.py:9 exports send_invoice with no direct Python caller. src/dispatch.py:22 invokes getattr(plugins, handler_name), config/handlers.json selects send_invoice, and tests/dispatch.test.py:31 exercises that configured handler. Nothing else is known to be unused. Give ranked findings and the supported reduction estimate.",
+      "files": [],
+      "assertions": [
+        "Reports a numbered reuse finding for src/new_customer.py:18 and names src/id_utils.py:7 as the replacement rather than adding another helper or parser",
+        "Preserves existing validation and useful tests; any line reduction estimate is tied to the supplied 13-line duplicate rather than an invented repository total",
+        "Does not recommend deleting send_invoice merely because it lacks a static caller: the supplied configuration, dynamic invocation, and test prove a real use",
+        "Remains read-only and does not turn the audit into an implementation, blanket cleanup, or general correctness review"
+      ]
+    },
+    {
+      "id": "debt-comment-syntax-and-generated-exclusions",
+      "name": "Debt inventory excludes string examples and generated markers",
+      "prompt": "Use khenrix-quality debt mode on this tracked snapshot only. Do not run tools or edit files. src/api.py:8 is '# TODO remove v1 after 2027-01-01'. src/cache.c:19 is '/* HACK global lock */'. src/sample.py:6 assigns note = '# TODO placeholder'; this is a string literal, not a comment. docs/example.md:4 says 'ponytail: is the convention used in source comments'. build/generated.py:2 is '# FIXME generated mapping' and the file header explicitly marks generated output. src/ui.ts:7 is '// keep menu open while focused'. Report the real debt markers, their triggers, and totals.",
+      "files": [],
+      "assertions": [
+        "Reports only the actual TODO in src/api.py:8 and block-comment HACK in src/cache.c:19",
+        "Uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and gives exactly two markers with one missing trigger",
+        "Excludes the marker-like string literal, prose example, generated build output, and ordinary UI comment without inventing additional debt",
+        "Does not write a ledger, change source, or infer debt from ordinary implementation choices"
       ]
     },
     {
