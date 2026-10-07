@@ -1,10 +1,10 @@
 [[sources]]
 name = "maka-release"
 repository = "https://github.com/apache/maka.git"
-ref = "npm:maka-agent@0.2.0-dev.62.20260928"
-commit = "2f32205528a4436783c800715261d4b6e286023d"
+ref = "npm:maka-agent@0.2.0-dev.70.20261005"
+commit = "dcef64275ef435049a4a0c65a0d81199b45ed498"
 paths = ["LICENSE", "NOTICE", "DISCLAIMER-WIP", "packages/cli", "packages/runtime", "packages/runtime-host", "packages/eval"]
-path_tree_hash = "sha256:732d3cb73426329ba29dfb10987053c997a7da38445800eeb500a2e597fcd958"
+path_tree_hash = "sha256:287e0abeae2961649516836dedd0e9907a89fde2d4978edc5adda760a3cc3640"
 license = "Apache-2.0"
 upstream_license_path = "LICENSE"
 local_license_path = "third_party/apache-maka/LICENSE"
@@ -15,19 +15,26 @@ affected_capability_ids = ["maka-auth-mode", "maka-connection-catalog", "maka-mc
 watch = "npm_releases"
 tag_pattern = "^v0\\.2\\.0-dev\\.([0-9]+)\\.([0-9]{8})$"
 package_name = "maka-agent"
-package_version = "0.2.0-dev.62.20260928"
-package_integrity = "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ=="
+package_version = "0.2.0-dev.70.20261005"
+package_integrity = "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA=="
 update_mode = "manual_adaptation"
 review_commands = ["mise -C components/maka run maka:test", "mise -C components/maka run maka:component-doctor"]
 
 [sources.local_contract]
 paths = [
-  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/aube-lock.yaml",
-  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/package.json",
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.70.20261005/aube-lock.yaml",
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.70.20261005/package.json",
   "components/maka/mise.toml",
   "components/maka/mise.lock",
   "components/maka/scripts/install_component.py",
   "components/maka/scripts/component_doctor.py",
+  "components/maka/scripts/apply_gpt6_compat.py",
+  "components/maka/scripts/auth-doctor.sh",
+  "components/maka/interactive/inspect_maka_runtime.mjs",
+  "components/maka/interactive/maka_judge.mjs",
+  "components/maka/third_party/apache-maka/LICENSE",
+  "components/maka/third_party/apache-maka/NOTICE",
+  "components/maka/third_party/apache-maka/DISCLAIMER-WIP",
   "components/maka/controller/entrypoint.sh",
   "components/maka/scripts/controller-build.sh",
   "components/maka/controller/apply_maka_compat.py",
@@ -54,10 +61,12 @@ paths = [
   "components/maka/scripts/test.sh",
   "components/maka/install-files.txt",
 ]
-hash = "sha256:d71508f1fd2063438f71067da2d58c7642f5c6e3989554fbd5b024632e616923"
+hash = "sha256:fac44227420106fed38fcea22c3be83103de865132566224681f5d2bfe1b0c46"
 required_text = [
-  { path = "components/maka/provenance.json", text = "0.2.0-dev.62.20260928" },
-  { path = "components/maka/provenance.json", text = "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==" },
+  { path = "components/maka/provenance.json", text = "0.2.0-dev.70.20261005" },
+  { path = "components/maka/provenance.json", text = "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA==" },
+  { path = "components/maka/provenance.json", text = "b1af943a734250ba76e6e827583e833f8b813eba66950b8a1a92a576c5971b2c" },
+  { path = "components/maka/provenance.json", text = "cebbf7c82e934d2f328dad8e77270cc308356955ae315808cf7db334c7e98780" },
   { path = "components/maka/provenance.json", text = "relay-root-virtiofs-v2" },
   { path = "components/maka/provenance.json", text = "eval-openai-onboarding-v2" },
   { path = "components/maka/provenance.json", text = "harbor-judge-sol61-v1" },

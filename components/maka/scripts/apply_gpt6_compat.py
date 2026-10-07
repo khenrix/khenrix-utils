@@ -46,7 +46,7 @@ PATCHES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
         ),),
     ),
     "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": (
-        "c4bb3ad567a86d8fda49e7d3f550c1e1e48bc68b3c25d657fac2d6cab19fbe2d",
+        "b1af943a734250ba76e6e827583e833f8b813eba66950b8a1a92a576c5971b2c",
         ((
             "    if (profile === 'workhub-coordination-v1') {\n",
             "    if (profile === 'khenrix-skill-routing-v1') {\n"
@@ -155,7 +155,7 @@ PATCHES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
 PATCHED_HASHES = {
     "node_modules/@maka/runtime/dist/model-runtime.js": "d38130ccc2dbc03b759c4890a5c038161ea3997c437c8e6c90783673452734a4",
     "node_modules/@maka/core/dist/session.js": "94dc36d9af33a53475a13b22bb90df3c0efd7bad4247858d4fdb1258e477033d",
-    "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": "5e61c4c3609aafd70c249381d9102cb3634ce016e177b189150f2ca9e6cd73db",
+    "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": "cebbf7c82e934d2f328dad8e77270cc308356955ae315808cf7db334c7e98780",
     "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js": "92c07f7c713140bcc170985e978b73fbb4eb72f8285855da913f3e73b5495ebc",
     "node_modules/@maka/runtime/dist/ai-sdk-backend.js": "d8caed4dd0cf4c5072520c5c0dee4c1f0fcd4ebe6851262807cf38f8c1ac8e2e",
     "node_modules/@maka/runtime/dist/skills-metadata.js": "2fa1b79b305b7d394129163fb032fa4cadfb0f802b43c1314cfe77cfa8ed48a2",

@@ -22,9 +22,9 @@ import time
 from dataclasses import dataclass
 
 PACKAGE_NAME = "maka-agent"
-PACKAGE_VERSION = "0.2.0-dev.62.20260928"
-PACKAGE_INTEGRITY = "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ=="
-SOURCE_COMMIT = "2f32205528a4436783c800715261d4b6e286023d"
+PACKAGE_VERSION = "0.2.0-dev.70.20261005"
+PACKAGE_INTEGRITY = "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA=="
+SOURCE_COMMIT = "dcef64275ef435049a4a0c65a0d81199b45ed498"
 MANIFEST_NAME = "install-files.txt"
 INSTALL_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka")
 WRAPPER_RELATIVE = pathlib.Path(".local/bin/maka")

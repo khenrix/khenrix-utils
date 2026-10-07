@@ -11,6 +11,6 @@ release commit, overlay base hashes, and patched hashes live in
 `../provenance.json`.
 
 - Source: <https://github.com/apache/maka>
-- Release: `v0.2.0-dev.62.20260928`
-- Commit: `2f32205528a4436783c800715261d4b6e286023d`
-- npm package: `maka-agent@0.2.0-dev.62.20260928`
+- Release: `npm:maka-agent@0.2.0-dev.70.20261005` (canonical npm provenance metadata)
+- Commit: `dcef64275ef435049a4a0c65a0d81199b45ed498`
+- npm package: `maka-agent@0.2.0-dev.70.20261005`

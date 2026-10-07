@@ -468,7 +468,7 @@ async function sourceBoundaryState(
   componentRoot = join(dirname(fileURLToPath(import.meta.url)), '..'),
 ) {
   const packageJson = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'));
-  if (packageJson.version !== '0.2.0-dev.62.20260928') {
+  if (packageJson.version !== '0.2.0-dev.70.20261005') {
     throw new Error('Maka package version is not characterized');
   }
   const runtime = await runtimePackageState(packageRoot);

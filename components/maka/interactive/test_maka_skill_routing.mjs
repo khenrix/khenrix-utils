@@ -27,7 +27,7 @@ test('the authentic installed readonly store measures and refuses oversized dura
   const packageRoot = process.env.KHENRIX_MAKA_PACKAGE_ROOT ?? resolve(dirname(execFileSync(
     'mise', ['-C', component, 'which', 'maka'], { encoding: 'utf8' }).trim()), '..', 'maka-agent');
   assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version,
-    '0.2.0-dev.62.20260928');
+    '0.2.0-dev.70.20261005');
   const root = await mkdtemp(join(tmpdir(), 'maka-durable-content-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const { createSqliteRuntimeStore } = await import(pathToFileURL(join(packageRoot,

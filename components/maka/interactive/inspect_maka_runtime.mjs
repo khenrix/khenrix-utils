@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-const EXPECTED_VERSION = '0.2.0-dev.62.20260928';
+const EXPECTED_VERSION = '0.2.0-dev.70.20261005';
 const MODEL_ID = 'gpt-6.1-sol';
 const LEGACY_MODEL_ID = 'gpt-5.6-sol';
 const PREVIOUS_MODEL_ID = 'gpt-6-sol';

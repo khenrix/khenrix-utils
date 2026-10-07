@@ -2,19 +2,27 @@
 /** Exercise the patched package's public model paths without credentials. */
 
 import assert from 'node:assert/strict';
-import { join, resolve } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const candidate = resolve(process.argv[2] ?? '');
 if (!process.argv[2]) throw new Error('candidate path required');
 const packageRoot = join(candidate, 'runtime', 'package');
+const runtimeRequire = createRequire(pathToFileURL(join(
+  packageRoot, 'node_modules/@maka/runtime/package.json')));
+const aiPath = await realpath(runtimeRequire.resolve('ai'));
+const aiRelative = relative(await realpath(packageRoot), aiPath);
+assert(aiRelative !== '..' && !aiRelative.startsWith(`..${sep}`) && !isAbsolute(aiRelative),
+  'AI SDK resolves outside the candidate package');
+const ai = await import(pathToFileURL(aiPath).href);
 const load = async (relative) => import(pathToFileURL(join(packageRoot, relative)).href);
 const metadata = await load('node_modules/@maka/core/dist/model-metadata.js');
 const thinking = await load('node_modules/@maka/core/dist/model-thinking.js');
 const registry = await load('node_modules/@maka/core/dist/provider-registry.js');
 const modelFactory = await load('node_modules/@maka/runtime/dist/model-factory.js');
 const modelRuntime = await load('node_modules/@maka/runtime/dist/model-runtime.js');
-const ai = await load('node_modules/@maka/runtime/node_modules/ai/dist/index.js');
 
 const api = metadata.lookupModelMetadata('openai', 'gpt-6.1-sol');
 const subscription = metadata.lookupModelMetadata('openai-codex', 'gpt-6.1-sol');

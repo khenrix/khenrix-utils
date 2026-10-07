@@ -26,7 +26,7 @@ async function licensedPagedTranscript(prompt, fault = null) {
   const packageRoot = process.env.KHENRIX_MAKA_PACKAGE_ROOT ?? resolve(dirname(execFileSync(
     'mise', ['-C', component, 'which', 'maka'], { encoding: 'utf8' }).trim()), '..', 'maka-agent');
   assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version,
-    '0.2.0-dev.62.20260928');
+    '0.2.0-dev.70.20261005');
   const { ClientSessionSubscription } = await import(pathToFileURL(join(packageRoot,
     'node_modules/@maka/runtime-host/dist/client/session-subscription.js')));
   const user = Buffer.from(JSON.stringify({ type: 'user', turnId: SESSION_ID, text: prompt }));
@@ -525,7 +525,7 @@ test('source boundary fingerprint changes with the tool profile implementation',
   const launcher = join(root, 'maka');
   await writeFile(launcher, 'managed launcher');
   await writeFile(join(packageRoot, 'package.json'),
-    JSON.stringify({ version: '0.2.0-dev.62.20260928' }));
+    JSON.stringify({ version: '0.2.0-dev.70.20261005' }));
   const sources = [
     'dist/cli.js',
     'node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js',
@@ -567,7 +567,7 @@ test('source boundary refuses a package that differs from its install receipt', 
   const packageRoot = join(root, 'package');
   await mkdir(join(packageRoot, 'dist'), { recursive: true });
   await writeFile(join(packageRoot, 'package.json'),
-    JSON.stringify({ version: '0.2.0-dev.62.20260928' }));
+    JSON.stringify({ version: '0.2.0-dev.70.20261005' }));
   await writeFile(join(packageRoot, 'dist/cli.js'), 'fixture cli');
   const launcher = join(root, 'maka');
   await writeFile(launcher, 'fixture launcher');
@@ -584,7 +584,7 @@ test('source boundary changes if the installed mise runtime selection drifts', a
   const packageRoot = join(root, 'package');
   await mkdir(join(packageRoot, 'dist'), { recursive: true });
   await writeFile(join(packageRoot, 'package.json'),
-    JSON.stringify({ version: '0.2.0-dev.62.20260928' }));
+    JSON.stringify({ version: '0.2.0-dev.70.20261005' }));
   await writeFile(join(packageRoot, 'dist/cli.js'), 'fixture cli');
   const launcher = join(root, 'maka');
   await writeFile(launcher, 'fixture launcher');

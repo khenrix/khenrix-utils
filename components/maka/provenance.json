@@ -2,12 +2,73 @@
   "schema": "maka-lab-provenance-v1",
   "maka": {
     "package": "maka-agent",
-    "version": "0.2.0-dev.62.20260928",
-    "integrity": "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==",
+    "version": "0.2.0-dev.70.20261005",
+    "integrity": "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA==",
     "sourceRepository": "https://github.com/apache/maka",
-    "releaseTag": "v0.2.0-dev.62.20260928",
-    "publishedAt": "2026-09-28T18:52:20.597Z",
-    "apacheCommit": "2f32205528a4436783c800715261d4b6e286023d",
+    "releaseTag": null,
+    "publishedAt": "2026-10-05T19:03:53.904Z",
+    "apacheCommit": "dcef64275ef435049a4a0c65a0d81199b45ed498",
+    "sourceDiscovery": {
+      "npmRelease": "npm:maka-agent@0.2.0-dev.70.20261005",
+      "attestationUrl": "https://registry.npmjs.org/-/npm/v1/attestations/maka-agent@0.2.0-dev.70.20261005",
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "verification": "Canonical registry metadata discovery with exact downloaded package integrity; attestation signatures are not verified."
+    },
+    "interactiveCompatibilityOverlays": [
+      {
+        "target": "node_modules/@maka/runtime/dist/model-runtime.js",
+        "baseSha256": "a8f069732226c670c3756a7fedc191d5a9fd56e14b05caaa6b034426bba9ec05",
+        "patchedSha256": "d38130ccc2dbc03b759c4890a5c038161ea3997c437c8e6c90783673452734a4"
+      },
+      {
+        "target": "node_modules/@maka/core/dist/session.js",
+        "baseSha256": "423dd039034711b38eb4bb15a93821c1ca682e4fe4f7c2814d8a7e9823e22732",
+        "patchedSha256": "94dc36d9af33a53475a13b22bb90df3c0efd7bad4247858d4fdb1258e477033d"
+      },
+      {
+        "target": "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js",
+        "baseSha256": "b1af943a734250ba76e6e827583e833f8b813eba66950b8a1a92a576c5971b2c",
+        "patchedSha256": "cebbf7c82e934d2f328dad8e77270cc308356955ae315808cf7db334c7e98780"
+      },
+      {
+        "target": "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js",
+        "baseSha256": "ee88cf0c3fc8815f153791d6b44392ca5cd24f5579b4ca76051403e5f828af52",
+        "patchedSha256": "92c07f7c713140bcc170985e978b73fbb4eb72f8285855da913f3e73b5495ebc"
+      },
+      {
+        "target": "node_modules/@maka/runtime/dist/ai-sdk-backend.js",
+        "baseSha256": "90d9f1a3f7ba62a4ac189597cac06ce1babc8005631fe89a1bb594278b186421",
+        "patchedSha256": "d8caed4dd0cf4c5072520c5c0dee4c1f0fcd4ebe6851262807cf38f8c1ac8e2e"
+      },
+      {
+        "target": "node_modules/@maka/runtime/dist/skills-metadata.js",
+        "baseSha256": "398220f18f9eca49e28f96ba072a5598eb6a7e4b2c23ef5a0be3ba42b0815aa5",
+        "patchedSha256": "2fa1b79b305b7d394129163fb032fa4cadfb0f802b43c1314cfe77cfa8ed48a2"
+      },
+      {
+        "target": "node_modules/@maka/core/dist/model-metadata.js",
+        "baseSha256": "454ae64aa3a2dee4fe93d30f3d547e361b6b30f2c26987c69f0a8ab6981cd2cf",
+        "patchedSha256": "6a1e2886e7412b010ee60c4e314827cbac17229e816b489fe974a297e9a166af"
+      },
+      {
+        "target": "node_modules/@maka/core/dist/provider-registry.js",
+        "baseSha256": "cf153bc1fe45a97d6fb1bb8cc6a2698eecc667c7f4c6ccffab3a1bdea34767d0",
+        "patchedSha256": "ccb5a2c69b2a5b9b1292b34bf39855c7354a46451d6984c8687be0a4b6821821"
+      },
+      {
+        "target": "node_modules/@maka/core/dist/model-thinking.js",
+        "baseSha256": "864d0f46c5716ede1e3f1208169a0b2fe6c15da8ee7f40fd1d6fedfb18a394d9",
+        "patchedSha256": "ace4ab6b47d785d05a710bd9da64d127e451f18f6772170e9b063d6cde121c25"
+      }
+    ],
+    "compatibilityOverlayBaseline": {
+      "version": "0.2.0-dev.62.20260928",
+      "integrity": "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==",
+      "releaseTag": "v0.2.0-dev.62.20260928",
+      "publishedAt": "2026-09-28T18:52:20.597Z",
+      "apacheCommit": "2f32205528a4436783c800715261d4b6e286023d",
+      "scope": "Frozen Harbor controller overlays below; not certification of the current interactive package."
+    },
     "compatibilityOverlays": [
       {
         "id": "relay-root-virtiofs-v2",
@@ -55,9 +116,9 @@
   },
   "thirdParty": {
     "apacheMaka": {
-      "source": "maka-agent@0.2.0-dev.62.20260928",
+      "source": "maka-agent@0.2.0-dev.70.20261005",
       "files": {
-        "third_party/apache-maka/LICENSE": "fdb34c95e9813af2fdae53b72582198d38af648778134139788960a2b031da38",
+        "third_party/apache-maka/LICENSE": "4a179789a3085ae182e181f936359263a87734f4a731c1f3f1187b0e6d246a25",
         "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
         "third_party/apache-maka/DISCLAIMER-WIP": "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c"
       }

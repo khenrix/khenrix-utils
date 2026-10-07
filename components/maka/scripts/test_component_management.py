@@ -26,6 +26,9 @@ import apply_gpt6_compat as compat
 class ComponentInstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if package_root := os.environ.get("KHENRIX_MAKA_PACKAGE_ROOT"):
+            cls.upstream_package = pathlib.Path(package_root)
+            return
         source = pathlib.Path(__file__).resolve().parent.parent
         layout = component.canonical_layout()
         mise = component.resolve_mise(layout.home)

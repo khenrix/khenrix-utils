@@ -41,7 +41,7 @@ EXPECTED_INTEGRITY = PACKAGE_INTEGRITY
 EXPECTED_COMMIT = SOURCE_COMMIT
 EXCLUDED_DIRECTORY_NAMES = {"__pycache__", "evidence", "runtime", "trials"}
 EXPECTED_ATTRIBUTION_HASHES = {
-    "third_party/apache-maka/LICENSE": "fdb34c95e9813af2fdae53b72582198d38af648778134139788960a2b031da38",
+    "third_party/apache-maka/LICENSE": "4a179789a3085ae182e181f936359263a87734f4a731c1f3f1187b0e6d246a25",
     "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
     "third_party/apache-maka/DISCLAIMER-WIP": "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c",
 }

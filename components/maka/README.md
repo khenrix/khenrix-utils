@@ -3,9 +3,15 @@
 Khenrix Utils owns the portable Maka runtime, its model and permission policy,
 the managed launcher, authentication helpers, and the complete audit and
 evaluation lab in this directory. It pins `maka-agent` to
-`0.2.0-dev.62.20260928`; the npm integrity, Apache tag and commit, dependency
+`0.2.0-dev.70.20261005`; the npm integrity, canonical Apache source commit, dependency
 versions, and compatibility-overlay hashes are recorded in `provenance.json`.
 The Apache license and notices are under `third_party/apache-maka/`.
+
+The Harbor controller, compatibility overlays, and historical certification
+records remain frozen at `0.2.0-dev.62.20260928`. They do not certify this
+interactive runtime upgrade; the full legacy lab gate has not been rerun.
+The current package's source association comes from canonical npm provenance
+metadata, not a Git release tag or verified attestation signature.
 
 Agentic Setup remains the broader inventory and sync owner for the other shared
 skills and plugins used by Claude, Codex, agy, and Maka. Khenrix Utils owns and

@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -16,6 +18,9 @@ import install_component as component
 class PinnedOverlayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        if package_root := os.environ.get("KHENRIX_MAKA_PACKAGE_ROOT"):
+            cls.package = pathlib.Path(package_root)
+            return
         source = pathlib.Path(__file__).resolve().parent.parent
         layout = component.canonical_layout()
         mise = component.resolve_mise(layout.home)
@@ -59,6 +64,49 @@ class PinnedOverlayTests(unittest.TestCase):
             with self.assertRaisesRegex(compat.OverlayError, "source hash differs"):
                 compat.apply_overlay(package)
             self.assertEqual([path.read_bytes() for path in paths[:-1]], originals[:-1])
+
+    def test_candidate_verifier_uses_native_ai_resolution_inside_the_package(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        verifier = pathlib.Path(__file__).with_name("verify_gpt6_candidate.mjs")
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = pathlib.Path(directory) / "candidate"
+            package = candidate / "runtime/package"
+            shutil.copytree(self.package, package)
+            compat.apply_overlay(package)
+            hoisted = package / "node_modules/ai"
+            nested = package / "node_modules/@maka/runtime/node_modules/ai"
+            self.assertTrue(hoisted.is_dir())
+            self.assertFalse(nested.exists())
+            for layout in ("hoisted", "nested"):
+                with self.subTest(layout=layout):
+                    if layout == "nested":
+                        nested.parent.mkdir(parents=True, exist_ok=True)
+                        hoisted.rename(nested)
+                    completed = subprocess.run(
+                        [node, str(verifier), str(candidate)],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertEqual(json.loads(completed.stdout), {
+                        "schema": "khenrix-maka-gpt6-compat-v1", "ok": True,
+                        "api": "gpt-6.1-sol", "subscription": "gpt-6.1-sol",
+                        "resumable": "gpt-5.6-sol",
+                    })
+            outside = pathlib.Path(directory) / "node_modules/ai"
+            outside.parent.mkdir()
+            nested.rename(outside)
+            for escape in ("ancestor", "symlink"):
+                with self.subTest(escape=escape):
+                    if escape == "symlink":
+                        hoisted.symlink_to(outside, target_is_directory=True)
+                    completed = subprocess.run(
+                        [node, str(verifier), str(candidate)],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("AI SDK resolves outside the candidate package", completed.stderr)
 
     def test_skill_routing_hides_archive_read_without_disabling_compaction(self) -> None:
         relative = "node_modules/@maka/runtime/dist/ai-sdk-backend.js"

@@ -9,19 +9,19 @@ importers:
   .:
     dependencies:
       maka-agent:
-        specifier: 0.2.0-dev.62.20260928
-        version: 0.2.0-dev.62.20260928
+        specifier: 0.2.0-dev.70.20261005
+        version: 0.2.0-dev.70.20261005
 
 packages:
 
-  maka-agent@0.2.0-dev.62.20260928:
-    resolution: {integrity: sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==}
+  maka-agent@0.2.0-dev.70.20261005:
+    resolution: {integrity: sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
 snapshots:
 
-  maka-agent@0.2.0-dev.62.20260928:
+  maka-agent@0.2.0-dev.70.20261005:
     bundledDependencies:
       - '@agentclientprotocol/sdk'
       - '@earendil-works/pi-tui'
