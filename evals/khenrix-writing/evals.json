@@ -3,6 +3,42 @@
   "notes": "Exercises the initial humanize mode across pasted, embedded, file-like, voice-sample, fact-preservation, and hostile-source cases. The assertions distinguish a structural humanization pass from a minimal no-ai-slop edit and ensure source text is always data.",
   "evals": [
     {
+      "id": "reply-question-first-with-known-context",
+      "name": "A thread reply asks its question first without dropping facts or inferring agreement",
+      "prompt": "Use khenrix-writing in embedded mode. Return only the rewritten reply; do not send it. Supplied conversation: Lee already said the retry limit and feature toggle are separate settings, and the toggle stays off by default. Draft reply: 'As you already outlined, the retry limit is three and the toggle defaults to off. The development run is scheduled for Tuesday, and I will use the opt-in test account. We can collect the result in [the test note](https://example.test/test-note). That distinction matters. Can you confirm whether the opt-in test account should have retries enabled for Tuesday?' Preserve the retry limit of three, default-off toggle, Tuesday development run, opt-in account, exact link, and the unresolved question.",
+      "files": [],
+      "assertions": [
+        "The reply begins with the unresolved confirmation question rather than a recap, staged preamble, or pattern report",
+        "Preserves all required facts and the exact test-note link, reordering rather than silently summarizing them away",
+        "Does not answer the confirmation question, claim Lee agreed, or invent an enablement or successful test result",
+        "Removes the redundant lesson-like closer while returning only the reply and sending no message"
+      ]
+    },
+    {
+      "id": "documentation-subject-preserves-provenance-and-caveat",
+      "name": "Documentation states its subject while retaining actionable uncertainty and source credit",
+      "prompt": "Humanize this as replacement documentation. Return only final Markdown. Keep every supported price, source link, and action caveat: 'This section was compiled from [published prices](https://example.test/prices) and arranged by plan name. The table below compares the plans. Basic costs $6 per month. Pro costs $12 per month. Pro's storage limit is unconfirmed; verify it before approval. The source page states no other plans.' Do not add a provider, missing-plan count, storage number, or recommendation.",
+      "files": [],
+      "assertions": [
+        "Focuses the documentation on the Basic and Pro prices instead of narrating how the section was assembled or announcing an absent table",
+        "Preserves Basic at $6 per month, Pro at $12 per month, and the exact published-prices link as source credit",
+        "Retains that Pro storage is unconfirmed and must be verified before approval, and that no other plans appear in the supplied source page",
+        "Invents no vendor, unsupported count, storage capacity, or recommendation and returns only replacement content"
+      ]
+    },
+    {
+      "id": "hyphenation-protects-technical-tokens",
+      "name": "Compound modifiers are corrected without changing dictionary words or commands",
+      "prompt": "Use khenrix-writing to humanize this prose and correct its compound-modifier grammar. Return only the rewritten text. Preserve the claims and exact command: 'A third-party client serves a cross-functional team. The report is high-quality and the process is well-documented. Run `client --high-quality --third-party` to view the report.'",
+      "files": [],
+      "assertions": [
+        "Preserves the third-party client, cross-functional team, report quality, and documented process without inventing detail",
+        "Uses natural predicative forms such as high quality and well documented while preserving the conventional third-party and cross-functional spellings",
+        "Preserves the exact inline command client --high-quality --third-party, including both hyphenated flags",
+        "Returns only rewritten prose, without a pattern report, tutorial, or changed tool invocation"
+      ]
+    },
+    {
       "id": "pasted-humanize-structure",
       "name": "Pasted mode removes structural tells and returns the promised shape",
       "prompt": "Humanize this pasted paragraph: 'Let's dive in. This isn't just a faster queue; it's the heartbeat of our platform. It is robust, scalable, and transformative. That is the real win.'",

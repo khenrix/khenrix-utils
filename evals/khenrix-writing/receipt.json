@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "skill": "khenrix-writing",
-  "source_hash": "8d4f79aa0255b537822075e314aef4aea45d8ff1499660fff1ab3aeed0e4c23c",
-  "eval_set_hash": "e14c008c227b5408823318f2f6973fbe64fb4c0d4c8c7644fc418fb194d6c1d8",
+  "source_hash": "480ada8ed2933776ada237f161d38fc2efffe0cbfbe88404405b82faf071893f",
+  "eval_set_hash": "d927a613905d74b118b0a27400eaed550b1a1225e577a689e132546be5f33221",
   "providers": [
     "claude",
     "codex",
@@ -10,7 +10,39 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.1481,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.1944,
+      "quantum": 0.05,
+      "n_evals": 9,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.1389,
+      "quantum": 0.05,
+      "n_evals": 9,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.1111,
+      "quantum": 0.05,
+      "n_evals": 9,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
+    "judge": "claude-opus-5-5"
+  },
+  "cli_versions": {
+    "agy": "1.3.1",
+    "claude": "2.1.284 (Claude Code)",
+    "codex": "codex-cli 0.160.1"
+  },
+  "certified_by": "delta-gate"
 }
