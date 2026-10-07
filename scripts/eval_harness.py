@@ -1207,7 +1207,7 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
         with tempfile.TemporaryDirectory(prefix=f"khenrix-{skill}-{condition}-") as td:
             condition_root = Path(td)
             exec_cwd = condition_root / "cwd"
-            exec_cwd.mkdir()
+            exec_cwd.mkdir(mode=0o700)
             materialize_fixtures(ev, fixtures_src, exec_cwd / "fixtures")
             skill_dir = materialize_skill_closure(source, exec_cwd, condition)
             prompt = build_condition_prompt(body, eval_prompt, condition, skill_dir)

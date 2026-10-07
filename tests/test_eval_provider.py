@@ -186,6 +186,56 @@ def run_fake(tmp_path, isolated_cli, provider, prompt="Answer briefly.", retries
     return answer, record, launches
 
 
+def test_eval_conditions_create_private_cwd_before_launch_under_normal_umask(
+    tmp_path, isolated_cli, monkeypatch,
+):
+    source = tmp_path / "shared/skills/private-cwd"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("Answer briefly.\n")
+    monkeypatch.setattr(eval_harness, "ROOT", tmp_path)
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", tmp_path / "evals")
+    home, env = isolated_cli
+    run_text = eval_harness.run_text
+    validate_launch = eval_harness.eval_runtime.validate_launch
+    modes, launches = {}, []
+
+    def observe_validation(command, *args, **kwargs):
+        modes[str(command.cwd)] = command.cwd.stat().st_mode & 0o777
+        return validate_launch(command, *args, **kwargs)
+
+    def run_isolated_cli(*args, **kwargs):
+        result = run_text(*args, **kwargs, base_env=env, real_home=home)
+        launches.extend(json.loads(line) for line in
+                        (kwargs["exec_cwd"] / "launches.jsonl").read_text().splitlines())
+        return result
+
+    def judge_reply(judge, prompt, cfg, workdir, *, timeout, verdict_ok):
+        verdict = ({"winner": "A", "reasoning": "Both answers are brief."}
+                   if prompt.startswith("Two answers") else
+                   {"expectations": [{"passed": True, "evidence": "OK is brief."}]})
+        return json.dumps(verdict), {"valid": True, "reason": "ok"}
+
+    monkeypatch.setattr(eval_harness.eval_runtime, "validate_launch", observe_validation)
+    monkeypatch.setattr(eval_harness, "run_text", run_isolated_cli)
+    monkeypatch.setattr(eval_harness, "_run_judge", judge_reply)
+    old_umask = os.umask(0o022)
+    try:
+        runs, comparison = eval_harness.run_eval_for_provider(
+            "private-cwd", "codex",
+            {"id": 1, "name": "private-cwd", "prompt": "Answer briefly.",
+             "assertions": ["Answer briefly."]},
+            "claude", {"codex": {"model": "test-model", "thinking": "medium"}},
+            tmp_path / "artifacts", timeout=3, retries=0, readonly=True,
+        )
+    finally:
+        os.umask(old_umask)
+    assert len(modes) == 2 and set(modes.values()) == {0o700}
+    assert len(launches) == 2
+    assert {run["configuration"] for run in runs} == {"with_skill", "without_skill"}
+    assert all(run["result"]["errors"] == 0 for run in runs)
+    assert comparison["judge_ok"]
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex", "agy"])
 def test_eval_uses_stdin_and_accepts_short_answers_without_council_policy(
     tmp_path, isolated_cli, provider,
