@@ -1905,9 +1905,9 @@ def write_default_configs(home, *, claude_model="best"):
     claude.parent.mkdir(parents=True, exist_ok=True)
     claude.write_text(json.dumps({
         "model": claude_model,
-        "effortLevel": "xhigh",
+        "effortLevel": "medium",
         "ultracode": False,
-        "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
+        "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}},
         "unrelatedSecretSentinel": "never-print-this-value",
     }))
 
@@ -1916,10 +1916,10 @@ def write_default_configs(home, *, claude_model="best"):
     codex.write_text(
         'model = "gpt-6.1-sol"\n'
         'service_tier = "default"\n'
-        'model_reasoning_effort = "xhigh"\n'
-        'plan_mode_reasoning_effort = "ultra"\n\n'
+        'model_reasoning_effort = "medium"\n'
+        'plan_mode_reasoning_effort = "xhigh"\n\n'
         '[agents]\n'
-        'default_subagent_reasoning_effort = "xhigh"\n\n'
+        'default_subagent_reasoning_effort = "medium"\n\n'
         '[notice.model_migrations]\n'
         '"gpt-5.6-sol" = "gpt-6.1-sol"\n'
         '"gpt-6-sol" = "gpt-6.1-sol"\n\n'
@@ -1956,6 +1956,47 @@ def test_cli_model_defaults_reports_field_but_never_observed_values(tmp_path):
     output = r.stdout + r.stderr
     assert observed not in output
     assert "never-print-this" not in output
+
+
+@pytest.mark.parametrize("cli,leaf", [
+    ("claude", "effortLevel"),
+    ("claude", "modelSettings.claude-opus-5-5.effortLevel"),
+    ("codex", "model_reasoning_effort"),
+    ("codex", "plan_mode_reasoning_effort"),
+    ("codex", "agents.default_subagent_reasoning_effort"),
+])
+@pytest.mark.parametrize("missing", [False, True], ids=["wrong", "missing"])
+def test_cli_model_defaults_rejects_role_effort_drift(tmp_path, cli, leaf, missing):
+    home = fake_home(tmp_path)
+    write_default_configs(home)
+    observed = "private-effort-never-print"
+    if cli == "claude":
+        config = home / ".claude" / "settings.json"
+        settings = json.loads(config.read_text())
+        parent = settings
+        parts = leaf.split(".")
+        for part in parts[:-1]:
+            parent = parent[part]
+        if missing:
+            del parent[parts[-1]]
+        else:
+            parent[parts[-1]] = observed
+        config.write_text(json.dumps(settings))
+    else:
+        config = home / ".codex" / "config.toml"
+        key = leaf.split(".")[-1]
+        lines = config.read_text().splitlines(keepends=True)
+        config.write_text("".join(
+            ("" if missing else f'{key} = "{observed}"\n')
+            if line.startswith(f"{key} = ") else line
+            for line in lines
+        ))
+    r = run("--json", "--only", "cli-model-defaults", env={"HOME": str(home)})
+    check = checks_of(r)["cli-model-defaults"]
+    assert r.returncode == 1
+    assert check["status"] == "FAIL", check
+    assert f"{cli}:{leaf}" in check["detail"]
+    assert observed not in r.stdout + r.stderr
 
 
 def test_cli_model_defaults_fails_closed_on_malformed_config(tmp_path):
