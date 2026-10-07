@@ -426,3 +426,83 @@ def _validate_provenance(snapshot, pages, batch):
 
 def collect_batch(snapshot, paths, source, curator):
     return curator.curate(snapshot, source.read_pages(snapshot, paths))
+
+
+def assemble_source_batch(references, fetched, model_cards):
+    """Bind curated fields to collector references; never accept model provenance."""
+    from sources import LOCATOR_SCHEMA, source_key, validate_locator, validate_reference
+
+    if type(references) is not list or not 1 <= len(references) <= curation.MAX_CARDS:
+        raise ValueError('invalid requested source references')
+    references = [validate_locator(ref) if type(ref) is dict and ref.get('schema_version') == LOCATOR_SCHEMA
+                  else validate_reference(ref) for ref in references]
+    keys = [source_key(ref) for ref in references]
+    if not keys or len(set(keys)) != len(keys):
+        raise ValueError('invalid requested source identities')
+    if (type(fetched) is not list or type(model_cards) is not list
+            or len(fetched) != len(keys) or len(model_cards) != len(keys)):
+        raise ValueError('invalid source coverage')
+    records = {}
+    for record in fetched:
+        curation._object(record, {'reference', 'body', 'draft', 'supersedes', 'dependencies'})
+        ref = validate_reference(record['reference'])
+        key = source_key(ref)
+        if key not in keys or key in records:
+            raise ValueError('source metadata mismatch')
+        expected = references[keys.index(key)]
+        if expected['schema_version'] == LOCATOR_SCHEMA:
+            if (ref['citation'] != expected['citation'] or ref['observed_at'] < expected['observed_at']
+                    or any(expected[name] is not None and ref[name] != expected[name]
+                           for name in ('revision', 'author', 'event_at', 'modified_at'))):
+                raise ValueError('source metadata mismatch')
+        elif ref != expected:
+            raise ValueError('source metadata mismatch')
+        body = record['body']
+        if type(body) is not bytes or len(body) > MAX_DOCUMENT:
+            raise ValueError('invalid bounded source body')
+        if 'sha256:' + hashlib.sha256(body).hexdigest() != ref['content_hash']:
+            raise ValueError('source content hash mismatch')
+        try:
+            text = body.decode('utf-8')
+        except UnicodeError:
+            raise ValueError('invalid source text') from None
+        if type(record['draft']) is not bool:
+            raise ValueError('invalid source draft state')
+        records[key] = (record, ref, text)
+    fields = (curation._CARD_FIELDS - {'path', 'cross_references'}) | {'source_key', 'evidence_kind'}
+    cards, seen = [], set()
+    for card in model_cards:
+        curation._object(card, fields)
+        key = card['source_key']
+        if type(key) is not str or key not in records or key in seen:
+            raise ValueError('source card identity mismatch')
+        seen.add(key)
+        record, ref, text = records[key]
+        clean = {name: value for name, value in card.items() if name != 'source_key'}
+        clean.update(source=ref, supersedes=record['supersedes'], dependencies=record['dependencies'])
+        clean = curation.validate_source_batch({'schema_version': curation.SOURCE_BATCH_SCHEMA, 'cards': [clean]})['cards'][0]
+        allowed, _, _ = _references(text, set())
+        allowed.add(ref['citation'])
+        if not set(clean['source_links']) <= allowed:
+            raise ValueError('unsupported card provenance')
+        if clean['draft'] != record['draft'] or (re.search(r'(?mi)^draft:\s*true\s*$', text) and clean['draft'] is not True):
+            raise ValueError('source draft state lost')
+        dates = _source_dates(text)
+        native_times = [ref[name] for name in ('event_at', 'modified_at') if ref[name] is not None]
+        required_date = dates[-1] if dates else max(native_times)[:10] if native_times else None
+        history = '\n'.join([clean['details'], *clean['uncertainty']])
+        if clean['date'] != required_date or any(date not in history for date in dates[:-1]):
+            raise ValueError('source date lost')
+        if not dates and not native_times and not any('date' in note.lower() for note in clean['uncertainty']):
+            raise ValueError('unknown source date not disclosed')
+        output = '\n'.join([clean['title'], clean['summary'], clean['details'], *clean['uncertainty']])
+        normalized = ' '.join(text.split())
+        if len(normalized) >= 20 and normalized in ' '.join(output.split()):
+            raise ValueError('uncurated page reproduction')
+        encoded = base64.b64encode(record['body']).decode()
+        if len(encoded) >= 40 and encoded in output:
+            raise ValueError('encoded page reproduction')
+        if any(len(line.strip()) >= 100 and line.strip() in output for line in text.splitlines()):
+            raise ValueError('uncurated source reproduction')
+        cards.append(clean)
+    return curation.validate_source_batch({'schema_version': curation.SOURCE_BATCH_SCHEMA, 'cards': cards})

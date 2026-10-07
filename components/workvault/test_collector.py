@@ -1,6 +1,7 @@
 """Collector boundary tests use fictional sources and never call a live service."""
 
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -82,6 +83,78 @@ def card(path='knowledge/guide.md'):
 
 
 class CollectorTests(unittest.TestCase):
+    def test_native_raw_body_and_encoded_reproduction_never_enter_publication_or_errors(self):
+        from test_sources import reference
+        import curation
+        body = ('# Synthetic\n' + CANARY).encode()
+        ref = dict(reference(), content_hash='sha256:' + hashlib.sha256(body).hexdigest())
+        record = {'reference': ref, 'body': body, 'draft': False, 'supersedes': [], 'dependencies': []}
+        card = dict(source_key='["slack","workspace-fixture","C123","123.456"]', title='Synthetic',
+                    summary='A curated synthetic observation.', details='', date='2026-10-05', draft=False,
+                    uncertainty=[], source_links=[], evidence_kind='source_observation')
+        batch = collector.assemble_source_batch([ref], [record], [card])
+        data = curation.render_publication(batch, '2026-10-07T12:00:00Z')
+        self.assertNotIn(CANARY.encode(), data)
+        self.assertNotIn('body', batch['cards'][0])
+        for raw in (body.decode(), base64.b64encode(body).decode(), CANARY):
+            with self.subTest(encoded=raw != body.decode()), self.assertRaises(ValueError) as error:
+                collector.assemble_source_batch([ref], [record], [dict(card, details=raw)])
+            self.assertNotIn(CANARY, str(error.exception))
+
+    def test_metadata_only_locator_binds_fetch_without_inventing_an_unavailable_event_time(self):
+        from test_sources import locator, reference
+        body = b'# Entity\nSynthetic catalog entity.'
+        listing = dict(locator('backstage'), author=None, revision=None, event_at=None, modified_at=None)
+        ref = dict(reference('backstage'), author=None, revision=None, event_at=None, modified_at=None,
+                   content_hash='sha256:' + hashlib.sha256(body).hexdigest())
+        record = {'reference': ref, 'body': body, 'draft': False, 'supersedes': [], 'dependencies': []}
+        card = dict(source_key='["backstage","workspace-fixture","C123","123.456"]', title='Entity',
+                    summary='A catalog entity exists.', details='', date=None, draft=False,
+                    uncertainty=['Source event date unavailable; history unsupported.'], source_links=[ref['citation']],
+                    evidence_kind='source_observation')
+        try:
+            batch = collector.assemble_source_batch([listing], [record], [card])
+        except ValueError as error:
+            self.fail('metadata-only native listing was refused: ' + str(error))
+        self.assertIsNone(batch['cards'][0]['source']['event_at'])
+        self.assertIsNone(batch['cards'][0]['date'])
+        self.assertEqual(batch['cards'][0]['uncertainty'], ['Source event date unavailable; history unsupported.'])
+        with self.assertRaises(ValueError):
+            collector.assemble_source_batch([listing], [record], [dict(card, date='1970-01-01')])
+        with self.assertRaises(ValueError):
+            collector.assemble_source_batch([listing], [record], [dict(card, uncertainty=[])])
+        for changed in (dict(ref, citation='https://example.invalid/other'), dict(ref, account='other'),
+                        dict(ref, observed_at='2026-10-06T12:00:00Z')):
+            with self.assertRaises(ValueError):
+                collector.assemble_source_batch([listing], [dict(record, reference=changed)], [card])
+
+    def test_source_collection_attaches_only_collector_metadata_after_curation(self):
+        from test_sources import reference
+        body = b'# Synthetic\nCreated: 2026-10-01\nUpdated: 2026-10-05\nDraft: true\nA proposal.'
+        ref = dict(reference(), content_hash='sha256:' + hashlib.sha256(body).hexdigest())
+        fetched = {'reference': ref, 'body': body, 'draft': True, 'supersedes': [], 'dependencies': []}
+        model_card = dict(title='Proposal', summary='A proposed change.', details='Created 2026-10-01; updated 2026-10-05.',
+                          date='2026-10-05', draft=True, uncertainty=['Not decided.'], source_links=[ref['citation']],
+                          evidence_kind='agent_claim', source_key='["slack","workspace-fixture","C123","123.456"]')
+        self.assertTrue(hasattr(collector, 'assemble_source_batch'), 'collector-owned v2 assembly is missing')
+        batch = collector.assemble_source_batch([ref], [fetched], [model_card])
+        self.assertEqual(batch['cards'][0]['source'], ref)
+        self.assertEqual(batch['cards'][0]['uncertainty'], ['Not decided.'])
+        self.assertNotIn('body', batch['cards'][0])
+        for key in ('revision', 'author', 'citation', 'account', 'content_hash', 'modified_at'):
+            wrong = copy.deepcopy(fetched)
+            wrong['reference'][key] = None if key in ('revision', 'author') else 'changed'
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                collector.assemble_source_batch([ref], [wrong], [model_card])
+        for changes in ({'source': dict(ref, author='invented')}, {'source_key': '["slack","other","C123","123.456"]'},
+                        {'source_links': ['https://example.invalid/source/999']}, {'draft': False},
+                        {'details': 'History erased.'}, {'raw_body': 'RAW_CANARY'}):
+            with self.subTest(changes=list(changes)), self.assertRaises(ValueError):
+                collector.assemble_source_batch([ref], [fetched], [dict(model_card, **changes)])
+        fetched['body'] += b'Changed bytes.'
+        with self.assertRaises(ValueError):
+            collector.assemble_source_batch([ref], [fetched], [model_card])
+
     def setUp(self):
         self.assertIsNotNone(collector, 'bounded source collector is missing')
         self.calls = []

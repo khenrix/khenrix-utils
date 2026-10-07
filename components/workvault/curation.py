@@ -10,6 +10,8 @@ from urllib.parse import quote, urlsplit
 
 BATCH_SCHEMA = 'workvault-curated-batch-v1'
 PUBLICATION_SCHEMA = 'workvault-publication-v1'
+SOURCE_BATCH_SCHEMA = 'workvault-curated-batch-v2'
+SOURCE_PUBLICATION_SCHEMA = 'workvault-publication-v2'
 MAX_CARDS = 5
 MAX_INVENTORY_PATHS = 4096
 MAX_METADATA_ITEMS = 32
@@ -198,10 +200,19 @@ def validate_curated_batch(batch: dict) -> dict:
 
 
 def _checkpoint(batch, published_at):
+    clean = (validate_source_batch(batch) if type(batch) is dict and batch.get('schema_version') == SOURCE_BATCH_SCHEMA
+             else validate_curated_batch(batch))
+    stamp = _timestamp(published_at)
+    version = PUBLICATION_SCHEMA
+    if clean['schema_version'] == SOURCE_BATCH_SCHEMA:
+        version = SOURCE_PUBLICATION_SCHEMA
+        if any(ref['observed_at'] > stamp for card in clean['cards']
+               for ref in [card['source'], *card['supersedes'], *card['dependencies']]):
+            raise ValueError('publication predates source observation')
     return {
-        'schema_version': PUBLICATION_SCHEMA,
-        'batch': validate_curated_batch(batch),
-        'published_at': _timestamp(published_at),
+        'schema_version': version,
+        'batch': clean,
+        'published_at': stamp,
     }
 
 
@@ -227,6 +238,8 @@ def _items(label, values):
 
 
 def _render(checkpoint):
+    if checkpoint['schema_version'] == SOURCE_PUBLICATION_SCHEMA:
+        return _render_sources(checkpoint)
     batch = checkpoint['batch']
     discovered = set(batch['discovered_paths'])
     indexed = set(batch['indexed_paths'])
@@ -298,7 +311,8 @@ def parse_curated_batch(data: bytes) -> dict:
                          parse_constant=_reject_constant)
     except (ValueError, UnicodeError, RecursionError):
         raise ValueError('invalid curated batch JSON') from None
-    return validate_curated_batch(raw)
+    return (validate_source_batch(raw) if type(raw) is dict and raw.get('schema_version') == SOURCE_BATCH_SCHEMA
+            else validate_curated_batch(raw))
 
 
 def parse_publication(data: bytes) -> dict:
@@ -309,19 +323,99 @@ def parse_publication(data: bytes) -> dict:
         text = data.decode('utf-8')
     except UnicodeError:
         raise ValueError('invalid publication UTF-8') from None
-    if not text.startswith(_OPEN):
+    opening = '<!-- workvault-publication-v2\n' if text.startswith('<!-- workvault-publication-v2\n') else _OPEN
+    if not text.startswith(opening):
         raise ValueError('missing publication checkpoint')
-    end = text.find(_CLOSE, len(_OPEN))
+    end = text.find(_CLOSE, len(opening))
     if end < 0:
         raise ValueError('truncated publication checkpoint')
     try:
-        raw = json.loads(text[len(_OPEN):end], object_pairs_hook=_unique_object,
+        raw = json.loads(text[len(opening):end], object_pairs_hook=_unique_object,
                          parse_constant=_reject_constant)
     except (ValueError, RecursionError):
         raise ValueError('invalid publication JSON') from None
     raw = _object(raw, _PUBLICATION_FIELDS)
-    _literal(raw['schema_version'], PUBLICATION_SCHEMA)
+    _literal(raw['schema_version'], SOURCE_PUBLICATION_SCHEMA if opening != _OPEN else PUBLICATION_SCHEMA)
     clean = _checkpoint(raw['batch'], raw['published_at'])
+    if clean['schema_version'] != raw['schema_version']:
+        raise ValueError('mismatched publication schema')
     if _render(clean) != data:
         raise ValueError('mismatched publication rendering')
     return clean
+
+
+def validate_source_batch(value):
+    from sources import source_key, revision_key, validate_reference, validate_references
+
+    _object(value, {'schema_version', 'cards'})
+    _literal(value['schema_version'], SOURCE_BATCH_SCHEMA)
+    if type(value['cards']) is not list or not 1 <= len(value['cards']) <= MAX_CARDS:
+        raise ValueError('invalid card count')
+    fields = (_CARD_FIELDS - {'path', 'cross_references'}) | {'source', 'evidence_kind', 'supersedes', 'dependencies'}
+    cards = []
+    revision_hashes = {}
+    for card in value['cards']:
+        _object(card, fields)
+        if type(card['draft']) is not bool:
+            raise ValueError('invalid draft boolean')
+        if type(card['evidence_kind']) is not str or card['evidence_kind'] not in (
+                'source_observation', 'user_decision', 'agent_claim', 'verified_result', 'owner_synthesis'):
+            raise ValueError('invalid evidence kind')
+        ref = validate_reference(card['source'])
+        supersedes = validate_references(card['supersedes'])
+        dependencies = validate_references(card['dependencies'])
+        if any(source_key(prior) != source_key(ref) or revision_key(prior) == revision_key(ref)
+               or (ref['revision'] is not None and prior['revision'] == ref['revision'])
+               or (prior['event_at'] is not None and ref['event_at'] is not None
+                   and prior['event_at'] > ref['event_at']) for prior in supersedes):
+            raise ValueError('invalid source supersession')
+        if any(source_key(dependency) == source_key(ref) for dependency in dependencies):
+            raise ValueError('invalid source dependency')
+        for reference in [ref, *supersedes, *dependencies]:
+            if reference['revision'] is not None:
+                key = (source_key(reference), reference['revision'])
+                if key in revision_hashes and revision_hashes[key] != reference['content_hash']:
+                    raise ValueError('conflicting source revision')
+                revision_hashes[key] = reference['content_hash']
+        cards.append({
+            'source': ref, 'title': _text(card['title'], MAX_TITLE_BYTES),
+            'summary': _text(card['summary'], MAX_SUMMARY_BYTES),
+            'details': _text(card['details'], MAX_DETAILS_BYTES, allow_empty=True),
+            'date': None if card['date'] is None else _date(card['date']), 'draft': card['draft'],
+            'uncertainty': _strings(card['uncertainty'], lambda item: _text(item, MAX_UNCERTAINTY_BYTES), MAX_METADATA_ITEMS),
+            'source_links': _strings(card['source_links'], _https_url, MAX_METADATA_ITEMS),
+            'evidence_kind': card['evidence_kind'], 'supersedes': supersedes, 'dependencies': dependencies,
+        })
+    if len({source_key(card['source']) for card in cards}) != len(cards):
+        raise ValueError('duplicate source card')
+    clean = {'schema_version': SOURCE_BATCH_SCHEMA, 'cards': cards}
+    if len(_json(clean).encode('utf-8')) > MAX_BATCH_BYTES:
+        raise ValueError('curated batch too large')
+    return clean
+
+
+def _render_sources(checkpoint):
+    from sources import source_key, revision_key
+
+    payload = (_json(checkpoint).replace('&', '\\u0026').replace('<', '\\u003c')
+               .replace('>', '\\u003e').replace('--', '\\u002d\\u002d'))
+    lines = ['# Curated knowledge', '', f"Published at: {checkpoint['published_at']}", '']
+    for card in sorted(checkpoint['batch']['cards'], key=lambda item: source_key(item['source'])):
+        ref = card['source']
+        lines.extend([f"## {_escape(card['title'])}", ''])
+        for label, key in (('Source kind', 'kind'), ('Account', 'account'), ('Container', 'container'),
+                           ('Item ID', 'item_id'), ('Revision', 'revision'), ('Author', 'author'),
+                           ('Event at', 'event_at'), ('Modified at', 'modified_at'),
+                           ('Observed at', 'observed_at'), ('Content hash', 'content_hash')):
+            lines.append(f"{label}: {_escape(ref[key]) if ref[key] is not None else 'Unavailable'}")
+        lines.extend([f"Date: {card['date'] if card['date'] is not None else 'Unavailable'}", f"Draft: {'true' if card['draft'] else 'false'}",
+                      f"Evidence kind: {card['evidence_kind']}", f"Source: {_link(ref['citation'], 'Source citation')}", '',
+                      '### Summary', '', _escape(card['summary']), '', '### Details', '', _escape(card['details']), ''])
+        lines.extend(_items('Uncertainty', [_escape(item) for item in card['uncertainty']]))
+        lines.extend(_items('Sources', [_link(url) for url in card['source_links']]))
+        for label, key in (('Supersedes', 'supersedes'), ('Dependencies', 'dependencies')):
+            lines.extend(_items(label, [_link(item['citation'], revision_key(item)) for item in card[key]]))
+    data = ('<!-- workvault-publication-v2\n' + payload + _CLOSE + '\n'.join(lines) + '\n').encode('utf-8')
+    if len(data) > MAX_PUBLICATION_BYTES:
+        raise ValueError('publication too large')
+    return data

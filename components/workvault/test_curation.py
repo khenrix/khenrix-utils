@@ -1,10 +1,25 @@
 import copy
+import hashlib
+from pathlib import Path
+import tempfile
 import unittest
 
-from curation import parse_publication, render_publication, validate_curated_batch
+from curation import parse_publication, render_publication, validate_curated_batch, validate_source_batch
 
 
 STAMP = '2026-10-05T12:34:56Z'
+
+
+def source_fixture(kind='slack'):
+    from test_sources import reference
+    return {'schema_version': 'workvault-curated-batch-v2', 'cards': [{
+        'source': reference(kind), 'title': 'Synthetic source fact',
+        'summary': 'A curated observation.', 'details': 'Earlier event 2026-10-01 retained.',
+        'date': '2026-10-05', 'draft': True, 'uncertainty': ['Unverified proposal.'],
+        'source_links': [reference(kind)['citation']], 'evidence_kind': 'source_observation',
+        'supersedes': [dict(reference(kind), revision='revision-1', event_at='2026-10-01T10:00:00Z')],
+        'dependencies': [dict(reference('jira'), container='PROJECT', item_id='PROJECT-1')],
+    }]}
 
 
 def fixture():
@@ -71,6 +86,14 @@ def with_card_count(count):
 
 
 class CurationTests(unittest.TestCase):
+    def test_historical_v1_bytes_are_preserved_on_unchanged_read(self):
+        data = render_publication(fixture(), STAMP)
+        self.assertEqual(len(data), 2738)
+        self.assertEqual(hashlib.sha256(data).hexdigest(),
+                         '3b12f2c76ccc60e66427c3c21e4079e2650a7d840ede821f20df96f2c735920c')
+        checkpoint = parse_publication(data)
+        self.assertEqual(render_publication(checkpoint['batch'], checkpoint['published_at']), data)
+
     def assert_invalid(self, batch):
         with self.assertRaises(ValueError):
             validate_curated_batch(batch)
@@ -486,6 +509,106 @@ class CurationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_publication(nested)
         self.assertEqual(parse_publication(good)['published_at'], '2026-10-05T12:34:56Z')
+
+
+class MultiSourceCurationTests(unittest.TestCase):
+    def test_unavailable_event_time_is_rendered_as_unavailable_not_observation_time(self):
+        value = source_fixture('backstage')
+        value['cards'][0]['source']['event_at'] = None
+        value['cards'][0]['source']['modified_at'] = None
+        value['cards'][0]['supersedes'] = []
+        value['cards'][0]['date'] = None
+        value['cards'][0]['uncertainty'] = ['Source event date unavailable; history unsupported.']
+        data = self.render(value)
+        self.assertIn(b'Event at: Unavailable', data)
+        self.assertIn(b'Date: Unavailable', data)
+        self.assertNotIn(b'1970-01-01', data)
+        self.assertIsNone(parse_publication(data)['batch']['cards'][0]['source']['event_at'])
+        self.assertIsNone(parse_publication(data)['batch']['cards'][0]['date'])
+
+    def test_v1_publisher_refuses_v2_without_creating_publication_or_snapshot_paths(self):
+        import workvault
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(workvault.WorkVaultError):
+                workvault.publish_curated_batch(root / 'vault', root / 'snapshots', source_fixture())
+            self.assertEqual(list(root.iterdir()), [])
+
+    def render(self, value):
+        try:
+            return render_publication(value, '2026-10-07T12:00:00Z')
+        except ValueError as error:
+            self.fail('valid native provenance was refused: ' + str(error))
+
+    def test_each_native_source_roundtrips_without_fabricated_github_metadata(self):
+        for kind in ('slack', 'drive', 'gmail', 'jira', 'backstage'):
+            with self.subTest(kind=kind):
+                value = source_fixture(kind)
+                data = self.render(value)
+                self.assertEqual(parse_publication(data)['batch'], value)
+                self.assertIn(b'workvault-publication-v2', data)
+                self.assertNotIn(b'https://github.com/', data)
+                self.assertIn(b'Draft: true', data)
+                self.assertIn(b'2026-10-01', data)
+                self.assertIn(b'Unverified proposal', data)
+
+    def test_evidence_categories_remain_distinct_without_duplicate_source_reinforcement(self):
+        for category in ('source_observation', 'user_decision', 'agent_claim', 'verified_result', 'owner_synthesis'):
+            value = source_fixture()
+            value['cards'][0]['evidence_kind'] = category
+            data = self.render(value)
+            self.assertIn(('Evidence kind: ' + category).encode(), data)
+        duplicate = source_fixture()
+        duplicate['cards'].append(copy.deepcopy(duplicate['cards'][0]))
+        duplicate['cards'][1]['evidence_kind'] = 'agent_claim'
+        with self.assertRaises(ValueError):
+            validate_source_batch(duplicate)
+
+    def test_v2_limits_unknown_fields_and_invalid_relationships_refuse(self):
+        good = source_fixture()
+        self.assertEqual(parse_publication(self.render(good))['batch'], good)
+        for field, value in (('evidence_kind', 'fact'), ('raw_body', 'RAW_CANARY'),
+                             ('dependencies', [good['cards'][0]['source']]),
+                             ('supersedes', [dict(good['cards'][0]['source'], item_id='other')])):
+            bad = source_fixture()
+            bad['cards'][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validate_source_batch(bad)
+        for count in (0, 6):
+            bad = source_fixture()
+            bad['cards'] = [dict(copy.deepcopy(good['cards'][0]), source=dict(good['cards'][0]['source'], item_id=str(i)), supersedes=[]) for i in range(count)]
+            with self.assertRaises(ValueError):
+                validate_source_batch(bad)
+        data = self.render(good)
+        with self.assertRaises(ValueError):
+            parse_publication(data.replace(b'Evidence kind: source_observation', b'Evidence kind: verified_result'))
+        with self.assertRaises(ValueError):
+            parse_publication(data.replace(b'https://example.invalid/source/123.456', b'https://example.invalid/source/999.999', 1))
+
+    def test_publication_cannot_predate_observation(self):
+        with self.assertRaises(ValueError):
+            render_publication(source_fixture(), '2026-10-06T12:00:00Z')
+
+    def test_same_real_revision_cannot_be_presented_as_superseded(self):
+        bad = source_fixture()
+        bad['cards'][0]['supersedes'] = [dict(bad['cards'][0]['source'], content_hash='sha256:' + 'b' * 64)]
+        with self.assertRaises(ValueError):
+            validate_source_batch(bad)
+
+    def test_revision_hash_consistency_covers_all_cards_and_relationships(self):
+        for relationship in ('source', 'supersedes'):
+            batch = source_fixture()
+            first = batch['cards'][0]
+            other = copy.deepcopy(source_fixture('drive')['cards'][0])
+            other['source']['item_id'] = 'another-source'
+            other['supersedes'] = []
+            original = first['source'] if relationship == 'source' else first['supersedes'][0]
+            other['dependencies'] = [copy.deepcopy(original)]
+            batch['cards'].append(other)
+            self.assertEqual(parse_publication(self.render(batch))['batch'], batch)
+            other['dependencies'][0]['content_hash'] = 'sha256:' + 'b' * 64
+            with self.subTest(relationship=relationship), self.assertRaises(ValueError):
+                validate_source_batch(batch)
 
 
 if __name__ == '__main__':

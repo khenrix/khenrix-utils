@@ -7,6 +7,29 @@ from curation import parse_publication, render_publication
 
 
 class ProvenanceRenderingContract(unittest.TestCase):
+    def test_native_source_citation_preserves_exact_clickable_query_without_github_rewriting(self):
+        from test_curation import source_fixture
+        batch = source_fixture('drive')
+        original_url = 'https://example.invalid/source/123.456?q=&copy;'
+        publication = render_publication(batch, '2026-10-07T12:00:00Z')
+        self.assertEqual(parse_publication(publication)['batch']['cards'][0]['source']['citation'], original_url)
+        ruby = (
+            'require "rdoc"; require "rdoc/markdown"; require "rdoc/markup/to_html"; '
+            'document = RDoc::Markdown.parse(STDIN.read.force_encoding("UTF-8")); '
+            'puts document.accept(RDoc::Markup::ToHtml.new(RDoc::Options.new))'
+        )
+        rendered = subprocess.check_output(['/usr/bin/ruby', '-e', ruby], input=publication, timeout=15).decode('utf-8')
+        links = []
+
+        class Links(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                if tag == 'a':
+                    links.extend(value for key, value in attrs if key == 'href')
+
+        Links().feed(rendered)
+        self.assertIn(original_url, links)
+        self.assertFalse(any(url.startswith('https://github.com/') for url in links))
+
     def test_entity_like_query_is_preserved_in_the_clickable_backlink(self):
         original_url = "https://example.invalid/?q=&copy;"
         card = {
