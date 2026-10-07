@@ -179,9 +179,9 @@ def _load_state(directory, repository):
         return None
 
 
-def _save_state(directory, state):
+def _save_state(directory, state, name=STATE):
     try:
-        old = _read(directory, STATE)
+        old = _read(directory, name)
     except FileNotFoundError:
         old = None
     data = (json.dumps(state, ensure_ascii=False, sort_keys=True, allow_nan=False) + '\n').encode()
@@ -189,12 +189,12 @@ def _save_state(directory, state):
     identity = _write_private(directory, staged, data)
     try:
         try:
-            current = _read(directory, STATE)
+            current = _read(directory, name)
         except FileNotFoundError:
             current = None
         if current != old:
             raise SyncError('sync state changed')
-        os.replace(staged, STATE, src_dir_fd=directory, dst_dir_fd=directory)
+        os.replace(staged, name, src_dir_fd=directory, dst_dir_fd=directory)
         os.fsync(directory)
     finally:
         _unlink_owned(directory, staged, identity)
@@ -445,6 +445,371 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None, topi
             return _status(config, state) if selected is None else _topic_status(config, state, topic, selected, snapshot.commit)
     except Exception:
         raise SyncError('sync refused; existing notes retained; inspect status') from None
+
+
+SOURCE_STATE = 'multi-source-state.json'
+
+
+@dataclass(frozen=True)
+class SourceSyncConfig:
+    vault: Path
+    snapshots: Path
+    state: Path
+
+
+@dataclass(frozen=True)
+class SourceSelection:
+    """Caller-supplied authority; the coordinator never discovers accounts/routes."""
+    source_id: str
+    kind: str
+    account: str
+    container: str
+    adapter: object
+    route_sha256: str | None = None
+    source_sha256: str | None = None
+
+
+def _source_config(config):
+    if type(config) is not SourceSyncConfig:
+        raise SyncError('invalid source sync configuration')
+    paths = [_root_path(path) for path in (config.vault, config.snapshots, config.state)]
+    for index, first in enumerate(paths):
+        for second in paths[index + 1:]:
+            if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+                raise SyncError('overlapping source sync roots')
+    return SourceSyncConfig(*paths)
+
+
+def _source_binding(selection):
+    import curation
+    import sources
+    if type(selection) is not SourceSelection or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', selection.source_id):
+        raise SyncError('invalid selected source')
+    if selection.kind not in sources._KINDS:
+        raise SyncError('invalid selected source kind')
+    binding = {'kind': selection.kind}
+    for key in ('account', 'container'):
+        value = curation._text(getattr(selection, key), 512)
+        if any(ord(char) < 32 for char in value):
+            raise SyncError('invalid selected source binding')
+        binding[key] = value
+    for key in ('route_sha256', 'source_sha256'):
+        value = getattr(selection, key)
+        if value is not None and (type(value) is not str or not re.fullmatch(r'[0-9a-f]{64}', value)):
+            raise SyncError('invalid supplied source evidence')
+        binding[key] = value
+    return binding
+
+
+def _bound_reference(value, binding, *, fetched=False):
+    import sources
+    clean = sources.validate_reference(value) if fetched else sources.validate_locator(value)
+    if any(clean[key] != binding[key] for key in ('kind', 'account', 'container')):
+        raise SyncError('selected source identity drift')
+    return clean
+
+
+def _source_state(value, bindings, cutoff):
+    import curation
+    import sources
+    curation._object(value, {'schema_version', 'sources'})
+    curation._literal(value['schema_version'], 'workvault-multi-source-state-v2')
+    if type(value['sources']) is not dict or set(value['sources']) != set(bindings):
+        raise SyncError('selected source inventory changed')
+    for source_id, row in value['sources'].items():
+        curation._object(row, {'binding', 'cutoff', 'phase', 'cursor', 'change_cursor', 'pending',
+                              'inflight', 'failed', 'page_count', 'gaps'})
+        if row['binding'] != bindings[source_id] or row['cutoff'] != cutoff:
+            raise SyncError('frozen selected source changed')
+        if row['phase'] not in ('backfill', 'changes') or type(row['failed']) is not bool:
+            raise SyncError('invalid source progress')
+        for key in ('cursor', 'change_cursor'):
+            if row[key] is not None:
+                curation._text(row[key], 2048)
+                if any(ord(char) < 32 for char in row[key]):
+                    raise SyncError('invalid source cursor')
+        if type(row['page_count']) is not int or row['page_count'] < 0:
+            raise SyncError('invalid source page count')
+        if type(row['gaps']) is not list:
+            raise SyncError('invalid cumulative source gaps')
+        for gap in row['gaps']:
+            sources.validate_page({'items': [], 'next_cursor': None, 'complete': True, 'gaps': [gap]})
+        pending = row['pending']
+        if pending is not None:
+            curation._object(pending, {'page', 'checkpoint', 'offset'})
+            change = sources.validate_changes({'page': pending['page'], 'checkpoint': pending['checkpoint']})
+            for ref in change['page']['items']:
+                _bound_reference(ref, row['binding'])
+            if type(pending['offset']) is not int or not 0 <= pending['offset'] <= len(change['page']['items']):
+                raise SyncError('invalid pending source coverage')
+        inflight = row['inflight']
+        if inflight is not None:
+            curation._object(inflight, {'references', 'end'})
+            if pending is None or type(inflight['end']) is not int or not pending['offset'] < inflight['end'] <= len(pending['page']['items']):
+                raise SyncError('invalid inflight coverage')
+            refs = sources.validate_references(inflight['references'], maximum=5)
+            if not refs or inflight['end'] - pending['offset'] != len(refs):
+                raise SyncError('invalid inflight batch')
+            for ref, listed in zip(refs, pending['page']['items'][pending['offset']:inflight['end']]):
+                _bound_reference(ref, row['binding'], fetched=True)
+                if not _matches_listing(ref, listed, observed=False):
+                    raise SyncError('inflight source differs from listing')
+    return value
+
+
+def _matches_listing(reference, locator, *, observed=True):
+    import curation
+    import sources
+    return (sources.source_key(reference) == sources.source_key(locator)
+            and reference['citation'] == locator['citation']
+            and (not observed or curation._source_instant(reference['observed_at']) >= curation._source_instant(locator['observed_at']))
+            and all(locator[key] is None or reference[key] == locator[key]
+                    for key in ('revision', 'author', 'event_at', 'modified_at')))
+
+
+def _committed_source(config, locator):
+    from batch import source_publication_name
+    # Publication naming depends on identity, never on an invented listing hash.
+    import sources
+    name = 'Knowledge-' + hashlib.sha256(sources.source_key(locator).encode()).hexdigest()[:24] + '.md'
+    with _read_publications(config.vault):
+        try:
+            with _directory(config.vault) as directory:
+                clean = parse_publication(_read(directory, name))['batch']
+        except FileNotFoundError:
+            return None
+        if clean['schema_version'] != 'workvault-curated-batch-v2' or len(clean['cards']) != 1:
+            raise SyncError('source publication differs')
+        ref = sources.validate_reference(clean['cards'][0]['source'])
+        if source_publication_name(ref) != name:
+            raise SyncError('source publication identity differs')
+        return ref if _matches_listing(ref, locator, observed=False) else None
+
+
+def _same_source_content(first, second):
+    return first is not None and all(first[key] == value for key, value in second.items() if key != 'observed_at')
+
+
+def _completion_prefix(source_id):
+    return 'source-completed-' + hashlib.sha256(source_id.encode()).hexdigest() + '-'
+
+
+def _record_completed(directory, source_id, reference):
+    import sources
+    reference = sources.validate_reference(reference)
+    name = _completion_prefix(source_id) + hashlib.sha256(sources.revision_key(reference).encode()).hexdigest() + '.json'
+    try:
+        previous = sources.validate_reference(_json(_read(directory, name)))
+        if sources.revision_key(previous) != sources.revision_key(reference):
+            raise SyncError('completed source changed')
+    except FileNotFoundError:
+        _save_state(directory, reference, name)
+
+
+def _completed_sources(directory, source_id, binding):
+    """Acknowledged revision/hash evidence outlives the seven content snapshots.
+
+    These private checkpoints prove prior publication, not retained/retrievable
+    content. Reuse never restores an old card or implies withdrawal handling.
+    """
+    import sources
+    prefix = _completion_prefix(source_id)
+    completed, revisions = {}, {}
+    for name in os.listdir(directory):
+        if not name.startswith(prefix):
+            continue
+        ref = _bound_reference(_json(_read(directory, name)), binding, fetched=True)
+        key = sources.revision_key(ref)
+        if name != prefix + hashlib.sha256(key.encode()).hexdigest() + '.json':
+            raise SyncError('invalid completed revision metadata')
+        if ref['revision'] is not None:
+            revision = (sources.source_key(ref), ref['revision'])
+            if revision in revisions and revisions[revision] != ref['content_hash']:
+                raise SyncError('conflicting completed source revision')
+            revisions[revision] = ref['content_hash']
+        completed[key] = ref
+    return completed
+
+
+def _completed_source(completed, locator):
+    return next((ref for ref in completed.values()
+                 if _matches_listing(ref, locator, observed=False)), None)
+
+
+def _fetched_source(record, locator, binding):
+    import curation
+    import sources
+    from collector import MAX_DOCUMENT
+    curation._object(record, {'reference', 'body', 'draft', 'supersedes', 'dependencies'})
+    ref = _bound_reference(record['reference'], binding, fetched=True)
+    body = record['body']
+    if (type(body) is not bytes or len(body) > MAX_DOCUMENT
+            or 'sha256:' + hashlib.sha256(body).hexdigest() != ref['content_hash']
+            or type(record['draft']) is not bool or not _matches_listing(ref, locator)):
+        raise SyncError('fetched source refused')
+    body.decode('utf-8')
+    sources.validate_references(record['supersedes'])
+    sources.validate_references(record['dependencies'])
+    return ref
+
+
+def _ack_source_batch(directory, state, source_id, references, end):
+    row = state['sources'][source_id]
+    for reference in references:
+        _record_completed(directory, source_id, reference)
+    row['pending']['offset'] = end
+    row['inflight'] = None
+    row['failed'] = False
+    _save_state(directory, state, SOURCE_STATE)
+
+
+def _source_report(directory, state, page_budget):
+    report = {}
+    for source_id, row in state['sources'].items():
+        completed = _completed_sources(directory, source_id, row['binding'])
+        gaps = list(row['gaps'])
+        if row['pending']:
+            gaps.extend(gap for gap in row['pending']['page']['gaps'] if gap not in gaps)
+        report[source_id] = {'state': 'uncertain' if row['inflight'] else 'failed' if row['failed'] else 'ready',
+            'phase': row['phase'], 'covered_count': len(completed),
+            'page_count': row['page_count'], 'cursor': row['cursor'], 'change_cursor': row['change_cursor'],
+            'pending_count': len(row['pending']['page']['items']) - row['pending']['offset'] if row['pending'] else 0,
+            'gaps': gaps, 'cutoff': row['cutoff'], 'binding': row['binding'],
+            'history_reuse': 'acknowledged_revision_hash_checkpoint',
+            'provenance': 'supplied_digests' if row['binding']['route_sha256'] is not None
+                and row['binding']['source_sha256'] is not None else 'not_certified'}
+    return {'schema_version': 'workvault-multi-source-status-v2', 'sources': report,
+            'page_budget_per_source': page_budget, 'full_source_coverage': False}
+
+
+def _sync_source(config, directory, state, selection, curator, page_budget):
+    import sources
+    from collector import assemble_source_batch
+    from curation import validate_source_batch
+    from batch import source_publication_name
+    source_id = selection.source_id
+    row = state['sources'][source_id]
+    completed = _completed_sources(directory, source_id, row['binding'])
+    if row['inflight']:
+        refs = row['inflight']['references']
+        committed = []
+        for ref in refs:
+            checkpoint = completed.get(sources.revision_key(ref))
+            committed.append(checkpoint if checkpoint == ref else _committed_source(config, ref))
+        if committed != refs:
+            return
+        _ack_source_batch(directory, state, source_id, refs, row['inflight']['end'])
+        completed.update((sources.revision_key(ref), ref) for ref in refs)
+    for _ in range(page_budget):
+        if row['pending'] is None:
+            if row['phase'] == 'backfill':
+                page = sources.validate_page(selection.adapter.list_page(cursor=row['cursor'], cutoff=row['cutoff']))
+                checkpoint = None
+            else:
+                change = sources.validate_changes(selection.adapter.changes(cursor=row['cursor'] or row['change_cursor']))
+                page, checkpoint = change['page'], change['checkpoint']
+            for ref in page['items']:
+                _bound_reference(ref, row['binding'])
+            if not page['complete'] and page['next_cursor'] == row['cursor']:
+                raise SyncError('nonadvancing source page')
+            row['pending'] = {'page': page, 'checkpoint': checkpoint, 'offset': 0}
+            row['failed'] = False
+            _save_state(directory, state, SOURCE_STATE)
+        pending = row['pending']
+        items = pending['page']['items']
+        while pending['offset'] < len(items):
+            start = pending['offset']
+            selected, records, refs, keys = [], [], [], set()
+            for listed in items[start:start + 5]:
+                key = sources.source_key(listed)
+                if key in keys:
+                    break
+                keys.add(key)
+                committed = (_completed_source(completed, listed) if listed['revision'] is not None else None)
+                committed = committed or _committed_source(config, listed)
+                if listed['revision'] is not None and committed is not None:
+                    refs.append(committed)
+                    continue
+                record = selection.adapter.fetch(listed)
+                ref = _fetched_source(record, listed, row['binding'])
+                committed = completed.get(sources.revision_key(ref)) or committed
+                # Observation freshness validates the fetch, not cached content.
+                if _same_source_content(committed, ref):
+                    refs.append(committed)
+                    continue
+                refs.append(ref)
+                selected.append(listed)
+                records.append(record)
+            if not records:
+                _ack_source_batch(directory, state, source_id, refs, start + len(refs))
+                completed.update((sources.revision_key(ref), ref) for ref in refs)
+                continue
+            row['inflight'] = {'references': refs, 'end': start + len(refs)}
+            _save_state(directory, state, SOURCE_STATE)
+            expected = {sources.source_key(ref): ref for ref in refs
+                        if any(sources.source_key(listed) == sources.source_key(ref) for listed in selected)}
+            clean = validate_source_batch(assemble_source_batch(selected, records, curator.curate_sources(selected, records)))
+            if {sources.source_key(card['source']): card['source'] for card in clean['cards']} != expected:
+                raise SyncError('curation changed fetched provenance')
+            with publication_batch(config.vault, config.snapshots, clean):
+                for card in clean['cards']:
+                    name = source_publication_name(card['source'])
+                    publish_curated_batch(config.vault, config.snapshots / name[:-3],
+                        {'schema_version': clean['schema_version'], 'cards': [card]}, publication=name)
+            _ack_source_batch(directory, state, source_id, refs, start + len(refs))
+            completed.update((sources.revision_key(ref), ref) for ref in refs)
+        page = pending['page']
+        row['page_count'] += 1
+        for gap in page['gaps']:
+            if gap not in row['gaps']:
+                row['gaps'].append(gap)
+        row['cursor'] = page['next_cursor']
+        if page['complete']:
+            if row['phase'] == 'changes':
+                row['change_cursor'] = pending['checkpoint'] or row['change_cursor']
+            row['phase'] = 'changes'
+        row['pending'] = None
+        row['failed'] = False
+        _save_state(directory, state, SOURCE_STATE)
+        if page['complete']:
+            break
+
+
+def sync_sources(config, *, selections, cutoff, curator, page_budget=1):
+    """Internal resumable seam; supplied adapters/curator grant no new authority.
+
+    Each call handles at most page_budget pages per selected source, paying for at
+    most five distinct items per batch. Repeat calls exhaust history without a
+    historical page cap. Ambiguous dispatch requires external reconciliation.
+    """
+    import curation
+    try:
+        config = _source_config(config)
+        curation._source_timestamp(cutoff)
+        if type(selections) is not tuple or not selections or type(page_budget) is not int or page_budget < 1:
+            raise SyncError('invalid source sync bounds')
+        bindings = {selection.source_id: _source_binding(selection) for selection in selections}
+        if len(bindings) != len(selections):
+            raise SyncError('duplicate selected source')
+        with _lock(config.state) as directory:
+            try:
+                state = _source_state(_json(_read(directory, SOURCE_STATE)), bindings, cutoff)
+            except FileNotFoundError:
+                state = {'schema_version': 'workvault-multi-source-state-v2', 'sources': {
+                    source_id: {'binding': binding, 'cutoff': cutoff, 'phase': 'backfill', 'cursor': None,
+                        'change_cursor': None, 'pending': None, 'inflight': None, 'failed': False,
+                        'page_count': 0, 'gaps': []} for source_id, binding in bindings.items()}}
+                _save_state(directory, state, SOURCE_STATE)
+            recover_publication_batch(config.vault, config.snapshots)
+            for selection in selections:
+                try:
+                    _sync_source(config, directory, state, selection, curator, page_budget)
+                except Exception:
+                    state['sources'][selection.source_id]['failed'] = True
+                    _save_state(directory, state, SOURCE_STATE)
+            return _source_report(directory, state, page_budget)
+    except Exception:
+        raise SyncError('source sync refused; inspect safe source status') from None
 
 
 def load_config(path):
