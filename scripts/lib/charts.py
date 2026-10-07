@@ -218,7 +218,11 @@ flowchart TD
     with tempfile.TemporaryDirectory() as t:
         # zero skills + a capabilities.toml = the scan is wrong, not the repo clean
         td = Path(t)
-        (td / "capabilities.toml").write_text("[models]\n")
+        (td / "capabilities.toml").write_text(
+            '[models]\n[historical_only]\n'
+            'skills = ["llm-council", "llm-forge"]\n'
+            'libraries = ["council", "forge"]\n'
+        )
         probs = check_charts(td)
         ok.append(("empty scan with capabilities.toml present fails loud",
                    any("vacuously" in p for p in probs)))
