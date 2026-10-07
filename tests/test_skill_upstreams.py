@@ -1289,6 +1289,286 @@ def test_npm_release_watch_orders_numeric_versions_and_checks_pinned_sri(
     assert upstreamctl.npm_release_candidate(source)[3] is True
 
 
+MAKA_DISCOVERY_VERSION = "0.2.0-dev.70.20261005"
+MAKA_DISCOVERY_COMMIT = "dcef64275ef435049a4a0c65a0d81199b45ed498"
+MAKA_DISCOVERY_INTEGRITY = (
+    "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA=="
+)
+
+
+@pytest.fixture
+def npm_provenance_fixture(monkeypatch: pytest.MonkeyPatch):
+    source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release")
+    release = {
+        "name": "maka-agent",
+        "version": MAKA_DISCOVERY_VERSION,
+        "repository": {"type": "git", "url": "git+https://github.com/apache/maka.git"},
+        "dist": {
+            "integrity": MAKA_DISCOVERY_INTEGRITY,
+            # Untrusted metadata URLs must never select the HTTP destination.
+            "attestations": {"url": "http://127.0.0.1/private"},
+        },
+    }
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [{
+            "name": "pkg:npm/maka-agent@0.2.0-dev.70.20261005",
+            "digest": {"sha512": "1de41808aa9480142f29a3d13dad06f626cf5aac5fde2ee8caabf57d31e27b1b44506d3b505d58125f70bfae007bde04707006b1b0649c242256ae55ad3c495c"},
+        }],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+                "externalParameters": {"workflow": {
+                    "repository": "https://github.com/apache/maka",
+                    "ref": "refs/heads/main",
+                    "path": ".github/workflows/npm-publication.yml",
+                }},
+                "resolvedDependencies": [{
+                    "uri": "git+https://github.com/apache/maka@refs/heads/main",
+                    "digest": {"gitCommit": MAKA_DISCOVERY_COMMIT},
+                }],
+            },
+            "runDetails": {"builder": {"id": "https://github.com/actions/runner/github-hosted"}},
+        },
+    }
+    records = {
+        source.package_version: {
+            "gitHead": source.commit,
+            "dist": {"integrity": source.package_integrity},
+        },
+        MAKA_DISCOVERY_VERSION: release,
+    }
+    state = {"statements": [statement], "payload": None, "error": None, "clock": 0.0}
+    requests = []
+
+    class Response:
+        def __init__(self):
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def read(self, limit):
+            assert limit <= 4 * 1024 * 1024 + 1
+            payload = state["payload"]
+            if payload is None:
+                payload = json.dumps({"attestations": [{
+                    "predicateType": item.get("predicateType"),
+                    "bundle": {"dsseEnvelope": {
+                        "payloadType": "application/vnd.in-toto+json",
+                        "payload": base64.b64encode(json.dumps(item).encode()).decode(),
+                        # Discovery deliberately does not assert a signature verdict.
+                        "signatures": [],
+                    }},
+                } for item in state["statements"]]}).encode()
+            return payload[:limit]
+
+        def read1(self, limit):
+            payload = self.read(4 * 1024 * 1024 + 1)
+            chunk = payload[self.offset:self.offset + limit]
+            self.offset += len(chunk)
+            state["clock"] += state.get("read_elapsed" if chunk else "eof_elapsed", 0.0)
+            return chunk
+
+    class Opener:
+        def open(self, request, timeout):
+            requests.append(request.full_url)
+            assert timeout <= 30
+            if state["error"] is not None:
+                raise state["error"]
+            state["clock"] += state.get("open_elapsed", 0.0)
+            return Response()
+
+    monkeypatch.setattr(upstreamctl, "fetch_npm_metadata", lambda package: {"versions": records})
+    monkeypatch.setattr(upstreamctl, "run_git", lambda *args, **kwargs: "")
+    monkeypatch.setattr(upstreamctl, "run_git_bounded", lambda *args, **kwargs: "")
+    monkeypatch.setattr(upstreamctl.urllib.request, "build_opener", lambda *args: Opener())
+    monkeypatch.setattr(upstreamctl.time, "monotonic", lambda: state["clock"])
+    return source, release, statement, state, requests
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_npm_missing_source_tag_discovers_exact_provenance_commit(
+    npm_provenance_fixture, bounded: bool
+) -> None:
+    source, _, _, _, requests = npm_provenance_fixture
+
+    assert upstreamctl.npm_release_candidate(source, bounded=bounded) == (
+        MAKA_DISCOVERY_COMMIT,
+        "npm:maka-agent@0.2.0-dev.70.20261005",
+        MAKA_DISCOVERY_INTEGRITY,
+        False,
+    )
+    assert requests == [
+        "https://registry.npmjs.org/-/npm/v1/attestations/maka-agent@0.2.0-dev.70.20261005"
+    ]
+
+
+@pytest.mark.parametrize("mismatch", [
+    "release-name", "release-version", "release-repository", "subject-name", "subject-hash",
+    "statement-type", "predicate-type", "build-type", "workflow-repository", "dependency-repository",
+    "dependency-ref", "commit", "duplicate-subject", "duplicate-dependency", "duplicate-attestation",
+])
+def test_npm_provenance_identity_and_ambiguity_fail_closed(npm_provenance_fixture, mismatch):
+    source, release, statement, state, _ = npm_provenance_fixture
+    build = statement["predicate"]["buildDefinition"]
+    if mismatch == "release-name":
+        release["name"] = "other-package"
+    elif mismatch == "release-version":
+        release["version"] = "0.2.0-dev.69.20261004"
+    elif mismatch == "release-repository":
+        release["repository"]["url"] = "git+https://github.com/other/maka.git"
+    elif mismatch == "subject-name":
+        statement["subject"][0]["name"] = "pkg:npm/other-package@0.2.0-dev.70.20261005"
+    elif mismatch == "subject-hash":
+        statement["subject"][0]["digest"]["sha512"] = "0" * 128
+    elif mismatch == "statement-type":
+        statement["_type"] = "https://in-toto.io/Statement/v0.1"
+    elif mismatch == "predicate-type":
+        statement["predicateType"] = "https://slsa.dev/provenance/v0.2"
+    elif mismatch == "build-type":
+        build["buildType"] = "https://example.invalid/unknown-build-type"
+    elif mismatch == "workflow-repository":
+        build["externalParameters"]["workflow"]["repository"] += "-other"
+    elif mismatch == "dependency-repository":
+        build["resolvedDependencies"][0]["uri"] = "git+https://github.com/other/maka@refs/heads/main"
+    elif mismatch == "dependency-ref":
+        build["resolvedDependencies"][0]["uri"] = "git+https://github.com/apache/maka@refs/heads/other"
+    elif mismatch == "commit":
+        build["resolvedDependencies"][0]["digest"]["gitCommit"] = "not-a-commit"
+    elif mismatch == "duplicate-subject":
+        statement["subject"].append(copy.deepcopy(statement["subject"][0]))
+    elif mismatch == "duplicate-dependency":
+        build["resolvedDependencies"].append(copy.deepcopy(build["resolvedDependencies"][0]))
+    elif mismatch == "duplicate-attestation":
+        state["statements"].append(copy.deepcopy(statement))
+
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance"):
+        upstreamctl.npm_release_candidate(source)
+
+
+@pytest.mark.parametrize("payload", [
+    b"not json", b"[]", b'{"attestations": []}',
+    b'{"attestations": [], "attestations": []}',
+    b'{"attestations": [{"predicateType": "https://slsa.dev/provenance/v1", "bundle": null}]}',
+    b'{"attestations": [{"predicateType": "https://slsa.dev/provenance/v1", "bundle": {"dsseEnvelope": {"payload": "%%%", "payloadType": "application/vnd.in-toto+json"}}}]}',
+    b" " * (4 * 1024 * 1024 + 1),
+], ids=["json", "root", "empty", "duplicate-key", "bundle", "base64", "limit"])
+def test_npm_provenance_malformed_or_unbounded_metadata_is_refused(npm_provenance_fixture, payload):
+    source, _, _, state, _ = npm_provenance_fixture
+    state["payload"] = payload
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance"):
+        upstreamctl.npm_release_candidate(source)
+
+
+def test_npm_provenance_network_timeout_is_closed(npm_provenance_fixture):
+    source, _, _, state, _ = npm_provenance_fixture
+    state["error"] = TimeoutError("untrusted transport text")
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance") as caught:
+        upstreamctl.npm_release_candidate(source)
+    assert "untrusted transport text" not in str(caught.value)
+
+
+def test_npm_provenance_exhausted_network_budget_refuses_body(npm_provenance_fixture):
+    source, _, _, state, _ = npm_provenance_fixture
+    state["open_elapsed"] = 31.0
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance.*time"):
+        upstreamctl.npm_release_candidate(source)
+
+
+@pytest.mark.parametrize("stage", ["read_elapsed", "eof_elapsed"])
+def test_npm_provenance_late_body_or_eof_cannot_escape_elapsed_budget(npm_provenance_fixture, stage):
+    source, _, _, state, _ = npm_provenance_fixture
+    state[stage] = 31.0
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance.*time"):
+        upstreamctl.npm_release_candidate(source)
+
+
+def test_npm_git_head_still_takes_precedence(npm_provenance_fixture):
+    source, release, _, _, requests = npm_provenance_fixture
+    release["gitHead"] = "a" * 40
+    release["repository"] = None
+    assert upstreamctl.npm_release_candidate(source)[0] == "a" * 40
+    assert requests == []
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+def test_npm_existing_source_tag_still_takes_precedence(
+    npm_provenance_fixture, monkeypatch: pytest.MonkeyPatch, annotated: bool
+):
+    source, _, _, _, requests = npm_provenance_fixture
+    ref = "refs/tags/v0.2.0-dev.70.20261005"
+    output = "a" * 40 + "\t" + ref + "\n"
+    if annotated:
+        output += "b" * 40 + "\t" + ref + "^{}\n"
+    monkeypatch.setattr(upstreamctl, "run_git", lambda *args, **kwargs: output)
+    assert upstreamctl.npm_release_candidate(source)[0] == ("b" if annotated else "a") * 40
+    assert requests == []
+
+
+def test_npm_ambiguous_source_tag_never_uses_provenance(
+    npm_provenance_fixture, monkeypatch: pytest.MonkeyPatch
+):
+    source, _, _, _, requests = npm_provenance_fixture
+    ref = "refs/tags/v0.2.0-dev.70.20261005"
+    output = "a" * 40 + "\t" + ref + "\n" + "b" * 40 + "\t" + ref + "\n"
+    monkeypatch.setattr(upstreamctl, "run_git", lambda *args, **kwargs: output)
+    with pytest.raises(upstreamctl.UpstreamError, match="source tag"):
+        upstreamctl.npm_release_candidate(source)
+    assert requests == []
+
+
+def test_npm_provenance_http_redirect_is_refused():
+    request = upstreamctl.urllib.request.Request(
+        "https://registry.npmjs.org/-/npm/v1/attestations/maka-agent@0.2.0-dev.70.20261005"
+    )
+    with pytest.raises(upstreamctl.UpstreamError, match="redirects"):
+        upstreamctl.NoNpmProvenanceRedirect().redirect_request(
+            request, None, 302, "found", {}, "http://127.0.0.1/private"
+        )
+
+
+def test_npm_provenance_unknown_slsa_statement_is_not_silently_ignored(npm_provenance_fixture):
+    source, _, statement, state, _ = npm_provenance_fixture
+    other = copy.deepcopy(statement)
+    other["predicateType"] = "https://slsa.dev/provenance/v0.2"
+    state["statements"].append(other)
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance"):
+        upstreamctl.npm_release_candidate(source)
+
+
+def test_npm_provenance_second_source_ref_is_ambiguous(npm_provenance_fixture):
+    source, _, statement, _, _ = npm_provenance_fixture
+    dependencies = statement["predicate"]["buildDefinition"]["resolvedDependencies"]
+    other = copy.deepcopy(dependencies[0])
+    other["uri"] = "git+https://github.com/apache/maka@refs/heads/other"
+    other["digest"]["gitCommit"] = "a" * 40
+    dependencies.append(other)
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance.*ambiguous"):
+        upstreamctl.npm_release_candidate(source)
+
+
+def test_npm_provenance_duplicate_json_keys_cannot_select_last_valid_value(npm_provenance_fixture):
+    source, _, statement, state, _ = npm_provenance_fixture
+    envelope = {
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "bundle": {"dsseEnvelope": {
+            "payloadType": "application/vnd.in-toto+json",
+            "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+            "signatures": [],
+        }},
+    }
+    state["payload"] = (
+        b'{"attestations": [], "attestations": ' + json.dumps([envelope]).encode() + b"}"
+    )
+    with pytest.raises(upstreamctl.UpstreamError, match="provenance.*duplicate JSON keys"):
+        upstreamctl.npm_release_candidate(source)
+
+
 def test_npm_watch_requires_canonical_package_selector(tmp_path: Path) -> None:
     repo, _, initial = fixture(tmp_path)
     manifest = next(repo.glob("shared/skills/*/upstreams.toml"))

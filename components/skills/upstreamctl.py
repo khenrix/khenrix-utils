@@ -1158,6 +1158,127 @@ def fetch_npm_metadata(package: str) -> dict[str, Any]:
     return value
 
 
+class NoNpmProvenanceRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        raise UpstreamError("npm provenance redirects are refused")
+
+
+def npm_provenance_json(payload: bytes) -> Any:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise UpstreamError("npm provenance contains duplicate JSON keys")
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(payload, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
+        raise UpstreamError("npm provenance is malformed") from error
+
+
+def npm_provenance_commit(source: Source, release: dict[str, Any], version: str) -> str:
+    """Discover a source binding in registry metadata; this does not verify signatures."""
+    repository = source.repository.removeprefix("git+").removesuffix(".git")
+    declared = release.get("repository")
+    if (
+        release.get("name") != source.package_name
+        or release.get("version") != version
+        or not isinstance(declared, dict)
+        or declared.get("type") != "git"
+        or not isinstance(declared.get("url"), str)
+        or declared["url"].removeprefix("git+").removesuffix(".git") != repository
+        or not re.fullmatch(r"https://[a-zA-Z0-9.-]+/[a-zA-Z0-9._/-]+", repository)
+    ):
+        raise UpstreamError(f"{source.name}: npm provenance release identity mismatch")
+    integrity = validate_sha512_sri(
+        release.get("dist", {}).get("integrity"), label="npm provenance SHA-512 integrity"
+    )
+    subject_digest = base64.b64decode(integrity.removeprefix("sha512-")).hex()
+    # Never follow package-provided dist.attestations URLs, including redirects.
+    selector = urllib.parse.quote(f"{source.package_name}@{version}", safe="@/")
+    url = "https://registry.npmjs.org/-/npm/v1/attestations/" + selector
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    opener = urllib.request.build_opener(NoNpmProvenanceRedirect())
+    deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+    payload = bytearray()
+    try:
+        with opener.open(request, timeout=GIT_TIMEOUT_SECONDS) as response:
+            while len(payload) <= MAX_GIT_OUTPUT_BYTES:
+                if time.monotonic() >= deadline:
+                    raise UpstreamError(f"{source.name}: npm provenance exceeded time limit")
+                # read1 performs at most one underlying read, so slow partial data
+                # cannot keep one read(MAX_BYTES) alive indefinitely.
+                chunk = response.read1(min(65536, MAX_GIT_OUTPUT_BYTES + 1 - len(payload)))
+                if time.monotonic() >= deadline:
+                    raise UpstreamError(f"{source.name}: npm provenance exceeded time limit")
+                if not chunk:
+                    break
+                payload.extend(chunk)
+    except (OSError, TimeoutError) as error:
+        raise UpstreamError(f"{source.name}: npm provenance request failed") from error
+    if len(payload) > MAX_GIT_OUTPUT_BYTES:
+        raise UpstreamError(f"{source.name}: npm provenance exceeded output limit")
+    value = npm_provenance_json(bytes(payload))
+    predicate_type = "https://slsa.dev/provenance/v1"
+    build_type = "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1"
+    try:
+        attestations = value["attestations"]
+        if not isinstance(attestations, list):
+            raise UpstreamError("npm provenance attestations must be a list")
+        if any(
+            item.get("predicateType", "").startswith("https://slsa.dev/provenance/")
+            and item["predicateType"] != predicate_type
+            for item in attestations
+        ):
+            raise UpstreamError("npm provenance contains an unsupported SLSA statement")
+        matching = [item for item in attestations if item.get("predicateType") == predicate_type]
+        if len(matching) != 1:
+            raise UpstreamError("npm provenance requires one unambiguous SLSA v1 statement")
+        envelope = matching[0]["bundle"]["dsseEnvelope"]
+        if envelope["payloadType"] != "application/vnd.in-toto+json":
+            raise UpstreamError("npm provenance has an unsupported payload type")
+        encoded = envelope["payload"]
+        if not isinstance(encoded, str) or len(encoded) > MAX_GIT_OUTPUT_BYTES:
+            raise UpstreamError("npm provenance payload is missing or exceeds output limit")
+        statement = npm_provenance_json(base64.b64decode(encoded, validate=True))
+        if (
+            statement["_type"] != "https://in-toto.io/Statement/v1"
+            or statement["predicateType"] != predicate_type
+            or statement["subject"] != [{
+                "name": "pkg:npm/" + urllib.parse.quote(source.package_name, safe="/") + "@" + version,
+                "digest": {"sha512": subject_digest},
+            }]
+        ):
+            raise UpstreamError("npm provenance subject or statement type mismatch")
+        build = statement["predicate"]["buildDefinition"]
+        workflow = build["externalParameters"]["workflow"]
+        if (
+            build["buildType"] != build_type
+            or workflow["repository"] != repository
+            or not isinstance(workflow["ref"], str)
+            or not re.fullmatch(r"refs/(?:heads|tags)/[a-zA-Z0-9._/-]+", workflow["ref"])
+        ):
+            raise UpstreamError("npm provenance build or workflow repository mismatch")
+        dependencies = build["resolvedDependencies"]
+        if not isinstance(dependencies, list):
+            raise UpstreamError("npm provenance dependencies must be a list")
+        uri = f"git+{repository}@{workflow['ref']}"
+        matching = [
+            item for item in dependencies
+            if item.get("uri", "").startswith(f"git+{repository}@")
+        ]
+        if len(matching) != 1 or matching[0]["uri"] != uri:
+            raise UpstreamError("npm provenance source dependency is missing or ambiguous")
+        commit = matching[0]["digest"]["gitCommit"]
+        if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise UpstreamError("npm provenance source commit is malformed")
+        return commit
+    except (KeyError, TypeError, AttributeError, ValueError, binascii.Error) as error:
+        raise UpstreamError(f"{source.name}: npm provenance is malformed") from error
+
+
 def npm_release_candidate(
     source: Source, *, bounded: bool = False
 ) -> tuple[str, str, str, bool]:
@@ -1207,6 +1328,8 @@ def npm_release_candidate(
         peeled = [value for value, found in rows if found.endswith("^{}")]
         direct = [value for value, found in rows if found == ref]
         commits = peeled or direct
+        if not rows:
+            return npm_provenance_commit(source, release, release_version)
         if len(commits) != 1:
             raise UpstreamError(f"{source.name}: source tag {ref!r} is missing")
         return commits[0]

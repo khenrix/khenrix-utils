@@ -50,6 +50,7 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_agy_guard.py tests/test_fanout_claude_restricted.py \
                 tests/test_fanout_plan_schema.py tests/test_fanout_skills.py \
                 tests/test_fanout_compiler.py tests/test_fanout_runstate.py \
+                tests/test_fanout_controller.py \
                 tests/test_fanout_local_authority.py tests/test_fanout_storage.py \
                 tests/test_fanout_plan_skill.py tests/test_fanout_execute_skill.py \
                 tests/test_fanout_bootstrap_packages.py \

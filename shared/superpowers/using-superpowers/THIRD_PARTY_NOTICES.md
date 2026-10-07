@@ -1,8 +1,8 @@
 # Third-party notices
 
 The 15 Superpowers skills in this bundle retain the files and executable bits from
-[obra/superpowers](https://github.com/obra/superpowers), release v6.4.1 at revision
-`5bf4e78011075bcfc0dc295f0724994cd123ee71`, under the MIT license copied exactly to
+[obra/superpowers](https://github.com/obra/superpowers), release v6.4.2 at revision
+`8ca22dba9a94f28898bbce59f2537ff4d87c747d`, under the MIT license copied exactly to
 `licenses/superpowers.LICENSE`.
 
 Khenrix Utilities adds one privacy overlay to

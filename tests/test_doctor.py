@@ -1920,6 +1920,9 @@ def write_default_configs(home, *, claude_model="best"):
         'plan_mode_reasoning_effort = "ultra"\n\n'
         '[agents]\n'
         'default_subagent_reasoning_effort = "xhigh"\n\n'
+        '[notice.model_migrations]\n'
+        '"gpt-5.6-sol" = "gpt-6.1-sol"\n'
+        '"gpt-6-sol" = "gpt-6.1-sol"\n\n'
         '[mcp_servers.private]\n'
         'command = "never-print-this-command"\n')
 
@@ -1938,7 +1941,7 @@ def test_cli_model_defaults_passes_for_matching_configs(tmp_path):
     check = checks_of(r)["cli-model-defaults"]
     assert r.returncode == 0
     assert check["status"] == "PASS", check
-    assert "10 portable" in check["detail"]
+    assert "12 portable" in check["detail"]
 
 
 def test_cli_model_defaults_reports_field_but_never_observed_values(tmp_path):
