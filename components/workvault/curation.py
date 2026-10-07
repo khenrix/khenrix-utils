@@ -102,6 +102,21 @@ def _timestamp(value):
     return value
 
 
+def _source_timestamp(value):
+    value = _text(value, 27)
+    if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?Z', value):
+        raise ValueError('invalid UTC timestamp')
+    _source_instant(value)
+    return value
+
+
+def _source_instant(value):
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise ValueError('invalid UTC timestamp') from None
+
+
 def _https_url(value):
     value = _text(value, MAX_URL_BYTES)
     if (any(char.isspace() for char in value)
@@ -202,11 +217,12 @@ def validate_curated_batch(batch: dict) -> dict:
 def _checkpoint(batch, published_at):
     clean = (validate_source_batch(batch) if type(batch) is dict and batch.get('schema_version') == SOURCE_BATCH_SCHEMA
              else validate_curated_batch(batch))
-    stamp = _timestamp(published_at)
+    native = clean['schema_version'] == SOURCE_BATCH_SCHEMA
+    stamp = _source_timestamp(published_at) if native else _timestamp(published_at)
     version = PUBLICATION_SCHEMA
-    if clean['schema_version'] == SOURCE_BATCH_SCHEMA:
+    if native:
         version = SOURCE_PUBLICATION_SCHEMA
-        if any(ref['observed_at'] > stamp for card in clean['cards']
+        if any(_source_instant(ref['observed_at']) > _source_instant(stamp) for card in clean['cards']
                for ref in [card['source'], *card['supersedes'], *card['dependencies']]):
             raise ValueError('publication predates source observation')
     return {
@@ -367,7 +383,7 @@ def validate_source_batch(value):
         if any(source_key(prior) != source_key(ref) or revision_key(prior) == revision_key(ref)
                or (ref['revision'] is not None and prior['revision'] == ref['revision'])
                or (prior['event_at'] is not None and ref['event_at'] is not None
-                   and prior['event_at'] > ref['event_at']) for prior in supersedes):
+                   and _source_instant(prior['event_at']) > _source_instant(ref['event_at'])) for prior in supersedes):
             raise ValueError('invalid source supersession')
         if any(source_key(dependency) == source_key(ref) for dependency in dependencies):
             raise ValueError('invalid source dependency')

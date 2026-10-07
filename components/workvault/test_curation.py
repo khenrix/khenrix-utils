@@ -526,13 +526,15 @@ class MultiSourceCurationTests(unittest.TestCase):
         self.assertIsNone(parse_publication(data)['batch']['cards'][0]['source']['event_at'])
         self.assertIsNone(parse_publication(data)['batch']['cards'][0]['date'])
 
-    def test_v1_publisher_refuses_v2_without_creating_publication_or_snapshot_paths(self):
+    def test_publisher_refuses_implicit_v1_to_v2_selection_migration(self):
         import workvault
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            workvault.publish_curated_batch(root / 'vault', root / 'snapshots', fixture())
+            before = {path: path.read_bytes() for path in root.rglob('*') if path.is_file()}
             with self.assertRaises(workvault.WorkVaultError):
                 workvault.publish_curated_batch(root / 'vault', root / 'snapshots', source_fixture())
-            self.assertEqual(list(root.iterdir()), [])
+            self.assertEqual({path: path.read_bytes() for path in root.rglob('*') if path.is_file()}, before)
 
     def render(self, value):
         try:

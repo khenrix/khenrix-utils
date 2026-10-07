@@ -9,12 +9,14 @@ import re
 import uuid
 
 import curation
+import sources
 import workvault as vault
 
 
 JOURNAL = '.workvault-batch.json'
 BACKUPS = '.workvault-batch'
 SCHEMA = 'workvault-owned-batch-v1'
+SOURCE_SCHEMA = 'workvault-owned-batch-v2'
 _STAGE = re.compile(r'\.workvault-stage-[0-9a-f]{32}\Z')
 
 
@@ -26,6 +28,36 @@ def publication_name(repository, path):
     curation.validate_repository(repository)
     curation._path(path)
     return 'Knowledge-' + hashlib.sha256((repository + '\n' + path).encode()).hexdigest()[:24] + '.md'
+
+
+def source_publication_name(reference):
+    identity = sources.source_key(sources.validate_reference(reference))
+    return 'Knowledge-' + hashlib.sha256(identity.encode()).hexdigest()[:24] + '.md'
+
+
+def _single(clean, index):
+    card = clean['cards'][index]
+    result = dict(clean, cards=[card])
+    if clean['schema_version'] != curation.SOURCE_BATCH_SCHEMA:
+        result['requested_paths'] = [card['path']]
+    return result
+
+
+def _binding(value, row, clean, *, new=False, revisions=None):
+    if value['schema'] == SOURCE_SCHEMA:
+        _require(clean['schema_version'] == curation.SOURCE_BATCH_SCHEMA and len(clean['cards']) == 1)
+        reference = clean['cards'][0]['source']
+        _require(sources.source_key(reference) == sources.source_key(row['source']))
+        if new:
+            _require(reference == row['source'])
+        if revisions is not None:
+            vault._check_source_revisions(clean['cards'], revisions)
+    else:
+        _require(clean['schema_version'] == curation.BATCH_SCHEMA
+                 and clean['repository'] == value['repository']
+                 and clean['requested_paths'] == [row['path']])
+        if new:
+            _require(clean['commit'] == value['commit'])
 
 
 def publication_pending(path):
@@ -107,6 +139,8 @@ class _Batch:
         self.published_at = value['published_at']
 
     def name(self, row):
+        if self.value['schema'] == SOURCE_SCHEMA:
+            return source_publication_name(row['source'])
         return publication_name(self.value['repository'], row['path'])
 
     def save(self):
@@ -172,6 +206,7 @@ class _Batch:
         return found
 
     def check(self):
+        revisions = {}
         raw, info = _record(self.directory, JOURNAL)
         _require(raw == self.raw and info['identity'] == self.journal_identity)
         info = self.vault.lstat()
@@ -196,11 +231,9 @@ class _Batch:
                     raw, info = _record(directory, name)
                     _require(info == expected)
                     publication = curation.parse_publication(raw)
-                    _require(publication['batch']['repository'] == self.value['repository']
-                             and publication['batch']['requested_paths'] == [row['path']])
+                    _binding(self.value, row, publication['batch'], new=new, revisions=revisions)
                     if new:
-                        _require(publication['batch']['commit'] == self.value['commit']
-                                 and publication['published_at'] == self.published_at)
+                        _require(publication['published_at'] == self.published_at)
         except FileNotFoundError:
             _require(self.value['phase'] != 'publishing')
         for row in self.value['rows']:
@@ -221,11 +254,9 @@ class _Batch:
                          old_match if self.value['phase'] == 'rolled-back' else old_match or new_match)
                 publication = curation.parse_publication(raw)
                 batch = publication['batch']
-                _require(batch['repository'] == self.value['repository']
-                         and batch['requested_paths'] == [row['path']])
+                _binding(self.value, row, batch, new=self.value['phase'] == 'committed', revisions=revisions)
                 if self.value['phase'] == 'committed':
-                    _require(batch['commit'] == self.value['commit']
-                             and publication['published_at'] == self.published_at)
+                    _require(publication['published_at'] == self.published_at)
             with vault._directory(self.snapshots / name[:-3]) as directory:
                 _require(list(vault._identity(os.fstat(directory))) == row['snapshot_identity'])
                 expected = dict(row['history'])
@@ -240,8 +271,7 @@ class _Batch:
                     snapshot, info = _record(directory, filename)
                     _require(info == expected[filename])
                     batch = curation.parse_publication(snapshot)['batch']
-                    _require(batch['repository'] == self.value['repository']
-                             and batch['requested_paths'] == [row['path']])
+                    _binding(self.value, row, batch, revisions=revisions)
         self.stages()
 
     def rollback(self):
@@ -331,22 +361,25 @@ class _Batch:
 def _load(path, snapshots, directory):
     raw, journal_info = _record(directory, JOURNAL)
     value = json.loads(raw, object_pairs_hook=curation._unique_object, parse_constant=curation._reject_constant)
-    _require(type(value) is dict and set(value) == {'schema', 'phase', 'repository', 'commit',
-        'published_at', 'vault_identity', 'snapshots_identity', 'backup_identity', 'rows'}
-        and value['schema'] == SCHEMA and value['phase'] in ('publishing', 'committed', 'rolled-back')
+    _require(type(value) is dict)
+    native = value.get('schema') == SOURCE_SCHEMA
+    fields = {'schema', 'phase', 'published_at', 'vault_identity', 'snapshots_identity', 'backup_identity', 'rows'}
+    _require(set(value) == (fields if native else fields | {'repository', 'commit'})
+        and value['schema'] in (SCHEMA, SOURCE_SCHEMA) and value['phase'] in ('publishing', 'committed', 'rolled-back')
         and raw == _encoded(value))
-    curation.validate_repository(value['repository'])
-    curation._timestamp(value['published_at'])
-    _require(type(value['commit']) is str and len(value['commit']) == 40
-             and all(char in '0123456789abcdef' for char in value['commit']))
+    (curation._source_timestamp if native else curation._timestamp)(value['published_at'])
+    if not native:
+        curation.validate_repository(value['repository'])
+        _require(type(value['commit']) is str and len(value['commit']) == 40
+                 and all(char in '0123456789abcdef' for char in value['commit']))
     for key in ('vault_identity', 'snapshots_identity', 'backup_identity'):
         _pair(value[key])
     _require(type(value['rows']) is list and 1 <= len(value['rows']) <= curation.MAX_CARDS)
     paths = []
     for row in value['rows']:
-        _require(type(row) is dict and set(row) == {'path', 'old', 'new', 'restored_identity',
-            'snapshot_identity', 'history', 'added_snapshot'})
-        paths.append(curation._path(row['path']))
+        _require(type(row) is dict and set(row) == {'source' if native else 'path', 'old', 'new',
+            'restored_identity', 'snapshot_identity', 'history', 'added_snapshot'})
+        paths.append(sources.source_key(sources.validate_reference(row['source'])) if native else curation._path(row['path']))
         _pair(row['snapshot_identity'])
         if row['restored_identity'] is not None:
             _pair(row['restored_identity'])
@@ -404,15 +437,24 @@ def _begin(path, snapshots, directory, clean):
     _require(not any(name.startswith('.workvault-batch') for name in os.listdir(directory)))
     os.mkdir(BACKUPS, mode=0o700, dir_fd=directory)
     rows, created = [], {}
-    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    native = clean['schema_version'] == curation.SOURCE_BATCH_SCHEMA
+    revisions = {}
+    if native:
+        vault._check_source_revisions(clean['cards'], revisions)
+    now = datetime.now(timezone.utc)
+    timestamp = (now.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                 if native else now.strftime('%Y-%m-%dT%H:%M:%SZ'))
     backup_identity = list(vault._identity((path / BACKUPS).lstat()))
     try:
         with vault._directory(path / BACKUPS) as backups, vault._directory(snapshots, create=True) as snapshot_root:
             for index, card in enumerate(clean['cards']):
-                name = publication_name(clean['repository'], card['path'])
-                single = dict(clean, requested_paths=[card['path']], cards=[card])
+                name = (source_publication_name(card['source']) if native else
+                        publication_name(clean['repository'], card['path']))
+                single = _single(clean, index)
                 old, checkpoint = vault._current(directory, name)
                 vault._same_selection(checkpoint, single)
+                if native and checkpoint is not None:
+                    vault._check_source_revisions(checkpoint['batch']['cards'], revisions)
                 original = None
                 if old is not None:
                     current, info = _record(directory, name)
@@ -432,18 +474,25 @@ def _begin(path, snapshots, directory, clean):
                 with vault._directory(snapshots / name[:-3], create=True) as history:
                     found = vault._snapshot_files(history)
                     _require(old is not None or not found)
+                    if native:
+                        for _, filename in found:
+                            prior = curation.parse_publication(vault._read(history, filename))
+                            vault._same_selection(prior, single)
+                            vault._check_source_revisions(prior['batch']['cards'], revisions)
                     records = {filename: _record(history, filename)[1] for _, filename in found}
                     identity = list(vault._identity(os.fstat(history)))
-                rows.append({'path': card['path'], 'old': original, 'new': {'identity': None, 'backup': new},
+                rows.append({('source' if native else 'path'): card['source'] if native else card['path'],
+                    'old': original, 'new': {'identity': None, 'backup': new},
                     'restored_identity': None, 'snapshot_identity': identity,
                     'history': records, 'added_snapshot': None})
             os.fsync(backups)
             os.fsync(snapshot_root)
-            value = {'schema': SCHEMA, 'phase': 'publishing', 'repository': clean['repository'],
-                'commit': clean['commit'], 'published_at': timestamp,
+            value = {'schema': SOURCE_SCHEMA if native else SCHEMA, 'phase': 'publishing', 'published_at': timestamp,
                 'vault_identity': list(vault._identity(os.fstat(directory))),
                 'snapshots_identity': list(vault._identity(os.fstat(snapshot_root))),
                 'backup_identity': list(vault._identity(os.fstat(backups))), 'rows': rows}
+            if not native:
+                value.update(repository=clean['repository'], commit=clean['commit'])
         raw = _encoded(value)
         journal_identity = vault._write_private(directory, JOURNAL, raw)
         os.fsync(directory)
@@ -470,7 +519,7 @@ def _begin(path, snapshots, directory, clean):
 
 @contextmanager
 def publication_batch(path, snapshots, clean):
-    clean = curation.validate_curated_batch(clean)
+    clean = vault._validated_batch(clean)
     path, snapshots = vault._root_path(path), vault._root_path(snapshots)
     _require(path != snapshots and not path.is_relative_to(snapshots) and not snapshots.is_relative_to(path))
     with vault._publication_lock(path, create=True, recovery=True) as directory:
@@ -479,7 +528,7 @@ def publication_batch(path, snapshots, clean):
         token = vault._ACTIVE_BATCH.set(batch)
         try:
             for index, row in enumerate(rows):
-                single = dict(clean, requested_paths=[row['path']], cards=[clean['cards'][index]])
+                single = _single(clean, index)
                 batch.select(batch.name(row), snapshots / batch.name(row)[:-3], single)
                 if row['old'] is not None:
                     with vault._directory(snapshots / batch.name(row)[:-3]) as history:

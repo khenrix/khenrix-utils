@@ -30,9 +30,10 @@ def _metadata(value, schema):
         if clean[key] is not None and any(ord(char) < 32 for char in clean[key]):
             raise ValueError('invalid source identity')
     for key in ('event_at', 'modified_at'):
-        clean[key] = None if value[key] is None else curation._timestamp(value[key])
-    clean['observed_at'] = curation._timestamp(value['observed_at'])
-    if any(clean[key] is not None and clean[key] > clean['observed_at'] for key in ('event_at', 'modified_at')):
+        clean[key] = None if value[key] is None else curation._source_timestamp(value[key])
+    clean['observed_at'] = curation._source_timestamp(value['observed_at'])
+    if any(clean[key] is not None and curation._source_instant(clean[key]) > curation._source_instant(clean['observed_at'])
+           for key in ('event_at', 'modified_at')):
         raise ValueError('invalid source chronology')
     clean['citation'] = curation._https_url(value['citation'])
     return clean

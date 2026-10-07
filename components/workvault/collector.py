@@ -451,7 +451,8 @@ def assemble_source_batch(references, fetched, model_cards):
             raise ValueError('source metadata mismatch')
         expected = references[keys.index(key)]
         if expected['schema_version'] == LOCATOR_SCHEMA:
-            if (ref['citation'] != expected['citation'] or ref['observed_at'] < expected['observed_at']
+            if (ref['citation'] != expected['citation']
+                    or curation._source_instant(ref['observed_at']) < curation._source_instant(expected['observed_at'])
                     or any(expected[name] is not None and ref[name] != expected[name]
                            for name in ('revision', 'author', 'event_at', 'modified_at'))):
                 raise ValueError('source metadata mismatch')

@@ -9,8 +9,9 @@ import re
 import stat
 import uuid
 
-from curation import (MAX_PUBLICATION_BYTES, parse_publication,
-                      render_publication, validate_curated_batch)
+from curation import (MAX_PUBLICATION_BYTES, SOURCE_BATCH_SCHEMA, parse_publication,
+                      render_publication, validate_curated_batch, validate_source_batch)
+from sources import source_key
 
 
 MANAGED = 'Knowledge.md'
@@ -117,6 +118,12 @@ def _state(checkpoint):
     if checkpoint is None:
         return {'schema_version': 'workvault-status-v1', 'state': 'empty'}
     batch = checkpoint['batch']
+    if batch['schema_version'] == SOURCE_BATCH_SCHEMA:
+        # Curated cards do not prove completeness of an upstream inventory.
+        return {'schema_version': 'workvault-status-v2', 'state': 'published',
+                'sources': [card['source'] for card in batch['cards']],
+                'published_at': checkpoint['published_at'], 'card_count': len(batch['cards']),
+                'full_source_coverage': False}
     discovered = set(batch['discovered_paths'])
     covered = set(batch['requested_paths'])
     return {
@@ -275,9 +282,33 @@ def _prune_snapshots(directory, found):
 def _same_selection(checkpoint, batch):
     if checkpoint is not None:
         prior = checkpoint['batch']
+        if prior['schema_version'] != batch['schema_version']:
+            raise WorkVaultError('source selection changed')
+        if batch['schema_version'] == SOURCE_BATCH_SCHEMA:
+            before = {source_key(card['source']): card['source'] for card in prior['cards']}
+            after = {source_key(card['source']): card['source'] for card in batch['cards']}
+            if set(before) != set(after):
+                raise WorkVaultError('source selection changed')
+            _check_source_revisions([*prior['cards'], *batch['cards']], {})
+            return
         if (prior['repository'] != batch['repository']
                 or set(prior['requested_paths']) != set(batch['requested_paths'])):
             raise WorkVaultError('source selection changed')
+
+
+def _check_source_revisions(cards, revisions):
+    for card in cards:
+        for ref in [card['source'], *card['supersedes'], *card['dependencies']]:
+            if ref['revision'] is not None:
+                key = (source_key(ref), ref['revision'])
+                if key in revisions and revisions[key] != ref['content_hash']:
+                    raise WorkVaultError('source revision changed')
+                revisions[key] = ref['content_hash']
+
+
+def _validated_batch(batch):
+    return (validate_source_batch(batch) if type(batch) is dict and batch.get('schema_version') == SOURCE_BATCH_SCHEMA
+            else validate_curated_batch(batch))
 
 
 def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
@@ -285,10 +316,14 @@ def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
     """Snapshot the prior generation, then atomically replace one managed file."""
     try:
         publication = validate_publication_name(publication)
-        clean = validate_curated_batch(batch)
+        clean = _validated_batch(batch)
         active = _ACTIVE_BATCH.get()
-        published_at = (active.published_at if active is not None else
-                        datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+        if active is not None:
+            published_at = active.published_at
+        else:
+            now = datetime.now(timezone.utc)
+            published_at = (now.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+                            if clean['schema_version'] == SOURCE_BATCH_SCHEMA else now.strftime('%Y-%m-%dT%H:%M:%SZ'))
         new = render_publication(clean, published_at)
         vault_path, snapshot_path = _root_path(vault), _root_path(snapshots)
         if (vault_path == snapshot_path or vault_path.is_relative_to(snapshot_path)
@@ -309,6 +344,9 @@ def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
             _same_selection(checkpoint, clean)
             with _directory(snapshot_path, create=True) as snapshot_directory:
                 found = _snapshot_files(snapshot_directory)
+                if clean['schema_version'] == SOURCE_BATCH_SCHEMA:
+                    for _, name in found:
+                        _same_selection(parse_publication(_read(snapshot_directory, name)), clean)
                 if old is None and found:
                     raise WorkVaultError('snapshots without publication')
                 if old is not None:
