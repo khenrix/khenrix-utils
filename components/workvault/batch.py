@@ -97,6 +97,35 @@ def read_curated_cards(path, repository, paths):
         raise vault.WorkVaultError('curated read refused') from None
 
 
+def read_source_cards(path, references):
+    """Canonical v2 storage boundary; callers must rebuild cached readers on events."""
+    from lifecycle import blocked
+    try:
+        refs = sources.validate_references(references)
+        result, records = [], {}
+        with vault._publication_lock(vault._root_path(path), shared=True, required=True) as directory:
+            for ref in refs:
+                if blocked(directory, ref):
+                    continue
+                name = source_publication_name(ref)
+                try:
+                    raw, info = _record(directory, name)
+                except FileNotFoundError:
+                    continue
+                checkpoint = curation.parse_publication(raw)
+                clean = checkpoint['batch']
+                _require(clean['schema_version'] == curation.SOURCE_BATCH_SCHEMA and len(clean['cards']) == 1
+                         and sources.source_key(clean['cards'][0]['source']) == sources.source_key(ref))
+                _require(not any(blocked(directory, dep) for dep in clean['cards'][0]['dependencies']))
+                records[name] = info
+                result.append(checkpoint)
+            for name, expected in records.items():
+                _require(_record(directory, name)[1] == expected)
+        return result
+    except Exception:
+        raise vault.WorkVaultError('source curated read refused') from None
+
+
 def _require(value):
     if not value:
         raise vault.WorkVaultError('batch recovery is ambiguous')
@@ -434,6 +463,8 @@ def recover_publication_batch(path, snapshots):
 
 
 def _begin(path, snapshots, directory, clean):
+    from lifecycle import guard
+    guard(directory, clean)
     _require(not any(name.startswith('.workvault-batch') for name in os.listdir(directory)))
     os.mkdir(BACKUPS, mode=0o700, dir_fd=directory)
     rows, created = [], {}

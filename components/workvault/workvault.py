@@ -19,6 +19,7 @@ LOCK = '.workvault.lock'
 _SNAPSHOT = re.compile(r'snapshot-([0-9]{20})\.md\Z')
 _FILE_FLAGS = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 _ACTIVE_BATCH = ContextVar('workvault_batch', default=None)
+_ACTIVE_DISPATCH = ContextVar('workvault_dispatch', default=False)
 
 
 class WorkVaultError(RuntimeError):
@@ -157,7 +158,9 @@ def _identity(info):
 
 
 @contextmanager
-def _publication_lock(path, *, create=False, shared=False, recovery=False, required=False):
+def _publication_lock(path, *, create=False, shared=False, recovery=False, required=False, lifecycle=False):
+    if _ACTIVE_DISPATCH.get():
+        raise WorkVaultError('recursive storage access during dispatch')
     active = _ACTIVE_BATCH.get()
     if active is not None:
         if required:
@@ -178,6 +181,8 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False, requi
                     raise
                 if any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
                     raise WorkVaultError('batch recovery required')
+                from lifecycle import guard
+                guard(directory)
                 yield directory
                 return
             fcntl.flock(lock, (fcntl.LOCK_SH | fcntl.LOCK_NB) if shared else fcntl.LOCK_EX)
@@ -188,6 +193,9 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False, requi
                     raise WorkVaultError('runtime file changed')
                 if not recovery and any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
                     raise WorkVaultError('batch recovery required')
+                if not lifecycle:
+                    from lifecycle import guard
+                    guard(directory)
                 yield directory
                 if required:
                     root_info = path.lstat()
@@ -338,6 +346,8 @@ def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
         except FileNotFoundError:
             pass
         with _publication_lock(vault_path, create=True) as directory:
+            from lifecycle import guard
+            guard(directory, clean)
             if active is not None:
                 active.select(publication, snapshot_path, clean)
             old, checkpoint = _current(directory, publication)

@@ -590,6 +590,17 @@ def _same_source_content(first, second):
     return first is not None and all(first[key] == value for key, value in second.items() if key != 'observed_at')
 
 
+def _require_active_source(config, references):
+    from lifecycle import blocked
+    from workvault import _publication_lock
+    try:
+        with _publication_lock(config.vault, shared=True) as directory:
+            if any(blocked(directory, ref) for ref in references):
+                raise SyncError('source lifecycle prevents dispatch')
+    except FileNotFoundError:
+        pass
+
+
 def _completion_prefix(source_id):
     return 'source-completed-' + hashlib.sha256(source_id.encode()).hexdigest() + '-'
 
@@ -692,6 +703,7 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
     completed = _completed_sources(directory, source_id, row['binding'])
     if row['inflight']:
         refs = row['inflight']['references']
+        _require_active_source(config, refs)
         committed = []
         for ref in refs:
             checkpoint = completed.get(sources.revision_key(ref))
@@ -717,6 +729,7 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
             _save_state(directory, state, SOURCE_STATE)
         pending = row['pending']
         items = pending['page']['items']
+        _require_active_source(config, items[pending['offset']:])
         while pending['offset'] < len(items):
             start = pending['offset']
             selected, records, refs, keys = [], [], [], set()
@@ -744,11 +757,23 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
                 _ack_source_batch(directory, state, source_id, refs, start + len(refs))
                 completed.update((sources.revision_key(ref), ref) for ref in refs)
                 continue
-            row['inflight'] = {'references': refs, 'end': start + len(refs)}
-            _save_state(directory, state, SOURCE_STATE)
             expected = {sources.source_key(ref): ref for ref in refs
                         if any(sources.source_key(listed) == sources.source_key(ref) for listed in selected)}
-            clean = validate_source_batch(assemble_source_batch(selected, records, curator.curate_sources(selected, records)))
+            from lifecycle import guard
+            from workvault import _publication_lock, _ACTIVE_DISPATCH
+            # Fetch runs outside the lock. The final collector dependency check
+            # and actual dispatch share it with lifecycle, before inflight exists.
+            with _publication_lock(config.vault, create=True) as dispatch_directory:
+                guard(dispatch_directory, {'schema_version': 'workvault-curated-batch-v2', 'cards': [
+                    {'source': record['reference'], 'dependencies': record['dependencies']} for record in records]})
+                row['inflight'] = {'references': refs, 'end': start + len(refs)}
+                _save_state(directory, state, SOURCE_STATE)
+                token = _ACTIVE_DISPATCH.set(True)
+                try:
+                    curated = curator.curate_sources(selected, records)
+                finally:
+                    _ACTIVE_DISPATCH.reset(token)
+            clean = validate_source_batch(assemble_source_batch(selected, records, curated))
             if {sources.source_key(card['source']): card['source'] for card in clean['cards']} != expected:
                 raise SyncError('curation changed fetched provenance')
             with publication_batch(config.vault, config.snapshots, clean):
@@ -800,6 +825,8 @@ def sync_sources(config, *, selections, cutoff, curator, page_budget=1):
                         'change_cursor': None, 'pending': None, 'inflight': None, 'failed': False,
                         'page_count': 0, 'gaps': []} for source_id, binding in bindings.items()}}
                 _save_state(directory, state, SOURCE_STATE)
+            from lifecycle import recover_source_lifecycle
+            recover_source_lifecycle(config)
             recover_publication_batch(config.vault, config.snapshots)
             for selection in selections:
                 try:
