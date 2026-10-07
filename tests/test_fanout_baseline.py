@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -245,3 +246,37 @@ def test_stderr_only_cli_help_is_characterized(monkeypatch):
         ),
     )
     assert fanout_baseline.installed_help("agy") == b"agy usage\n"
+
+
+@pytest.mark.parametrize("ambient_guard", [None, "false"])
+@pytest.mark.parametrize("flag,expected", [("--version", b"1.3.1\n"),
+                                          ("--help", b"agy usage\n")])
+def test_real_agy_observation_disables_updates_without_changing_output(
+    tmp_path, monkeypatch, ambient_guard, flag, expected
+):
+    binary = tmp_path / "agy"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "root = pathlib.Path(os.environ['HOME'])\n"
+        "guard = os.environ.get('AGY_CLI_DISABLE_AUTO_UPDATE')\n"
+        "(root / 'observation.json').write_text(json.dumps({'guard': guard, 'argv': sys.argv[1:]}))\n"
+        "if guard != 'true': (root / 'updated').touch()\n"
+        "if sys.argv[1:] == ['--version']: print('1.3.1')\n"
+        "elif sys.argv[1:] == ['--help']: print('agy usage', file=sys.stderr)\n"
+        "else: sys.exit(9)\n"
+    )
+    binary.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGY_CLI_DISABLE_AUTO_UPDATE", raising=False)
+    if ambient_guard is not None:
+        monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", ambient_guard)
+
+    observe = fanout_baseline.installed_version if flag == "--version" else fanout_baseline.installed_help
+    assert observe("agy") == expected
+    assert json.loads((tmp_path / "observation.json").read_text()) == {
+        "guard": "true", "argv": [flag],
+    }
+    assert not (tmp_path / "updated").exists()
+    assert os.environ.get("AGY_CLI_DISABLE_AUTO_UPDATE") == ambient_guard

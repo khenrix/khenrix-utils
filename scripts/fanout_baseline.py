@@ -78,6 +78,7 @@ def _installed_output(command: str, flag: str) -> bytes:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=30,
+            env={**os.environ, "AGY_CLI_DISABLE_AUTO_UPDATE": "true"} if command == "agy" else None,
         )
     except FileNotFoundError as error:
         raise BaselineError(f"installed CLI is unavailable: {command}") from error
