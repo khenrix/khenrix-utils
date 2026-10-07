@@ -80,6 +80,10 @@ class CuratedReader:
         for reference in retired:
             self._rows.pop(_key(_reference(reference)), None)
 
+    def rows(self):
+        """Copy the complete active collection for explicit topic/identity selection."""
+        return copy.deepcopy(list(self._rows.values()))
+
     def search(self, query, *, limit=5):
         """Return at most 1..5 matches; all query words must occur in curated text."""
         if type(limit) is not int or not 1 <= limit <= 5:

@@ -13,6 +13,10 @@ mise exec -- python -B components/workvault/sync.py inventory --config /absolute
 mise exec -- python -B components/workvault/sync.py sync --config /absolute/private/sync.json
 mise exec -- python -B components/workvault/sync.py status --config /absolute/private/sync.json
 mise exec -- python -B components/workvault/sync.py maintain --config /absolute/private/sync.json
+mise exec -- python -B components/workvault/sync.py search --config /absolute/private/sync.json --limit 5 -- "delivery failure"
+mise exec -- python -B components/workvault/sync.py get --config /absolute/private/sync.json -- knowledge/example.md
+mise exec -- python -B components/workvault/sync.py topic --config /absolute/private/sync.json --topic-map /absolute/private/topics.json -- shipping
+mise exec -- python -B components/workvault/sync.py follow --config /absolute/private/sync.json --origin '<exact origin reference JSON>' -- '<exact cited reference JSON>'
 mise exec -- python -B -m unittest discover -s components/workvault
 ```
 
@@ -61,6 +65,31 @@ not accepted by status, inventory or maintain. The library accepts the immutable
 `SyncTopics` returned by `parse_topics(bytes)` as `sync_all(..., topic=..., topics=...)`.
 Machine skill delivery must explicitly adopt this contract; existing installed helpers
 do not gain topic support merely because the component source changes.
+
+`topic`, `search`, `get` and `follow` are offline consumption commands for this
+trusted same-user workstation. They load complete identity-qualified canonical
+publications through the existing private file, state, publication-lock and lifecycle
+checks. Human notes, snapshots and derived index/memory files are not a source corpus.
+V1 active paths come from the last observed inventory; v2 publications must match
+recorded owner selections. Retired paths and lifecycle-blocked sources/dependencies
+are excluded. Each result retains its actual revision, citation, draft status,
+negation and uncertainty. Paths/managed IDs resolve current active publications;
+exact reference JSON binds one actual revision. Missing content returns JSON null.
+An existing legacy aggregate `Knowledge.md` refuses consumption for reviewed migration
+to identity-qualified publications; it is never silently omitted or rewritten.
+
+Search matches all query words and permits 1–5 results, at most 16 query terms and
+512 UTF-8 query bytes. Topic selection returns the mapped published paths without
+fetching inventory or implicitly syncing. `follow` accepts one exact origin-bound
+cited reference and returns available curated evidence transiently. It never follows
+arbitrary URLs or reads upstream source bodies. Collections exceeding the reader's
+8192-publication/64-MiB bound refuse explicitly; every canonical file is considered,
+with no silent scan cutoff. Concurrent file, state or root changes refuse results.
+
+CLI status and maintenance include `curated` active, retired-retained, uncertain and
+draft counts, plus recorded v2 source gaps/failures/uncertain dispatches when present.
+Acknowledged revision counts are historical publication evidence, not live coverage.
+The v1 `sync_status` library return shape remains unchanged for existing callers.
 
 `maintain` is offline and report-only. It compares managed publications with the
 last observed pinned inventory, reports missing publications, stale commit identities
@@ -198,9 +227,12 @@ selection under one required shared publication lock. It preserves stable note I
 each card's exact source revision, draft status and uncertainty; a topic refresh may
 legitimately leave different cards at different revisions. It refuses partial or
 recovering publications and does not enumerate human notes. It is not exposed by
-the CLI or MCP and establishes no session or consuming-route authority. Its existing
-limits are 4,096 selected paths and 4 MiB per publication, not an aggregate recall
-budget; the separate two-summary/500-token injection limit remains unimplemented.
+the CLI or MCP; the sync CLI uses the complete canonical collection boundary above.
+Its existing limits are 4,096 selected v1 paths and 4 MiB per publication, not an
+aggregate recall budget. The pure `retrieval.CuratedReader.injection` helper accepts
+a caller-supplied supported token counter and serializes at most two complete relevant
+summaries within 500 aggregate counted tokens, including metadata. Missing counting
+disables injection only. No automatic injection hook or tokenizer is installed here.
 
 This component does not enable Obsidian Sync, vault Git, community plugins, semantic
 retrieval or automatic prompt/memory injection. Those require separate integration

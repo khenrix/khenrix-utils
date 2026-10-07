@@ -264,7 +264,13 @@ def sync_status(config):
 def maintain_status(config):
     try:
         with _read_publications(config.vault):
-            return _maintain_status(config)
+            result = _maintain_status(config)
+            with _curated_reader(config) as (_, report):
+                if report['active_card_count'] or report['retained_retired_publication_count'] or 'sources' in report:
+                    result['curated'] = report
+                    if result['state'] == 'empty':
+                        result['state'] = 'reported'
+            return result
     except Exception:
         raise SyncError('maintenance refused') from None
 
@@ -861,28 +867,223 @@ def load_config(path):
         raise SyncError('configuration refused') from None
 
 
+@contextmanager
+def _curated_reader(config):
+    """Read the complete canonical collection under the existing storage fences.
+
+    Human notes, snapshots and registered artifacts are not publications. The
+    observed v1 inventory and explicit v2 lifecycle determine active content;
+    publication revisions are retained rather than replaced with a target pin.
+    """
+    import curation
+    from batch import _record, source_publication_name
+    from lifecycle import blocked, guard, STATE as LIFECYCLE_STATE
+    from retrieval import CuratedReader, MAX_PUBLICATIONS, MAX_COLLECTION_BYTES
+    from workvault import _publication_lock, LOCK
+
+    config = _config(config)
+    with ExitStack() as stack:
+        try:
+            state_directory = stack.enter_context(_directory(config.state))
+        except FileNotFoundError:
+            state_directory = None
+        raw_states = {}
+        for name in (STATE, SOURCE_STATE):
+            try:
+                raw_states[name] = _read(state_directory, name) if state_directory is not None else None
+            except FileNotFoundError:
+                raw_states[name] = None
+        legacy = _state(_json(raw_states[STATE]), config.repository) if raw_states[STATE] is not None else None
+        native = _json(raw_states[SOURCE_STATE]) if raw_states[SOURCE_STATE] is not None else None
+        bindings = {}
+        if native is not None:
+            curation._object(native, {'schema_version', 'sources'})
+            curation._literal(native['schema_version'], 'workvault-multi-source-state-v2')
+            if type(native['sources']) is not dict or len(native['sources']) > MAX_PUBLICATIONS:
+                raise SyncError('invalid source inventory')
+            for source_id, row in native['sources'].items():
+                binding = row['binding']
+                curation._object(binding, {'kind', 'account', 'container', 'route_sha256', 'source_sha256'})
+                selected = SourceSelection(source_id, binding['kind'], binding['account'],
+                    binding['container'], None, binding['route_sha256'], binding['source_sha256'])
+                bindings[source_id] = _source_binding(selected)
+                curation._source_timestamp(row['cutoff'])
+                _source_state({'schema_version': native['schema_version'], 'sources': {source_id: row}},
+                    {source_id: bindings[source_id]}, row['cutoff'])
+        try:
+            config.vault.lstat()
+        except FileNotFoundError:
+            directory = None
+        else:
+            directory = stack.enter_context(_publication_lock(config.vault, shared=True))
+        publications, records = [], {}
+        fences = {}
+        if directory is not None:
+            for name in (LOCK, LIFECYCLE_STATE):
+                try:
+                    fences[name] = _record(directory, name)[1]
+                except FileNotFoundError:
+                    fences[name] = None
+            guard(directory)
+        collection_bytes = 0
+        retired_count = 0
+        if directory is not None and 'Knowledge.md' in os.listdir(directory):
+            raise SyncError('aggregate publication requires reviewed migration')
+        names = [] if directory is None else sorted(name for name in os.listdir(directory)
+            if re.fullmatch(r'Knowledge-[0-9a-f]{24}\.md', name))
+        if len(names) > MAX_PUBLICATIONS:
+            raise SyncError('curated collection limit exceeded')
+        for name in names:
+            raw, info = _record(directory, name)
+            checkpoint = parse_publication(raw)
+            clean = checkpoint['batch']
+            if len(clean['cards']) != 1:
+                raise SyncError('publication is not identity qualified')
+            card = clean['cards'][0]
+            records[name] = info
+            if clean['schema_version'] == curation.SOURCE_BATCH_SCHEMA:
+                ref = card['source']
+                if source_publication_name(ref) != name or not any(all(ref[key] == binding[key]
+                        for key in ('kind', 'account', 'container')) for binding in bindings.values()):
+                    raise SyncError('publication differs from selected source')
+                if any(blocked(directory, item) for item in [ref, *card['dependencies']]):
+                    retired_count += 1
+                    continue
+                guard(directory, clean)
+            else:
+                path = card['path']
+                if (clean['repository'] != config.repository or clean['requested_paths'] != [path]
+                        or publication_name(config.repository, path) != name
+                        or legacy is None or path not in legacy['tracked_paths']):
+                    raise SyncError('publication differs from observed inventory')
+                if path not in legacy['discovered_paths']:
+                    retired_count += 1
+                    continue
+            collection_bytes += len(curation._json(checkpoint).encode('utf-8'))
+            if collection_bytes > MAX_COLLECTION_BYTES:
+                raise SyncError('curated collection limit exceeded')
+            publications.append(checkpoint)
+        reader = CuratedReader(publications)
+        report = {'active_card_count': len(publications), 'retained_retired_publication_count': retired_count,
+            'uncertain_card_count': sum(bool(item['batch']['cards'][0]['uncertainty']) for item in publications),
+            'draft_card_count': sum(item['batch']['cards'][0]['draft'] for item in publications),
+            'conflict_check': 'unavailable_unstructured_cards', 'full_source_coverage': False}
+        if native is not None:
+            report['sources'] = _source_report(state_directory, native, 0)['sources']
+        yield reader, report
+        if directory is not None:
+            if 'Knowledge.md' in os.listdir(directory):
+                raise SyncError('aggregate publication requires reviewed migration')
+            for name, expected in records.items():
+                if _record(directory, name)[1] != expected:
+                    raise SyncError('publication changed during read')
+            if sorted(name for name in os.listdir(directory)
+                    if re.fullmatch(r'Knowledge-[0-9a-f]{24}\.md', name)) != names:
+                raise SyncError('publication inventory changed during read')
+        for name, expected in raw_states.items():
+            try:
+                current = _read(state_directory, name) if state_directory is not None else None
+            except FileNotFoundError:
+                current = None
+            if current != expected:
+                raise SyncError('source inventory changed during read')
+        for root, descriptor in ((config.state, state_directory), (config.vault, directory)):
+            try:
+                with _directory(root) as current:
+                    identity = _identity(os.fstat(current))
+            except FileNotFoundError:
+                identity = None
+            if identity != (_identity(os.fstat(descriptor)) if descriptor is not None else None):
+                raise SyncError('configured root changed during read')
+        if directory is not None:
+            if publication_pending(config.vault):
+                raise SyncError('batch recovery required')
+            for name, expected in fences.items():
+                try:
+                    current = _record(directory, name)[1]
+                except FileNotFoundError:
+                    current = None
+                if current != expected:
+                    raise SyncError('storage fence changed during read')
+            guard(directory)
+
+
+def _selection(reader, config, value, *, exact=False):
+    """A reference is data, never a filename or a URL to fetch."""
+    from retrieval import _reference
+    from batch import source_publication_name
+    if type(value) is not str or len(value.encode()) > MAX_BATCH_BYTES:
+        raise SyncError('invalid curated selection')
+    if value.startswith('{'):
+        return _reference(_json(value))
+    if exact:
+        raise SyncError('exact source reference required')
+    if re.fullmatch(r'Knowledge-[0-9a-f]{24}(?:\.md)?', value):
+        name = value if value.endswith('.md') else value + '.md'
+        matches = [row['reference'] for row in reader.rows()
+            if ('source' not in row['card'] and publication_name(config.repository, row['card']['path']) == name)
+            or ('source' in row['card'] and source_publication_name(row['reference']) == name)]
+    else:
+        path = _path(value)
+        matches = [row['reference'] for row in reader.rows()
+                   if row['reference'].get('repository') == config.repository and row['reference'].get('path') == path]
+    if len(matches) > 1:
+        raise SyncError('ambiguous curated selection')
+    return matches[0] if matches else None
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain'))
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain', 'topic', 'search', 'get', 'follow'))
     parser.add_argument('topic', nargs='?')
     parser.add_argument('--config', required=True)
     parser.add_argument('--ref')
     parser.add_argument('--topic-map')
+    parser.add_argument('--limit', type=int)
+    parser.add_argument('--origin')
     args = parser.parse_args(argv)
     try:
-        if ((args.topic is not None or args.topic_map is not None) and args.command != 'sync'
-                or (args.topic is None) != (args.topic_map is None)):
-            raise SyncError('topic and map are required together for sync only')
+        if args.command in ('sync', 'topic'):
+            if (args.topic is None) != (args.topic_map is None) or (args.command == 'topic' and args.topic is None):
+                raise SyncError('topic and map are required together')
+        elif args.topic_map is not None or (args.command not in ('search', 'get', 'follow') and args.topic is not None):
+            raise SyncError('unexpected selection')
+        if ((args.limit is not None and args.command != 'search')
+                or (args.origin is not None and args.command != 'follow')):
+            raise SyncError('unexpected retrieval option')
+        if args.command in ('topic', 'search', 'get', 'follow') and args.ref is not None:
+            raise SyncError('curated consumption does not fetch a ref')
         config = load_config(args.config)
         topics = None
         if args.topic_map is not None:
             path = _root_path(args.topic_map)
             with _directory(path.parent) as directory:
                 topics = parse_topics(_read(directory, path.name))
-        if args.command in ('status', 'maintain'):
+        if args.command in ('topic', 'search', 'get', 'follow'):
+            with _curated_reader(config) as (reader, _):
+                if args.command == 'search':
+                    result = reader.search(args.topic, limit=5 if args.limit is None else args.limit)
+                elif args.command == 'topic':
+                    selected = _selected_topic(config, args.topic, topics)
+                    result = [row for row in reader.rows() if row['reference'].get('repository') == config.repository
+                              and row['reference'].get('path') in selected]
+                elif args.command == 'get':
+                    reference = _selection(reader, config, args.topic)
+                    result = None if reference is None else reader.get(reference)
+                else:
+                    result = reader.follow(_selection(reader, config, args.origin, exact=True),
+                                           _selection(reader, config, args.topic, exact=True))
+        elif args.command in ('status', 'maintain'):
             if args.ref is not None:
                 raise SyncError('offline report does not fetch a ref')
             result = sync_status(config) if args.command == 'status' else maintain_status(config)
+            if args.command == 'status':
+                with _curated_reader(config) as (_, report):
+                    if report['active_card_count'] or report['retained_retired_publication_count'] or 'sources' in report:
+                        result['curated'] = report
+                        if result['state'] == 'empty':
+                            result['state'] = 'partial'
+                            result['full_source_coverage'] = False
         elif args.command == 'inventory':
             from collector import GitHubSource
             snapshot = GitHubSource().snapshot(config.repository, ref=args.ref)
@@ -894,9 +1095,9 @@ def main(argv=None):
                 progress=lambda p: print(json.dumps(p), file=sys.stderr, flush=True),
                 topic=args.topic, topics=topics)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-        if args.topic is not None:
+        if args.topic is not None and args.command == 'sync':
             return 0 if result['topic_selection']['full_topic_coverage'] else 1
-        return 1 if result.get('full_source_coverage') is False else 0
+        return 1 if type(result) is dict and result.get('full_source_coverage') is False else 0
     except Exception:
         print('WorkVault operation refused; inspect configuration or last published status.', file=sys.stderr)
         return 1
