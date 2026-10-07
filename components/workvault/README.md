@@ -234,7 +234,68 @@ a caller-supplied supported token counter and serializes at most two complete re
 summaries within 500 aggregate counted tokens, including metadata. Missing counting
 disables injection only. No automatic injection hook or tokenizer is installed here.
 
-This component does not enable Obsidian Sync, vault Git, community plugins, semantic
-retrieval or automatic prompt/memory injection. Those require separate integration
-and acceptance evidence. Same-user file-integrity checks and cooperative locks are
-not isolation from a hostile process running as that user.
+## Guarded local hybrid adapter
+
+The optional `hybrid.py` adapter builds an explicit whole-collection derivative and
+serves bounded one-shot searches. Its input is the same complete canonical v1/v2
+reader used above. Reindex copies only active identity-qualified publications into
+the owned private `.workvault-hybrid-build/` projection; it never scans the work vault
+with the upstream reindex command. Human and retired notes are excluded. Search
+requires a current ready generation and adds exact curated `reference` and `citation`
+to unchanged upstream result fields. Snippets do not expand the underlying evidence.
+
+```bash
+mise exec -- python -B components/workvault/sync.py hybrid-reindex --config /absolute/private/sync.json --hybrid-config /absolute/private/hybrid.json
+mise exec -- python -B components/workvault/sync.py hybrid-search --config /absolute/private/sync.json --hybrid-config /absolute/private/hybrid.json --limit 5 -- "delivery failure"
+```
+
+The internal `hybrid-serve` action uses the same two configuration arguments and
+implements the released UI's JSON-lines protocol. The owner launcher routes exactly
+`serve --stdio` to it. It sends `{"ready":true}` after validating configuration, then
+accepts `id/query/options` or `id/action:"status"` requests one at a time. Ready does
+not imply that an index exists. Empty warm-up queries return no results and launch
+no child; absent/stale indices produce sanitized errors without rebuilding. Request
+lines are bounded at 16 KiB, queries at 512 characters, results at 1–5, child output
+at 1 MiB, and search children at 30 seconds. Explicit reindex has a 30-minute timeout.
+Status reads local SQLite counts and settings; it never runs upstream `status` or
+its package-registry check. Stale and interrupted families report `stale` and
+`recovery_required` without opening a document-bearing child or mutating storage.
+
+The strict owner-private `workvault-hybrid-binding-v1` JSON has exactly
+`schema_version`, `workvault_root`, `cli_path`, `cli_artifact_sha256`, `cli_version`,
+`local_model`, and `model_cache_manifest_sha256`. Root and executable are exact
+absolute canonical paths. Version is `0.15.6`; model is
+`Xenova/multilingual-e5-small`. The reviewed executable launcher owns its absolute
+Node runtime; no caller-selected PATH, provider credentials, `OPENAI_*`, shell
+startup or `NODE_OPTIONS` is passed to the document-bearing child. Artifact pinning
+does not by itself verify an installed dependency closure or network behavior.
+
+The fixed private `~/.config/workvault/hybrid-model-cache.json` manifest has exactly
+`schema_version:"workvault-hybrid-model-cache-v1"`, `local_model`, `cache_root`, and
+`files`. Cache root is exactly `~/.cache/huggingface`; each file entry contains its
+relative `path`, positive `bytes`, and `sha256`. For the reviewed BertModel/q8
+pipeline, the complete required set under `Xenova/multilingual-e5-small/` is
+`config.json`, `tokenizer.json`, `tokenizer_config.json`, and
+`onnx/model_quantized.onnx`. The four cached files and manifest bytes must match
+their reviewed identities before indexing or search. Different model/external-data
+layouts refuse. Model acquisition is a separate owner operation; this adapter
+neither installs dependencies nor seeds missing cache files.
+
+The publication lease covers reader validation, ownership/settings preflight,
+child lifetime, receipt update and final reader checks. Every child inherits the
+actual lock FD, and normal cancellation/timeout kills and reaps it before release.
+SQLite URL/model settings restored only from a WAL cannot bypass the preflight:
+ready means a closed DELETE-mode DB without WAL/SHM, with exact local model and
+dimension, bound vault path, and the current active path set. Remote-looking
+settings, unknown paths, ownership drift and unfinished phases refuse. Explicit
+source lifecycle recovery removes interrupted owned families before further reads;
+status and search do not silently recover or build them. Withdrawal invalidates and
+erases the complete owned DB/build family through the existing lifecycle machinery.
+
+These source tests prove adapter boundaries with synthetic cards and disposable
+processes. Installed CLI dependency integrity, ONNX/vector output, cached native
+network-denied operation, native FD retention, released UI rendering and actual
+corpus recall still require owner observation. This component does not enable
+Obsidian Sync, vault Git, community plugins or automatic prompt/memory injection.
+Same-user file-integrity checks and cooperative locks are not isolation from a
+hostile process running as that user.

@@ -1046,32 +1046,47 @@ def _selection(reader, config, value, *, exact=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain', 'topic', 'search', 'get', 'follow'))
+    parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain', 'topic', 'search', 'get', 'follow',
+                                         'hybrid-search', 'hybrid-reindex', 'hybrid-serve'))
     parser.add_argument('topic', nargs='?')
     parser.add_argument('--config', required=True)
     parser.add_argument('--ref')
     parser.add_argument('--topic-map')
     parser.add_argument('--limit', type=int)
     parser.add_argument('--origin')
+    parser.add_argument('--hybrid-config')
     args = parser.parse_args(argv)
     try:
         if args.command in ('sync', 'topic'):
             if (args.topic is None) != (args.topic_map is None) or (args.command == 'topic' and args.topic is None):
                 raise SyncError('topic and map are required together')
-        elif args.topic_map is not None or (args.command not in ('search', 'get', 'follow') and args.topic is not None):
+        elif args.topic_map is not None or (args.command not in ('search', 'get', 'follow', 'hybrid-search') and args.topic is not None):
             raise SyncError('unexpected selection')
-        if ((args.limit is not None and args.command != 'search')
+        if ((args.limit is not None and args.command not in ('search', 'hybrid-search'))
                 or (args.origin is not None and args.command != 'follow')):
             raise SyncError('unexpected retrieval option')
-        if args.command in ('topic', 'search', 'get', 'follow') and args.ref is not None:
+        if args.command in ('topic', 'search', 'get', 'follow', 'hybrid-search', 'hybrid-reindex', 'hybrid-serve') and args.ref is not None:
             raise SyncError('curated consumption does not fetch a ref')
+        hybrid_action = args.command.startswith('hybrid-')
+        if hybrid_action != (args.hybrid_config is not None):
+            raise SyncError('hybrid binding is required only for hybrid actions')
         config = load_config(args.config)
         topics = None
         if args.topic_map is not None:
             path = _root_path(args.topic_map)
             with _directory(path.parent) as directory:
                 topics = parse_topics(_read(directory, path.name))
-        if args.command in ('topic', 'search', 'get', 'follow'):
+        if hybrid_action:
+            import hybrid
+            binding = hybrid.load_binding(Path(args.hybrid_config))
+            if args.command == 'hybrid-search':
+                result = hybrid.search(config, binding, args.topic,
+                                       {'limit': 5 if args.limit is None else args.limit})
+            elif args.command == 'hybrid-reindex':
+                result = hybrid.reindex(config, binding)
+            else:
+                return hybrid.serve(config, binding, sys.stdin, sys.stdout)
+        elif args.command in ('topic', 'search', 'get', 'follow'):
             with _curated_reader(config) as (reader, _):
                 if args.command == 'search':
                     result = reader.search(args.topic, limit=5 if args.limit is None else args.limit)
