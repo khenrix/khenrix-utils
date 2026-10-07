@@ -111,3 +111,14 @@ def validate_page(value):
     if len(curation._json(clean).encode('utf-8')) > curation.MAX_BATCH_BYTES:
         raise ValueError('source page too large')
     return clean
+
+
+def validate_changes(value):
+    value = curation._object(value, {'page', 'checkpoint'})
+    page = validate_page(value['page'])
+    checkpoint = value['checkpoint']
+    if checkpoint is not None:
+        checkpoint = curation._text(checkpoint, 2048)
+        if not page['complete'] or any(ord(char) < 32 for char in checkpoint):
+            raise ValueError('invalid change checkpoint')
+    return {'page': page, 'checkpoint': checkpoint}

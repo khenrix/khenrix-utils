@@ -124,6 +124,22 @@ class SourcesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sources.validate_reference(dict(value, modified_at='2026-10-08T11:00:00Z'))
 
+    def test_change_checkpoint_is_separate_from_page_continuation(self):
+        self.assertTrue(hasattr(sources, 'validate_changes'), 'change checkpoint validation is missing')
+        page = {'items': [], 'next_cursor': None, 'complete': True, 'gaps': []}
+        result = sources.validate_changes({'page': page, 'checkpoint': 'terminal-native-token'})
+        self.assertEqual(result, {'page': page, 'checkpoint': 'terminal-native-token'})
+        self.assertIsNone(sources.validate_changes({'page': page, 'checkpoint': None})['checkpoint'])
+        pending = dict(page, next_cursor='page-2', complete=False)
+        self.assertEqual(sources.validate_changes({'page': pending, 'checkpoint': None})['page'], pending)
+        for bad in ({'page': pending, 'checkpoint': 'premature-token'},
+                    {'page': page, 'checkpoint': 'x' * 2049},
+                    {'page': page, 'checkpoint': 'token\nraw'},
+                    {'page': page, 'checkpoint': True},
+                    {'page': page, 'checkpoint': None, 'raw_body': 'RAW_CANARY'}):
+            with self.subTest(keys=list(bad)), self.assertRaises(ValueError):
+                sources.validate_changes(bad)
+
 
 if __name__ == '__main__':
     unittest.main()
