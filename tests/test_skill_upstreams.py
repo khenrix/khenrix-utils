@@ -26,6 +26,7 @@ import inventory  # noqa: E402
 
 CLAUDE_MEM_DIRECT_PRIVACY_GUARDS = (
     '"CLAUDE_MEM_SEMANTIC_INJECT": "false"',
+    '"CLAUDE_MEM_DEDUP_ENABLED": "false"',
     '"CLAUDE_MEM_CLOUD_SYNC_TOKEN": ""',
     '"CLAUDE_MEM_CLOUD_SYNC_USER_ID": ""',
     '"CLAUDE_MEM_CLOUD_SYNC_HUB_URL": ""',
@@ -982,22 +983,22 @@ def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces()
 
     assert source.watch == "npm_releases"
     assert source.package_name == "maka-agent"
-    assert source.package_version == "0.2.0-dev.62.20260928"
-    assert source.commit == "2f32205528a4436783c800715261d4b6e286023d"
+    assert source.package_version == "0.2.0-dev.70.20261005"
+    assert source.commit == "dcef64275ef435049a4a0c65a0d81199b45ed498"
     assert source.package_integrity == (
-        "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ=="
+        "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA=="
     )
     assert source.paths[:3] == ("LICENSE", "NOTICE", "DISCLAIMER-WIP")
     assert source.path_tree_hash == (
-        "sha256:732d3cb73426329ba29dfb10987053c997a7da38445800eeb500a2e597fcd958"
+        "sha256:287e0abeae2961649516836dedd0e9907a89fde2d4978edc5adda760a3cc3640"
     )
     assert upstreamctl.canonical_source_digest(source) == (
-        "sha256:87c72ed3436c30a603001d234068d8320d725d0b8deb9602e98318ad757906bf"
+        "sha256:bd2bfa87fde78b54cbe2804c62189561a7dfc03f1660b5167683fff29d4669ac"
     )
     assert source.tag_pattern == r"^v0\.2\.0-dev\.([0-9]+)\.([0-9]{8})$"
     assert {
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/aube-lock.yaml",
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/package.json",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.70.20261005/aube-lock.yaml",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.70.20261005/package.json",
         "components/maka/mise.toml",
         "components/maka/mise.lock",
         "components/maka/scripts/install_component.py",
@@ -1030,8 +1031,8 @@ def test_maka_attribution_fixture_is_bound_to_pinned_source() -> None:
     pin = (source.package_version, source.commit)
     fixture = {
         (
-            "0.2.0-dev.62.20260928",
-            "2f32205528a4436783c800715261d4b6e286023d",
+            "0.2.0-dev.70.20261005",
+            "dcef64275ef435049a4a0c65a0d81199b45ed498",
         ): {
             "third_party/apache-maka/NOTICE": (
                 "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0"
@@ -1056,16 +1057,16 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
 
     assert source.watch == "npm_releases"
     assert source.package_name == "claude-mem"
-    assert source.package_version == "13.25.3"
-    assert source.commit == "4520de9e0f8d6cdc20597520e383d8b51d93137f"
+    assert source.package_version == "13.34.2"
+    assert source.commit == "a80767e975dde7131cefaee46a90c130acec30d2"
     assert source.package_integrity == (
-        "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
+        "sha512-UrAZzPh3MlEQwkJKuo08pb3GA0RNbpC9FjxNIBHOJEIjbLBP5bVO2+mBMy9/MH3/SWRWrYJTq0TCHSrMWUfg3Q=="
     )
     assert source.path_tree_hash == (
-        "sha256:0438ee47d021028aa36258651679acb0e1efcd83fff527f7ddd5b42ffcc28180"
+        "sha256:0e9dbc9e97aa7636a3945c3be626670fe799665eca3bb501ca8299e356acdb21"
     )
     assert upstreamctl.canonical_source_digest(source) == (
-        "sha256:d8c4d138c63b47e00b59f5ef590397c809b4cf66f6924c7b7f82b9467331b4c3"
+        "sha256:cf1bead0233946ff05cf79ee6b0a6d2c378e2de3e5b804e08c7ffda332a9c092"
     )
     assert source.upstream_license_path == "LICENSE"
     assert {
@@ -1243,13 +1244,13 @@ def test_claude_mem_each_direct_privacy_guard_detects_removal(
     [
         (
             "maka-release",
-                ["0.2.0-dev.9.20260831", "0.2.0-dev.62.20260928", "0.2.0-dev.63.20260929"],
-                "0.2.0-dev.63.20260929",
+            ["0.2.0-dev.9.20260831", "0.2.0-dev.62.20260928", "0.2.0-dev.63.20260929", "0.2.0-dev.70.20261005"],
+            "0.2.0-dev.70.20261005",
         ),
         (
             "claude-mem-release",
-            ["13.9.0", "13.25.1", "13.25.3", "14.0.0-beta.1"],
-            "13.25.3",
+            ["13.9.0", "13.25.1", "13.25.3", "13.34.2", "14.0.0-beta.1"],
+            "13.34.2",
         ),
     ],
 )
@@ -1299,6 +1300,15 @@ MAKA_DISCOVERY_INTEGRITY = (
 @pytest.fixture
 def npm_provenance_fixture(monkeypatch: pytest.MonkeyPatch):
     source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release")
+    # Discovery must remain an upgrade from a distinct historical pin.
+    source = replace(
+        source,
+        ref="npm:maka-agent@0.2.0-dev.62.20260928",
+        commit="2f32205528a4436783c800715261d4b6e286023d",
+        path_tree_hash="sha256:732d3cb73426329ba29dfb10987053c997a7da38445800eeb500a2e597fcd958",
+        package_version="0.2.0-dev.62.20260928",
+        package_integrity="sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==",
+    )
     release = {
         "name": "maka-agent",
         "version": MAKA_DISCOVERY_VERSION,
@@ -1734,7 +1744,7 @@ def test_npm_sri_must_be_canonical_sha512_and_malformed_candidate_is_incomplete(
                     "gitHead": source.commit,
                     "dist": {"integrity": source.package_integrity},
                 },
-                "13.25.3": {
+                "13.34.3": {
                     "gitHead": "b" * 40,
                     "dist": {"integrity": malformed},
                 },

@@ -118,6 +118,48 @@ class PinnedOverlayTests(unittest.TestCase):
         self.assertIn("this.compaction = new AiSdkCompaction({\n            input,", source)
         self.assertIn("bindToolResultArchiveDecoder", source)
 
+    def test_current_transport_capture_uses_only_its_native_package_sdk(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        capture = pathlib.Path(__file__).resolve().parents[1] / "controller/provider-request-contract.mjs"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            package = root / "package"
+            shutil.copytree(self.package, package)
+            output = root / "request.json"
+            hoisted = package / "node_modules/ai"
+            nested = package / "node_modules/@maka/runtime/node_modules/ai"
+            for layout in ("hoisted", "nested"):
+                with self.subTest(layout=layout):
+                    if layout == "nested":
+                        nested.parent.mkdir(parents=True, exist_ok=True)
+                        hoisted.rename(nested)
+                    completed = subprocess.run(
+                        [node, str(capture), str(package), str(output)],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    observed = json.loads(output.read_text())
+                    self.assertEqual(observed["websocket"]["method"], "GET")
+                    self.assertEqual(observed["websocket"]["path"], "/v1/responses")
+                    self.assertEqual(len(observed["fallbackBodies"]), 2)
+                    self.assertTrue(all(body["model"] == "gpt-5.6-sol"
+                                        for body in observed["fallbackBodies"]))
+            outside = root / "node_modules/ai"
+            outside.parent.mkdir()
+            nested.rename(outside)
+            for escape in ("ancestor", "symlink"):
+                with self.subTest(escape=escape):
+                    if escape == "symlink":
+                        hoisted.symlink_to(outside, target_is_directory=True)
+                    completed = subprocess.run(
+                        [node, str(capture), str(package)],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("AI SDK resolves outside the candidate package", completed.stderr)
+
     def test_skill_tool_loads_complete_superpowers_instructions(self) -> None:
         relative = "node_modules/@maka/runtime/dist/skills-metadata.js"
         self.assertIn(relative, compat.PATCHES)

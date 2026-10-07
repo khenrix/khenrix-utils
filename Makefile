@@ -240,7 +240,7 @@ memory-runtime-test: ## Hermetic portable-memory tests (no network, credentials,
 
 maka-component-test: ## Credential-free portable Maka component tests
 	$(call RUN_PYTEST,$(MAKA_COMPONENT_TESTS))
-	mise -C components/maka run maka:test
+	mise -C components/maka run maka:test-native
 
 skill-delivery-test: ## Selective skill delivery, upstream provenance, and refresh tests
 	$(call RUN_PYTEST,$(SKILL_DELIVERY_TESTS))

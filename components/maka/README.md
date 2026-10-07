@@ -241,11 +241,28 @@ outside the portable component.
 
 ## Verify and test
 
-Run the credential-free regression suite from the checkout:
+Run the current portable runtime, journal/protocol, transport and safety regressions
+from the checkout. This route needs no historical package, profile access or model call:
 
 ```sh
-mise -C components/maka run maka:test
+mise -C components/maka run maka:test-native
 ```
+
+The broader route also preserves the frozen Harbor overlay and runtime-boundary
+tests. Supply a separately obtained, unpatched `.62` package explicitly:
+
+```sh
+mise -C components/maka run maka:test -- \
+  --baseline-package-root /private/path/to/maka-agent-0.2.0-dev.62.20260928
+```
+
+It refuses a missing, differently versioned, patched or source-drifted baseline
+before test launch; it never downloads or installs one. Current-runtime tests
+still use the current package, while frozen checks use only that baseline.
+The broad route retains the original local-profile preservation and import
+smokes. The native route covers synthetic import/export and CLI help/version
+in private scratch; real-profile preservation is a separate installed check.
+Neither regression route constitutes a historical paid Harbor certification.
 
 Run the read-only portable doctor to check the package pin, provenance,
 third-party attribution, both supported platform locks, wrapper template, final

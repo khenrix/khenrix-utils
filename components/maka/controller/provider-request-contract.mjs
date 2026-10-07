@@ -3,16 +3,24 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { writeFile } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const packageRoot = process.argv[2];
 assert(packageRoot, 'maka package root argument is required');
+const runtimeRequire = createRequire(pathToFileURL(join(
+  packageRoot, 'node_modules/@maka/runtime/package.json')));
+const aiPath = await realpath(runtimeRequire.resolve('ai'));
+const aiRelative = relative(await realpath(packageRoot), aiPath);
+assert(aiRelative !== '..' && !aiRelative.startsWith(`..${sep}`) && !isAbsolute(aiRelative),
+  'AI SDK resolves outside the candidate package');
+const ai = await import(pathToFileURL(aiPath).href);
 const runtime = await import(pathToFileURL(`${packageRoot}/node_modules/@maka/runtime/dist/model-factory.js`));
 const modelRuntime = await import(pathToFileURL(`${packageRoot}/node_modules/@maka/runtime/dist/model-runtime.js`));
 const adapterModule = await import(pathToFileURL(`${packageRoot}/node_modules/@maka/runtime/dist/model-adapter.js`));
 const transportModule = await import(pathToFileURL(`${packageRoot}/node_modules/@maka/runtime/dist/openai-responses-websocket.js`));
-const ai = await import(pathToFileURL(`${packageRoot}/node_modules/@maka/runtime/node_modules/ai/dist/index.js`));
 
 let websocketRequest;
 const server = createServer();

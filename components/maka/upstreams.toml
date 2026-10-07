@@ -18,7 +18,7 @@ package_name = "maka-agent"
 package_version = "0.2.0-dev.70.20261005"
 package_integrity = "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA=="
 update_mode = "manual_adaptation"
-review_commands = ["mise -C components/maka run maka:test", "mise -C components/maka run maka:component-doctor"]
+review_commands = ["mise -C components/maka run maka:test-native", "mise -C components/maka run maka:component-doctor"]
 
 [sources.local_contract]
 paths = [
@@ -55,14 +55,20 @@ paths = [
   "components/maka/interactive/configure_maka_subscription.mjs",
   "components/maka/provenance.json",
   "components/maka/controller/provider-request-contract.mjs",
+  "components/maka/controller/test_harbor_judge.mjs",
+  "components/maka/controller/test_harbor_runtime_baseline.mjs",
+  "components/maka/scripts/test_maka_test_gate.py",
   "components/maka/controller/egress-overlay/egress_filter.py",
   "components/maka/controller/egress-overlay/test_egress_undici_h2.py",
   "components/maka/controller/egress-overlay/test_egress_undici_h2_client.mjs",
   "components/maka/scripts/test.sh",
   "components/maka/install-files.txt",
 ]
-hash = "sha256:fac44227420106fed38fcea22c3be83103de865132566224681f5d2bfe1b0c46"
+hash = "sha256:b47d494287bc30522d426c149d2b876700ac42945c3c4fd5a470299706e4c12a"
 required_text = [
+  { path = "components/maka/scripts/test.sh", text = '''node "$LAB_ROOT/controller/provider-request-contract.mjs" "$package_root" "$request"
+python "$LAB_ROOT/controller/assert-provider-body.py" "$request"
+if test "$mode" = broad; then''' },
   { path = "components/maka/provenance.json", text = "0.2.0-dev.70.20261005" },
   { path = "components/maka/provenance.json", text = "sha512-HeQYCKqUgBQvKaPRPa0G9ibPWqxf3i7oyqv1fTHiextEUG07UF1YEl9wv64Ae94EcHAGsbBknCQiVq5VrTxJXA==" },
   { path = "components/maka/provenance.json", text = "b1af943a734250ba76e6e827583e833f8b813eba66950b8a1a92a576c5971b2c" },

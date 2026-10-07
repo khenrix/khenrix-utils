@@ -173,8 +173,12 @@ description = "Report the last observed Maka API model and processing tier"
 run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:relay-tier"
 
 [tasks."maka:test"]
-description = "Run the credential-free portable Maka regression suite"
+description = "Run Maka regressions with an explicit historical baseline package"
 run = "mise -C components/maka run maka:test"
+
+[tasks."maka:test-native"]
+description = "Run current Maka native, transport, and safety regressions"
+run = "mise -C components/maka run maka:test-native"
 
 [tasks."skills:plan"]
 description = "Preview selective skill and house-style delivery without changing live state"

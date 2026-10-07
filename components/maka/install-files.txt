@@ -47,6 +47,7 @@ controller/test_maka_compat.py
 controller/test_maka_harbor_judge_compat.py
 controller/test_maka_hosted_onboarding_compat.py
 controller/test_harbor_judge.mjs
+controller/test_harbor_runtime_baseline.mjs
 controller/test_secret_broker.py
 controller/test_undici_h2_close_compat.py
 fixtures/pier-tasks/synthetic-task/README.md
@@ -113,6 +114,7 @@ scripts/test_harbor_judge_audit.py
 scripts/test_harbor_judge_gate.py
 scripts/test_harbor_judge_input.py
 scripts/test_maka_gpt6_compat.py
+scripts/test_maka_test_gate.py
 scripts/test_relay_tier_status.py
 scripts/test_runtime_manifest_verify.py
 scripts/verify_gpt6_candidate.mjs

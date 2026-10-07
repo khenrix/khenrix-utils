@@ -505,7 +505,7 @@ def test_independent_canonical_text_matches_authentic_installed_loader_and_expli
     package = layout.component / "runtime/package"
     descriptor = json.loads((package / "package.json").read_bytes())
     assert descriptor["name"] == "maka-agent"
-    assert descriptor["version"] == "0.2.0-dev.62.20260928"
+    assert descriptor["version"] == "0.2.0-dev.70.20261005"
     raw = b"\xef\xbb\xbf---\r\nname: sample\r\ndescription: genuine fixture\r\n---\r\n \x00body\x7f\r\n "
     path = tmp_path / "SKILL.md"
     path.write_bytes(raw)

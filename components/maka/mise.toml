@@ -110,5 +110,9 @@ description = "Verify pins, provenance, attribution, platform lock, and installe
 run = "python ./scripts/component_doctor.py"
 
 [tasks."maka:test"]
-description = "Run the credential-free portable Maka regression suite"
+description = "Run current and frozen Harbor regressions with an explicit unpatched .62 baseline"
 run = "./scripts/test.sh"
+
+[tasks."maka:test-native"]
+description = "Run current portable runtime, protocol and safety regressions without a historical baseline"
+run = "./scripts/test.sh --native"
