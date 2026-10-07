@@ -20,6 +20,7 @@ _SNAPSHOT = re.compile(r'snapshot-([0-9]{20})\.md\Z')
 _FILE_FLAGS = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 _ACTIVE_BATCH = ContextVar('workvault_batch', default=None)
 _ACTIVE_DISPATCH = ContextVar('workvault_dispatch', default=False)
+_ACTIVE_LEASE = ContextVar('workvault_lease', default=None)
 
 
 class WorkVaultError(RuntimeError):
@@ -146,6 +147,9 @@ def status(vault: Path, publication: str = MANAGED) -> dict:
         try:
             with _publication_lock(path, shared=True) as directory:
                 _, checkpoint = _current(directory, publication)
+                if checkpoint is not None:
+                    from lifecycle import guard
+                    guard(directory, checkpoint['batch'])
         except FileNotFoundError:
             checkpoint = None
         return _state(checkpoint)
@@ -158,12 +162,13 @@ def _identity(info):
 
 
 @contextmanager
-def _publication_lock(path, *, create=False, shared=False, recovery=False, required=False, lifecycle=False):
+def _publication_lock(path, *, create=False, shared=False, recovery=False, required=False, lifecycle=False,
+                      expose_lock=False):
     if _ACTIVE_DISPATCH.get():
         raise WorkVaultError('recursive storage access during dispatch')
     active = _ACTIVE_BATCH.get()
     if active is not None:
-        if required:
+        if required or expose_lock:
             raise WorkVaultError('batch recovery required')
         _private(path.lstat(), directory=True)
         _private(os.fstat(active.directory), directory=True)
@@ -177,7 +182,7 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False, requi
                 lock = stack.enter_context(_file(directory, LOCK, os.O_RDONLY if shared else os.O_RDWR,
                                                  create=not shared))
             except FileNotFoundError:
-                if not shared or required:
+                if not shared or required or expose_lock:
                     raise
                 if any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
                     raise WorkVaultError('batch recovery required')
@@ -196,8 +201,12 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False, requi
                 if not lifecycle:
                     from lifecycle import guard
                     guard(directory)
-                yield directory
-                if required:
+                token = _ACTIVE_LEASE.set((directory, lock, shared))
+                try:
+                    yield (directory, lock) if expose_lock else directory
+                finally:
+                    _ACTIVE_LEASE.reset(token)
+                if required or expose_lock:
                     root_info = path.lstat()
                     lock_info = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
                     _private(root_info, directory=True)
@@ -208,6 +217,25 @@ def _publication_lock(path, *, create=False, shared=False, recovery=False, requi
                         raise WorkVaultError('runtime file changed')
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _verify_publication_lease(path, lease, *, exclusive=False):
+    active = _ACTIVE_LEASE.get()
+    if (type(lease) is not tuple or len(lease) != 2 or active is None
+            or lease != active[:2] or exclusive and active[2]):
+        raise WorkVaultError('invalid publication lease')
+    directory, lock = lease
+    _private(os.fstat(directory), directory=True)
+    _private(os.fstat(lock))
+    info = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
+    _private(info)
+    if _identity(info) != _identity(os.fstat(lock)):
+        raise WorkVaultError('runtime file changed')
+    if path is not None:
+        _private(path.lstat(), directory=True)
+        if _identity(path.lstat()) != _identity(os.fstat(directory)):
+            raise WorkVaultError('configured root changed')
+    return directory
 
 
 def _unlink_owned(directory, name, identity):

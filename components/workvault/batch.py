@@ -70,6 +70,7 @@ def publication_pending(path):
 
 def read_curated_cards(path, repository, paths):
     """Internal source-qualified read, not session authority or a client endpoint."""
+    from lifecycle import guard
     try:
         curation.validate_repository(repository)
         _require(type(paths) is list and 1 <= len(paths) <= curation.MAX_INVENTORY_PATHS)
@@ -82,6 +83,7 @@ def read_curated_cards(path, repository, paths):
                 raw, info = _record(directory, name)
                 checkpoint = curation.parse_publication(raw)
                 clean = checkpoint['batch']
+                guard(directory, clean)
                 _require(clean['repository'] == repository
                          and clean['requested_paths'] == [source_path]
                          and len(clean['cards']) == 1 and clean['cards'][0]['path'] == source_path)
@@ -235,6 +237,7 @@ class _Batch:
         return found
 
     def check(self):
+        from lifecycle import guard
         revisions = {}
         raw, info = _record(self.directory, JOURNAL)
         _require(raw == self.raw and info['identity'] == self.journal_identity)
@@ -260,6 +263,7 @@ class _Batch:
                     raw, info = _record(directory, name)
                     _require(info == expected)
                     publication = curation.parse_publication(raw)
+                    guard(self.directory, publication['batch'])
                     _binding(self.value, row, publication['batch'], new=new, revisions=revisions)
                     if new:
                         _require(publication['published_at'] == self.published_at)
@@ -283,6 +287,7 @@ class _Batch:
                          old_match if self.value['phase'] == 'rolled-back' else old_match or new_match)
                 publication = curation.parse_publication(raw)
                 batch = publication['batch']
+                guard(self.directory, batch)
                 _binding(self.value, row, batch, new=self.value['phase'] == 'committed', revisions=revisions)
                 if self.value['phase'] == 'committed':
                     _require(publication['published_at'] == self.published_at)
@@ -300,6 +305,7 @@ class _Batch:
                     snapshot, info = _record(directory, filename)
                     _require(info == expected[filename])
                     batch = curation.parse_publication(snapshot)['batch']
+                    guard(self.directory, batch)
                     _binding(self.value, row, batch, revisions=revisions)
         self.stages()
 

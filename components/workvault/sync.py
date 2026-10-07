@@ -380,6 +380,9 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None, topi
             source = source if source is not None else GitHubSource()
             curator = curator if curator is not None else VertexCurator(config.project, config.location, config.model)
         with _lock(config.state) as directory:
+            from lifecycle import recover_source_lifecycle, legacy_blocked, purge_owned_index
+            from workvault import _publication_lock
+            recover_source_lifecycle(config)
             recover_publication_batch(config.vault, config.snapshots)
             previous = _load_state(directory, config.repository)
             if previous is not None and (_status(config, previous)['uncertain_paths']
@@ -403,7 +406,12 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None, topi
                 'uncertain_paths': [], 'provider_evidence': previous['provider_evidence']
                     if selected is not None and previous is not None else {'outcome': 'not_started'},
                 'broken_index_references': list(snapshot.broken_index_references)}, config.repository)
-            _save_state(directory, state)
+            with _publication_lock(config.vault, create=True) as publication_directory:
+                if legacy_blocked(publication_directory, config.repository):
+                    raise SyncError('repository withdrawal fenced')
+                if previous is None or previous['discovered_paths'] != state['discovered_paths']:
+                    purge_owned_index(publication_directory)
+                _save_state(directory, state)
             pending = _status(config, state)['uncovered_paths']
             if selected is not None:
                 pending = [path for path in pending if path in selected]
@@ -868,7 +876,7 @@ def load_config(path):
 
 
 @contextmanager
-def _curated_reader(config):
+def _curated_reader(config, *, publication_lease=None):
     """Read the complete canonical collection under the existing storage fences.
 
     Human notes, snapshots and registered artifacts are not publications. The
@@ -877,11 +885,14 @@ def _curated_reader(config):
     """
     import curation
     from batch import _record, source_publication_name
-    from lifecycle import blocked, guard, STATE as LIFECYCLE_STATE
+    from lifecycle import blocked, legacy_blocked, guard, STATE as LIFECYCLE_STATE
     from retrieval import CuratedReader, MAX_PUBLICATIONS, MAX_COLLECTION_BYTES
     from workvault import _publication_lock, LOCK
 
     config = _config(config)
+    if publication_lease is not None:
+        from workvault import _verify_publication_lease
+        _verify_publication_lease(config.vault, publication_lease)
     with ExitStack() as stack:
         try:
             state_directory = stack.enter_context(_directory(config.state))
@@ -915,7 +926,8 @@ def _curated_reader(config):
         except FileNotFoundError:
             directory = None
         else:
-            directory = stack.enter_context(_publication_lock(config.vault, shared=True))
+            directory = (publication_lease[0] if publication_lease is not None else
+                         stack.enter_context(_publication_lock(config.vault, shared=True)))
         publications, records = [], {}
         fences = {}
         if directory is not None:
@@ -956,7 +968,7 @@ def _curated_reader(config):
                         or publication_name(config.repository, path) != name
                         or legacy is None or path not in legacy['tracked_paths']):
                     raise SyncError('publication differs from observed inventory')
-                if path not in legacy['discovered_paths']:
+                if legacy_blocked(directory, config.repository) or path not in legacy['discovered_paths']:
                     retired_count += 1
                     continue
             collection_bytes += len(curation._json(checkpoint).encode('utf-8'))
