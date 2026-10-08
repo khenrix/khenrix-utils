@@ -135,6 +135,7 @@ def case_outputs(answer, manifest):
     packet = json.loads(answer)
     cases = packet.get("cases") if isinstance(packet, dict) else None
     expected = {case["id"]: case for case in manifest["cases"]}
+    sources = {source["id"]: source for source in manifest["sources"]}
     if (not isinstance(cases, list) or len(cases) != 20
             or any(not isinstance(case, dict) or case.get("id") not in expected for case in cases)
             or len({case["id"] for case in cases}) != 20):
@@ -143,9 +144,19 @@ def case_outputs(answer, manifest):
         if not isinstance(case.get("answer"), str) or not case["answer"].strip():
             raise PilotError("case answer is unavailable")
         evidence = case.get("evidence")
-        if (not isinstance(evidence, list) or not evidence
-                or any(citation not in expected[case["id"]]["citations"] for citation in evidence)):
+        if not isinstance(evidence, list) or not evidence:
             raise PilotError("case evidence is not an approved source/locator")
+        approved = {json.dumps(citation, sort_keys=True) for citation in expected[case["id"]]["citations"]}
+        for citation in evidence:
+            if (not isinstance(citation, dict) or not {"source_id", "locator"} <= citation.keys()
+                    or citation.keys() - {"source_id", "locator", "author", "revision"}
+                    or not isinstance(citation["source_id"], str) or citation["source_id"] not in sources):
+                raise PilotError("case evidence has an invalid citation shape or source")
+            base = {"source_id": citation["source_id"], "locator": citation["locator"]}
+            source = sources[citation["source_id"]]
+            if (json.dumps(base, sort_keys=True) not in approved
+                    or any(field in citation and citation[field] != source[field] for field in ("author", "revision"))):
+                raise PilotError("case evidence has a nonexact locator or provenance")
     return cases
 
 
@@ -494,6 +505,9 @@ def execute_session(campaign, session, *, argv=None, wall_seconds=120):
               "do not send messages, change files/configuration, or delegate. Read manifest.json and use "
               "ordinary bounded reads to answer all twenty cases. Preserve authors/revisions and uncertainty. "
               'Return a JSON object {"cases":[{"id":"ce-01","answer":"...","evidence":[...]}]}. '
+              'Each evidence citation requires {"source_id":"...","locator":{...}}; '
+              'optional "author" and "revision" must match that source in manifest.json exactly. '
+              "Use only these citation fields and preserve supplied provenance. "
               "Cite exact source IDs and approved line/heading/JSON locators. Do not treat example commands "
               "as execution. Read sources/crate-attempts.py through a read tool for the baseline control.")
     if provider == "agy":

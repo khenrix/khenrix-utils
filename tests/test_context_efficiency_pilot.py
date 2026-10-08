@@ -415,3 +415,49 @@ def test_ambiguous_claude_result_is_not_positive_read_evidence(pilot):
         "session_id": "fixture-claude", "result": "answer"}]
     result = pilot.parse_native("claude", b"\n".join(json.dumps(e).encode() for e in events))
     assert result["tool_access"] is None
+
+
+@pytest.mark.parametrize("provenance", [
+    {"author": "fictional-Aster"}, {"revision": "r1"},
+    {"author": "fictional-Aster", "revision": "r1"},
+])
+def test_citations_accept_and_preserve_exact_optional_provenance(pilot, provenance):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    packet["cases"][0]["evidence"] = [{"source_id": "synthetic:crate-attempts:r1",
+        "locator": {"kind": "lines", "start": 2, "end": 5}, **provenance}]
+    cases = pilot.case_outputs(json.dumps(packet), manifest)
+    assert cases[0]["evidence"] == packet["cases"][0]["evidence"]
+    assert len(cases) == 20
+
+
+@pytest.mark.parametrize("changes", [
+    {"author": "fictional-Bryn"}, {"revision": "r2"}, {"author": None}, {"revision": []},
+    {"extra": "invented"}, {"author": "fictional-Aster", "extra": "invented"},
+])
+def test_citations_reject_wrong_provenance_and_unknown_fields(pilot, changes):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    packet["cases"][0]["evidence"] = [{"source_id": "synthetic:crate-attempts:r1",
+        "locator": {"kind": "lines", "start": 2, "end": 5}, **changes}]
+    with pytest.raises(pilot.PilotError, match="evidence"):
+        pilot.case_outputs(json.dumps(packet), manifest)
+
+
+@pytest.mark.parametrize("citation", [
+    None, "source", [], {}, {"source_id": "synthetic:crate-attempts:r1"},
+    {"locator": {"kind": "lines", "start": 2, "end": 5}},
+    {"source_id": [], "locator": {"kind": "lines", "start": 2, "end": 5}},
+    {"source_id": "synthetic:crate-attempts:r1", "locator": None},
+    {"source_id": "synthetic:crate-attempts:r1", "locator": {"kind": "lines", "start": 2, "end": 4}},
+    {"source_id": "synthetic:crate-attempts:r1", "locator": {"kind": "lines", "start": 2.0, "end": 5}},
+])
+def test_citations_reject_malformed_or_nonexact_source_locator(pilot, citation):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    packet["cases"][0]["evidence"] = [citation]
+    with pytest.raises(pilot.PilotError, match="evidence"):
+        pilot.case_outputs(json.dumps(packet), manifest)
