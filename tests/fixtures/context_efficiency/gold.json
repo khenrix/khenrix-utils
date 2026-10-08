@@ -1,0 +1,506 @@
+{
+  "schema_version": 1,
+  "cases": {
+    "ce-01": {
+      "facts": [
+        "A sealed crate permits 2 attempts; other crates permit 4."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:crate-attempts:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 5
+          },
+          "value": "def attempts(crate):\n    if crate == \"sealed\":\n        return 2\n    return 4"
+        }
+      ]
+    },
+    "ce-02": {
+      "facts": [
+        "The disabled profile has retries=0; the active profile has retries=3."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:profiles:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "profiles",
+              "disabled",
+              "retries"
+            ]
+          },
+          "value": 0
+        },
+        {
+          "source_id": "synthetic:profiles:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "profiles",
+              "active",
+              "retries"
+            ]
+          },
+          "value": 3
+        }
+      ]
+    },
+    "ce-03": {
+      "facts": [
+        "A single write failed between two successful reads; overlapping excerpts describe one failure."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:overlap:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 3
+          },
+          "value": "10:01:00 operation=op-red event=read outcome=ok\n10:01:01 operation=op-red event=write outcome=failed"
+        },
+        {
+          "source_id": "synthetic:overlap:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 4
+          },
+          "value": "10:01:01 operation=op-red event=write outcome=failed\n10:01:02 operation=op-red event=read outcome=ok"
+        }
+      ]
+    },
+    "ce-04": {
+      "facts": [
+        "The final decision uses 12 slots; the earlier proposal used 20."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:slot-decision:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "## Proposal"
+          },
+          "value": "## Proposal\nUse 20 slots."
+        },
+        {
+          "source_id": "synthetic:slot-decision:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "## Final decision"
+          },
+          "value": "## Final decision\nUse 12 slots."
+        }
+      ]
+    },
+    "ce-05": {
+      "facts": [
+        "Beslutet är att behålla lokal läsning; fjärrindex ska inte aktiveras."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:swedish-decision:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 4
+          },
+          "value": "# Beslut\nVi behåller lokal läsning.\nFjärrindex ska inte aktiveras."
+        }
+      ]
+    },
+    "ce-06": {
+      "facts": [
+        "No automatic resend is allowed after an uncertain acknowledgement."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:uncertain-ack:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 4
+          },
+          "value": "# Acknowledgements\nAn uncertain acknowledgement does not prove failure.\nDo not resend automatically after an uncertain acknowledgement."
+        }
+      ]
+    },
+    "ce-07": {
+      "facts": [
+        "Caching is allowed except for revoked documents."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:cache-exception:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 4
+          },
+          "value": "Caching documents is permitted.\nException: revoked documents must never be cached."
+        }
+      ]
+    },
+    "ce-08": {
+      "facts": [
+        "The final correction changes the deadline from 09:00 to 11:30 UTC."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:late-correction:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "Initial deadline: 09:00 UTC."
+        },
+        {
+          "source_id": "synthetic:late-correction:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "## Final correction"
+          },
+          "value": "## Final correction\nDeadline: 11:30 UTC. This replaces the initial deadline."
+        }
+      ]
+    },
+    "ce-09": {
+      "facts": [
+        "Revision r2 requires 7 days; revision r1 required 30 days."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:retention:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "Keep records for 30 days."
+        },
+        {
+          "source_id": "synthetic:retention:r2",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "Keep records for 7 days. This replaces revision r1."
+        }
+      ]
+    },
+    "ce-10": {
+      "facts": [
+        "The human requires validation; the agent claims success; the test fails on an unchecked negative value."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:validation-human:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "Negative values must be rejected before writing."
+        },
+        {
+          "source_id": "synthetic:validation-agent:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "All validation is implemented and every test passes."
+        },
+        {
+          "source_id": "synthetic:validation-test:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "FAILED test_negative_value: expected rejection; observed write(-3)."
+        }
+      ]
+    },
+    "ce-11": {
+      "facts": [
+        "Three distinct authors each returned 41; all three results remain attributable."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:number-amber:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "result"
+            ]
+          },
+          "value": {
+            "value": 41
+          }
+        },
+        {
+          "source_id": "synthetic:number-blue:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "result"
+            ]
+          },
+          "value": {
+            "value": 41
+          }
+        },
+        {
+          "source_id": "synthetic:number-coral:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "result"
+            ]
+          },
+          "value": {
+            "value": 41
+          }
+        }
+      ]
+    },
+    "ce-12": {
+      "facts": [
+        "Fictional repo spruce uses 2 attempts; fictional repo birch uses 5 attempts."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:spruce-attempts:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 3
+          },
+          "value": "def attempts():\n    return 2"
+        },
+        {
+          "source_id": "synthetic:birch-attempts:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 3
+          },
+          "value": "def attempts():\n    return 5"
+        }
+      ]
+    },
+    "ce-13": {
+      "facts": [
+        "Two summaries cite one original decision; independent source evidence count is 1."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:original-decision:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "Use offline lookup."
+        },
+        {
+          "source_id": "synthetic:summary-amber:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "summary"
+            ]
+          },
+          "value": {
+            "text": "Use offline lookup.",
+            "cites": "synthetic:original-decision:r1"
+          }
+        },
+        {
+          "source_id": "synthetic:summary-blue:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "summary"
+            ]
+          },
+          "value": {
+            "text": "Use offline lookup.",
+            "cites": "synthetic:original-decision:r1"
+          }
+        }
+      ]
+    },
+    "ce-14": {
+      "facts": [
+        "Aster approves 6 windows; Bryn rejects 6 windows despite identical titles."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:windows-aster:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "# Window decision"
+          },
+          "value": "# Window decision\nApprove 6 windows."
+        },
+        {
+          "source_id": "synthetic:windows-bryn:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "# Window decision"
+          },
+          "value": "# Window decision\nReject 6 windows."
+        }
+      ]
+    },
+    "ce-15": {
+      "facts": [
+        "The same source changes from enabled at r1 to disabled at r2."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:switch:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "enabled"
+            ]
+          },
+          "value": true
+        },
+        {
+          "source_id": "synthetic:switch:r2",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "enabled"
+            ]
+          },
+          "value": false
+        }
+      ]
+    },
+    "ce-16": {
+      "facts": [
+        "The second zone has limit 8 and enabled=false; the first zone has limit 18."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:zones:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "zones",
+              1
+            ]
+          },
+          "value": {
+            "name": "south",
+            "limit": 8,
+            "enabled": false
+          }
+        },
+        {
+          "source_id": "synthetic:zones:r1",
+          "locator": {
+            "kind": "json_path",
+            "path": [
+              "zones",
+              0,
+              "limit"
+            ]
+          },
+          "value": 18
+        }
+      ]
+    },
+    "ce-17": {
+      "facts": [
+        "The fenced command is a quoted example, not execution evidence; observed writes are 0."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:quoted-example:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 6
+          },
+          "value": "The following is quoted documentation, not an executed command.\n```sh\nprintf example-write\n```"
+        },
+        {
+          "source_id": "synthetic:quoted-example:r1",
+          "locator": {
+            "kind": "heading",
+            "heading": "## Observation"
+          },
+          "value": "## Observation\nObserved writes: 0."
+        }
+      ]
+    },
+    "ce-18": {
+      "facts": [
+        "The log records no retry after timeout; a later success belongs to a different operation."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:separate-operations:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 2,
+            "end": 4
+          },
+          "value": "10:00:00 operation=op-red event=timeout\n10:00:01 operation=op-red event=no-retry\n10:00:02 operation=op-blue event=success"
+        }
+      ]
+    },
+    "ce-19": {
+      "facts": [
+        "Endast torra körningar får återupptas; osäkra betalda körningar får inte återspelas."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:swedish-replay:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 4
+          },
+          "value": "Endast torra körningar får återupptas.\nOsäkra betalda körningar får inte återspelas."
+        }
+      ]
+    },
+    "ce-20": {
+      "facts": [
+        "The 14:00 test predates the 15:00 correction; the correction leaves verification pending."
+      ],
+      "evidence": [
+        {
+          "source_id": "synthetic:earlier-test:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "14:00 UTC: test_capacity PASSED for capacity 3."
+        },
+        {
+          "source_id": "synthetic:later-correction:r1",
+          "locator": {
+            "kind": "lines",
+            "start": 3,
+            "end": 3
+          },
+          "value": "15:00 UTC: capacity is now 9; verification of this correction is pending."
+        }
+      ]
+    }
+  }
+}

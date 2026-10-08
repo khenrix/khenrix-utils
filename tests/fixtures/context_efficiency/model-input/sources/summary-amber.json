@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "id": "synthetic:summary-amber:r1",
+    "kind": "json",
+    "author": "fictional-seat-amber",
+    "revision": "r1",
+    "time": "2026-01-03T10:00:00Z",
+    "repository": "fictional-spruce"
+  },
+  "summary": {
+    "text": "Use offline lookup.",
+    "cites": "synthetic:original-decision:r1"
+  }
+}

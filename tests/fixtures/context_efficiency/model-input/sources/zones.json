@@ -1,0 +1,22 @@
+{
+  "_provenance": {
+    "id": "synthetic:zones:r1",
+    "kind": "json",
+    "author": "fictional-Aster",
+    "revision": "r1",
+    "time": "2026-01-03T10:00:00Z",
+    "repository": "fictional-spruce"
+  },
+  "zones": [
+    {
+      "name": "north",
+      "limit": 18,
+      "enabled": true
+    },
+    {
+      "name": "south",
+      "limit": 8,
+      "enabled": false
+    }
+  ]
+}

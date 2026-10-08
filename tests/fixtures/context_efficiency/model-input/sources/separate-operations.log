@@ -1,0 +1,4 @@
+# provenance: {"id":"synthetic:separate-operations:r1","kind":"log","author":"fictional-Aster","revision":"r1","time":"2026-01-03T10:00:00Z","repository":"fictional-spruce"}
+10:00:00 operation=op-red event=timeout
+10:00:01 operation=op-red event=no-retry
+10:00:02 operation=op-blue event=success

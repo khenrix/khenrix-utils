@@ -1,0 +1,11 @@
+{
+  "_provenance": {
+    "id": "synthetic:switch:r1",
+    "kind": "json",
+    "author": "fictional-Aster",
+    "revision": "r1",
+    "time": "2026-01-01T10:00:00Z",
+    "repository": "fictional-spruce"
+  },
+  "enabled": true
+}

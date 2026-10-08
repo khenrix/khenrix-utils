@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "id": "synthetic:number-blue:r1",
+    "kind": "json",
+    "author": "fictional-seat-blue",
+    "revision": "r1",
+    "time": "2026-01-03T10:00:00Z",
+    "repository": "fictional-spruce"
+  },
+  "draw_kind": "fictional-random",
+  "result": {
+    "value": 41
+  }
+}

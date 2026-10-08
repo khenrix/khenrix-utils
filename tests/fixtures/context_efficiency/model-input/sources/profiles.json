@@ -1,0 +1,18 @@
+{
+  "_provenance": {
+    "id": "synthetic:profiles:r1",
+    "kind": "json",
+    "author": "fictional-Aster",
+    "revision": "r1",
+    "time": "2026-01-03T10:00:00Z",
+    "repository": "fictional-spruce"
+  },
+  "profiles": {
+    "disabled": {
+      "retries": 0
+    },
+    "active": {
+      "retries": 3
+    }
+  }
+}

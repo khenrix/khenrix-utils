@@ -1,0 +1,4 @@
+# provenance: {"id":"synthetic:overlap:r1","kind":"log","author":"fictional-Aster","revision":"r1","time":"2026-01-03T10:00:00Z","repository":"fictional-spruce"}
+10:01:00 operation=op-red event=read outcome=ok
+10:01:01 operation=op-red event=write outcome=failed
+10:01:02 operation=op-red event=read outcome=ok
