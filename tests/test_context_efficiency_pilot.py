@@ -421,13 +421,17 @@ def test_ambiguous_claude_result_is_not_positive_read_evidence(pilot):
     {"author": "fictional-Aster"}, {"revision": "r1"},
     {"author": "fictional-Aster", "revision": "r1"},
 ])
-def test_citations_accept_and_preserve_exact_optional_provenance(pilot, provenance):
+@pytest.mark.parametrize("fenced", [False, True])
+def test_citations_accept_and_preserve_exact_optional_provenance(pilot, provenance, fenced):
     manifest = json.loads((CORPUS / "manifest.json").read_text())
     packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
         "evidence": case["citations"]} for case in manifest["cases"]]}
     packet["cases"][0]["evidence"] = [{"source_id": "synthetic:crate-attempts:r1",
         "locator": {"kind": "lines", "start": 2, "end": 5}, **provenance}]
-    cases = pilot.case_outputs(json.dumps(packet), manifest)
+    answer = json.dumps(packet)
+    if fenced:
+        answer = "```json\n" + answer + "\n```"
+    cases = pilot.case_outputs(answer, manifest)
     assert cases[0]["evidence"] == packet["cases"][0]["evidence"]
     assert len(cases) == 20
 
@@ -436,14 +440,57 @@ def test_citations_accept_and_preserve_exact_optional_provenance(pilot, provenan
     {"author": "fictional-Bryn"}, {"revision": "r2"}, {"author": None}, {"revision": []},
     {"extra": "invented"}, {"author": "fictional-Aster", "extra": "invented"},
 ])
-def test_citations_reject_wrong_provenance_and_unknown_fields(pilot, changes):
+@pytest.mark.parametrize("fenced", [False, True])
+def test_citations_reject_wrong_provenance_and_unknown_fields(pilot, changes, fenced):
     manifest = json.loads((CORPUS / "manifest.json").read_text())
     packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
         "evidence": case["citations"]} for case in manifest["cases"]]}
     packet["cases"][0]["evidence"] = [{"source_id": "synthetic:crate-attempts:r1",
         "locator": {"kind": "lines", "start": 2, "end": 5}, **changes}]
+    answer = json.dumps(packet)
+    if fenced:
+        answer = "```json\n" + answer + "\n```"
     with pytest.raises(pilot.PilotError, match="evidence"):
-        pilot.case_outputs(json.dumps(packet), manifest)
+        pilot.case_outputs(answer, manifest)
+
+
+@pytest.mark.parametrize("envelope", ["{}", "```json\n{}\n```", " \t\n```json\n{}\n```\n\t ",
+                                     "```json\r\n{}\r\n```"])
+def test_case_packet_accepts_only_whole_json_envelope_without_changing_native_answer(pilot, envelope):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    answer = envelope.format(json.dumps(packet))
+    native = pilot.parse_native("codex", codex_result(answer))
+    assert native["answer"] == answer
+    outputs = pilot.case_outputs(native["answer"], manifest)
+    assert outputs == packet["cases"]
+    assert len(outputs) == 20 and sum(len(case["evidence"]) for case in outputs) == 37
+    assert native["answer"] == answer
+
+
+@pytest.mark.parametrize("envelope", [
+    "Explanation\n```json\n{}\n```", "```json\n{}\n```\nTrailing explanation",
+    "```json\n{}\n```\n```json\n{}\n```", "```python\n{}\n```", "```JSON\n{}\n```",
+    "```\n{}\n```", "```json {} ```", "```json\n{}\n``` extra", "```json\n{}\n````",
+    "```json\n{}\nembedded material\n```", "```json\n{}\n", "```json\n{broken}\n```",
+])
+def test_case_packet_refuses_prose_multiple_wrong_or_malformed_fences(pilot, envelope):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    answer = envelope.replace("{}", json.dumps(packet))
+    with pytest.raises(ValueError):
+        pilot.case_outputs(answer, manifest)
+
+
+def test_fenced_packet_refuses_nested_fence_even_inside_json_string(pilot):
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer with ```nested``` material",
+        "evidence": case["citations"]} for case in manifest["cases"]]}
+    assert pilot.case_outputs(json.dumps(packet), manifest) == packet["cases"]
+    with pytest.raises(ValueError):
+        pilot.case_outputs("```json\n" + json.dumps(packet) + "\n```", manifest)
 
 
 @pytest.mark.parametrize("citation", [

@@ -132,7 +132,8 @@ def comparison_decision(baseline, candidate, *, counter_available):
 
 
 def case_outputs(answer, manifest):
-    packet = json.loads(answer)
+    envelope = re.fullmatch(r"\s*```json\r?\n(.*?)\r?\n```\s*", answer, re.DOTALL) if isinstance(answer, str) else None
+    packet = json.loads(envelope[1] if envelope and "```" not in envelope[1] else answer)
     cases = packet.get("cases") if isinstance(packet, dict) else None
     expected = {case["id"]: case for case in manifest["cases"]}
     sources = {source["id"]: source for source in manifest["sources"]}
