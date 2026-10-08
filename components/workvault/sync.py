@@ -1131,4 +1131,6 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    # Lifecycle recovery imports the canonical configuration classes from sync.
+    from sync import main as canonical_main
+    sys.exit(canonical_main())

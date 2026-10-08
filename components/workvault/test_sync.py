@@ -3,6 +3,8 @@ import importlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -110,6 +112,51 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.sync.sync_status(self.config),
             {'schema_version': 'workvault-sync-status-v1', 'state': 'empty'})
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_script_entry_publishes_and_reuses_canonical_lifecycle_configuration(self):
+        config = self.root / 'sync.json'
+        config.write_text(json.dumps({'schema_version': 'workvault-sync-config-v1',
+            'repository': self.config.repository,
+            'vault': str(self.config.vault), 'snapshots': str(self.config.snapshots),
+            'state': str(self.config.state), 'vertex': {'project': self.config.project,
+                'location': self.config.location, 'model': self.config.model}}))
+        config.chmod(0o600)
+        script = '''
+import json, runpy, sys
+from pathlib import Path
+from unittest.mock import patch
+from test_sync import Source, Curator
+
+source = Source(['knowledge/page-0.md'])
+curator = Curator()
+calls = []
+curate = curator.curate
+def counted(*args):
+    calls.append(1)
+    return curate(*args)
+curator.curate = counted
+entry = str(Path.cwd() / 'sync.py')
+with patch('collector.GitHubSource', return_value=source), patch('collector.VertexCurator', return_value=curator):
+    for _ in range(2):
+        sys.argv = [entry, 'sync', '--config', sys.argv[-1]]
+        try:
+            runpy.run_path(entry, run_name='__main__')
+        except SystemExit as error:
+            if error.code:
+                raise
+print(json.dumps({'curation_calls': len(calls)}))
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', script, str(config)],
+                                cwd=Path(__file__).parent, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        output = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row['full_source_coverage'] for row in output[:2]], [True, True])
+        self.assertEqual(output[2], {'curation_calls': 1})
+        self.assertEqual(len(list(self.config.vault.glob('Knowledge-*.md'))), 1)
+        self.assertEqual(result.stderr.splitlines(), [b'{"published_count": 1, "remaining_count": 0}'])
+        for path in self.root.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(b'RAW_SOURCE_CANARY_NEVER_STORED', path.read_bytes())
 
     def test_actual_second_note_publisher_failure_restores_whole_requested_batch(self):
         paths = self.paths[:2]
