@@ -558,7 +558,7 @@ def _source_state(value, bindings, cutoff):
                 raise SyncError('invalid pending source coverage')
         inflight = row['inflight']
         if inflight is not None:
-            curation._object(inflight, {'references', 'end'})
+            curation._object(inflight, {'references', 'end'} | ({'relationships'} if 'relationships' in inflight else set()))
             if pending is None or type(inflight['end']) is not int or not pending['offset'] < inflight['end'] <= len(pending['page']['items']):
                 raise SyncError('invalid inflight coverage')
             refs = sources.validate_references(inflight['references'], maximum=5)
@@ -568,6 +568,15 @@ def _source_state(value, bindings, cutoff):
                 _bound_reference(ref, row['binding'], fetched=True)
                 if not _matches_listing(ref, listed, observed=False):
                     raise SyncError('inflight source differs from listing')
+            if 'relationships' in inflight:
+                relationships = inflight['relationships']
+                if (type(relationships) is not list or len(relationships) != len(refs)
+                        or not any(item is not None for item in relationships)):
+                    raise SyncError('invalid inflight relationships')
+                for item in relationships:
+                    if item is not None:
+                        curation._object(item, {'supersedes', 'dependencies'})
+                        _source_relationships(item)
     return value
 
 
@@ -581,7 +590,7 @@ def _matches_listing(reference, locator, *, observed=True):
                     for key in ('revision', 'author', 'event_at', 'modified_at')))
 
 
-def _committed_source(config, locator):
+def _committed_source(config, locator, *, card=False):
     from batch import source_publication_name
     # Publication naming depends on identity, never on an invented listing hash.
     import sources
@@ -597,11 +606,25 @@ def _committed_source(config, locator):
         ref = sources.validate_reference(clean['cards'][0]['source'])
         if source_publication_name(ref) != name:
             raise SyncError('source publication identity differs')
-        return ref if _matches_listing(ref, locator, observed=False) else None
+        if not _matches_listing(ref, locator, observed=False):
+            return None
+        return clean['cards'][0] if card else ref
 
 
 def _same_source_content(first, second):
     return first is not None and all(first[key] == value for key, value in second.items() if key != 'observed_at')
+
+
+def _source_relationships(record):
+    import sources
+    return {key: sources.validate_references(record[key]) for key in ('supersedes', 'dependencies')}
+
+
+def _same_source_relationships(first, second):
+    def evidence(record, key):
+        return sorted(json.dumps({name: value for name, value in ref.items() if name != 'observed_at'},
+                                 sort_keys=True) for ref in record[key])
+    return all(evidence(first, key) == evidence(second, key) for key in ('supersedes', 'dependencies'))
 
 
 def _require_active_source(config, references):
@@ -738,7 +761,13 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
         refs = row['inflight']['references']
         _require_active_source(config, refs)
         committed = []
-        for ref in refs:
+        for index, ref in enumerate(refs):
+            relationships = row['inflight'].get('relationships')
+            if relationships is not None and relationships[index] is not None:
+                card = _committed_source(config, ref, card=True)
+                committed.append(ref if card is not None and card['source'] == ref
+                                 and _same_source_relationships(card, relationships[index]) else None)
+                continue
             checkpoint = completed.get(sources.revision_key(ref))
             committed.append(checkpoint if checkpoint == ref else _committed_source(config, ref))
         if committed != refs:
@@ -765,25 +794,30 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
         _require_active_source(config, items[pending['offset']:])
         while pending['offset'] < len(items):
             start = pending['offset']
-            selected, records, refs, keys = [], [], [], set()
+            selected, records, refs, relationships, keys = [], [], [], [], set()
             for listed in items[start:start + 5]:
                 key = sources.source_key(listed)
                 if key in keys:
                     break
                 keys.add(key)
+                card = _committed_source(config, listed, card=True)
                 committed = (_completed_source(completed, listed) if listed['revision'] is not None else None)
-                committed = committed or _committed_source(config, listed)
-                if listed['revision'] is not None and committed is not None:
+                # Historical checkpoints avoid replaying paid work; they do not
+                # verify or refresh relationships of a no-longer-current card.
+                if card is None and committed is not None:
                     refs.append(committed)
+                    relationships.append(None)
                     continue
                 record = selection.adapter.fetch(listed)
                 ref = _fetched_source(record, listed, row['binding'])
-                committed = completed.get(sources.revision_key(ref)) or committed
                 # Observation freshness validates the fetch, not cached content.
-                if _same_source_content(committed, ref):
-                    refs.append(committed)
+                if (card is not None and _same_source_content(card['source'], ref)
+                        and _same_source_relationships(card, record)):
+                    refs.append(card['source'])
+                    relationships.append(None)
                     continue
                 refs.append(ref)
+                relationships.append(_source_relationships(record))
                 selected.append(listed)
                 records.append(record)
             if not records:
@@ -799,7 +833,7 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
             with _publication_lock(config.vault, create=True) as dispatch_directory:
                 guard(dispatch_directory, {'schema_version': 'workvault-curated-batch-v2', 'cards': [
                     {'source': record['reference'], 'dependencies': record['dependencies']} for record in records]})
-                row['inflight'] = {'references': refs, 'end': start + len(refs)}
+                row['inflight'] = {'references': refs, 'end': start + len(refs), 'relationships': relationships}
                 _save_state(directory, state, SOURCE_STATE)
                 token = _ACTIVE_DISPATCH.set(True)
                 try:
@@ -809,6 +843,11 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
             clean = validate_source_batch(assemble_source_batch(selected, records, curated))
             if {sources.source_key(card['source']): card['source'] for card in clean['cards']} != expected:
                 raise SyncError('curation changed fetched provenance')
+            intended = {sources.source_key(ref): relation for ref, relation in zip(refs, relationships)
+                        if relation is not None}
+            if any(not _same_source_relationships(card, intended[sources.source_key(card['source'])])
+                   for card in clean['cards']):
+                raise SyncError('curation changed fetched relationships')
             with publication_batch(config.vault, config.snapshots, clean):
                 for card in clean['cards']:
                     name = source_publication_name(card['source'])

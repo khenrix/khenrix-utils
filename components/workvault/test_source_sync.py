@@ -103,6 +103,20 @@ def metadata_interrupt(root):
     sync.sync_sources(config(root), selections=(selection(adapter),), cutoff=CUTOFF, curator=Curator())
 
 
+def relationship_interrupt(root, point):
+    adapter, curator = Adapter(), Curator()
+    parent = adapter.fetch(adapter.rows[0])['reference']
+    dependency = dict(parent, item_id='target', citation='https://example.invalid/target')
+    fetch = adapter.fetch
+    adapter.fetch = lambda ref: dict(fetch(ref), dependencies=[dependency])
+    adapter.change_rows = adapter.rows
+    if point == 'uncertain_send':
+        curator.curate_sources = lambda refs, records: os._exit(77)
+    elif point == 'after_publication':
+        sync._ack_source_batch = lambda *args: os._exit(77)
+    sync.sync_sources(config(root), selections=(selection(adapter),), cutoff=CUTOFF, curator=curator)
+
+
 def counted_gap_restart(root, interrupt=False):
     class GapAdapter(Adapter):
         def list_page(self, **kwargs):
@@ -130,6 +144,14 @@ class SourceSyncTests(unittest.TestCase):
 
     def state(self):
         return json.loads((self.root / 'state' / sync.SOURCE_STATE).read_bytes())
+
+    def relationship_fetch(self, relationships):
+        fetch = Adapter.fetch
+        self.adapter.fetch = lambda ref: dict(fetch(self.adapter, ref), **relationships)
+
+    def published_card(self):
+        pub = next((self.root / 'vault').glob('Knowledge-*.md'))
+        return curation.parse_publication(pub.read_bytes())['batch']['cards'][0]
 
     def interrupt(self, point):
         script = 'from pathlib import Path; from test_source_sync import interrupt_run; interrupt_run(Path(__import__("sys").argv[1]), __import__("sys").argv[2])'
@@ -258,6 +280,123 @@ class SourceSyncTests(unittest.TestCase):
                 self.adapter.change_rows = [dict(self.adapter.rows[0], observed_at='2026-10-07T13:00:00Z')]
                 self.run_sync()
                 self.assertEqual(self.curator.calls, 1)
+
+    def test_changed_relationship_recurates_stable_parent_and_preserves_body_hash(self):
+        for label in ('dependencies', 'supersedes'):
+            for revision in ('revision-2', None):
+                with self.subTest(label=label, revision=revision), tempfile.TemporaryDirectory() as temporary:
+                    self.root = Path(temporary)
+                    self.adapter, self.curator = Adapter(), Curator()
+                    self.adapter.rows[0]['revision'] = revision
+                    parent = self.adapter.fetch(self.adapter.rows[0])['reference']
+                    prior = dict(parent, revision='prior-1', content_hash='sha256:' + 'a' * 64)
+                    if label == 'dependencies':
+                        prior.update(item_id='target', citation='https://example.invalid/target')
+                    self.relationship_fetch({label: [prior]})
+                    self.run_sync()
+                    old_publication = next((self.root / 'vault').glob('Knowledge-*.md')).read_bytes()
+                    changed = dict(prior, revision='prior-2', content_hash='sha256:' + 'b' * 64)
+                    self.relationship_fetch({label: [changed]})
+                    self.adapter.change_rows = self.adapter.rows
+                    result = self.run_sync()
+                    self.assertEqual(self.curator.calls, 2)
+                    self.assertEqual(result['sources']['synthetic']['state'], 'ready')
+                    self.assertEqual(self.published_card()[label], [changed])
+                    self.assertEqual(self.published_card()['source'], parent)
+                    self.assertNotEqual(next((self.root / 'vault').glob('Knowledge-*.md')).read_bytes(), old_publication)
+
+    def test_relationship_observation_and_order_changes_need_zero_curation(self):
+        parent = self.adapter.fetch(self.adapter.rows[0])['reference']
+        dependencies = [dict(parent, item_id=item, citation=f'https://example.invalid/{item}')
+                        for item in ('target-a', 'target-b')]
+        supersedes = [dict(parent, revision='prior-1', content_hash='sha256:' + 'a' * 64)]
+        self.relationship_fetch({'dependencies': dependencies, 'supersedes': supersedes})
+        self.run_sync()
+        before = self.published_card()
+        self.relationship_fetch({'dependencies': [dict(ref, observed_at='2026-10-07T13:00:00Z')
+                                                  for ref in reversed(dependencies)],
+                                 'supersedes': [dict(supersedes[0], observed_at='2026-10-07T13:00:00Z')]})
+        self.adapter.change_rows = [dict(self.adapter.rows[0], observed_at='2026-10-07T13:00:00Z')]
+        self.run_sync()
+        self.assertEqual(self.curator.calls, 1)
+        self.assertEqual(self.published_card(), before)
+
+    def test_dependency_only_uncertain_curation_cannot_ack_old_parent_checkpoint(self):
+        self.run_sync()
+        parent = self.published_card()['source']
+        dependency = dict(parent, item_id='target', citation='https://example.invalid/target')
+        self.relationship_fetch({'dependencies': [dependency]})
+        self.adapter.change_rows = self.adapter.rows
+        self.curator.fail = True
+        self.assertEqual(self.run_sync()['sources']['synthetic']['state'], 'uncertain')
+        fenced = self.state()
+        self.curator.fail = False
+        for _ in range(2):
+            report = self.run_sync()['sources']['synthetic']
+            self.assertEqual(report['state'], 'uncertain')
+            self.assertIsNone(report['change_cursor'])
+            self.assertEqual(self.state(), fenced)
+        self.assertEqual(self.curator.calls, 2)
+        self.assertEqual(self.published_card()['dependencies'], [])
+        for path in (self.root / 'state').iterdir():
+            if path.is_file():
+                self.assertNotIn(RAW, path.read_bytes())
+
+    def test_dependency_only_publication_before_ack_recovers_exact_relationships(self):
+        self.run_sync()
+        parent = self.published_card()['source']
+        dependency = dict(parent, item_id='target', citation='https://example.invalid/target')
+        self.relationship_fetch({'dependencies': [dependency]})
+        self.adapter.change_rows = self.adapter.rows
+        with patch.object(sync, '_ack_source_batch', side_effect=RuntimeError('synthetic ack interruption')):
+            self.assertEqual(self.run_sync()['sources']['synthetic']['state'], 'uncertain')
+        self.assertEqual(self.published_card()['dependencies'], [dependency])
+        for _ in range(2):
+            report = self.run_sync()['sources']['synthetic']
+            self.assertEqual(report['state'], 'ready')
+            self.assertEqual(report['change_cursor'], 'checkpoint-2')
+        self.assertEqual(self.curator.calls, 2)
+        self.assertIsNone(self.state()['sources']['synthetic']['inflight'])
+
+    def test_dependency_only_process_restart_checks_durable_relationship_fence(self):
+        for point in ('uncertain_send', 'after_publication'):
+            with self.subTest(point=point), tempfile.TemporaryDirectory() as temporary:
+                self.root = Path(temporary)
+                self.adapter, self.curator = Adapter(), Curator()
+                self.run_sync()
+                script = 'import sys; from pathlib import Path; from test_source_sync import relationship_interrupt; relationship_interrupt(Path(sys.argv[1]), sys.argv[2])'
+                interrupted = subprocess.run([sys.executable, '-B', '-c', script, str(self.root), point],
+                                             cwd=Path(__file__).parent, capture_output=True)
+                self.assertEqual(interrupted.returncode, 77, interrupted.stderr.decode())
+                fence = self.state()['sources']['synthetic']['inflight']
+                self.assertEqual(fence['relationships'][0]['dependencies'][0]['item_id'], 'target')
+                parent = self.published_card()['source']
+                dependency = dict(parent, item_id='target', citation='https://example.invalid/target')
+                self.relationship_fetch({'dependencies': [dependency]})
+                self.adapter.change_rows = self.adapter.rows
+                for _ in range(2):
+                    report = self.run_sync()['sources']['synthetic']
+                    self.assertEqual(report['state'], 'uncertain' if point == 'uncertain_send' else 'ready')
+                self.assertEqual(self.curator.calls, 1)
+                if point == 'uncertain_send':
+                    self.assertEqual(self.state()['sources']['synthetic']['inflight'], fence)
+                    self.assertEqual(self.published_card()['dependencies'], [])
+                else:
+                    self.assertIsNone(self.state()['sources']['synthetic']['inflight'])
+                    self.assertEqual(self.published_card()['dependencies'], [dependency])
+                for path in self.root.rglob('*'):
+                    if path.is_file():
+                        self.assertNotIn(RAW, path.read_bytes())
+
+    def test_legacy_parent_only_publication_fence_still_recovers(self):
+        self.interrupt('after_publication')
+        state = self.state()
+        del state['sources']['synthetic']['inflight']['relationships']
+        with sync._directory(self.root / 'state') as directory:
+            sync._save_state(directory, state, sync.SOURCE_STATE)
+        result = self.run_sync()
+        self.assertEqual(result['sources']['synthetic']['state'], 'ready')
+        self.assertEqual(self.curator.calls, 0)
 
     def test_completion_metadata_corruption_cannot_inflate_coverage(self):
         self.run_sync()
