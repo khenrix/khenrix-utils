@@ -224,6 +224,118 @@ class SourceSyncTests(unittest.TestCase):
         self.assertEqual(result['sources']['healthy']['covered_count'], 1)
         self.assertNotIn(RAW.decode(), json.dumps(result))
 
+    def test_explicit_addition_preserves_prior_checkpoints_and_repeat_reuses_content(self):
+        self.run_sync()
+        before = self.state()['sources']['synthetic']
+        completed = {path.name: path.read_bytes() for path in
+                     (self.root / 'state').glob('source-completed-*.json')}
+        self.assertEqual(len(completed), 1)
+        added = Adapter()
+        added.rows[0]['container'] = 'second'
+        selected = (selection(self.adapter),
+                    sync.SourceSelection('added', 'slack', 'workspace-fixture', 'second', added))
+        process = sync._sync_source
+        admissions = []
+
+        def observe_admission(*args):
+            if not admissions:
+                durable = self.state()['sources']
+                self.assertEqual(durable['synthetic'], before)
+                self.assertEqual(durable['added'], {
+                    'binding': {'kind': 'slack', 'account': 'workspace-fixture', 'container': 'second',
+                                'route_sha256': None, 'source_sha256': None},
+                    'cutoff': CUTOFF, 'phase': 'backfill', 'cursor': None, 'change_cursor': None,
+                    'pending': None, 'inflight': None, 'failed': False, 'page_count': 0, 'gaps': []})
+                for name, raw in completed.items():
+                    self.assertEqual((self.root / 'state' / name).read_bytes(), raw)
+                admissions.append(True)
+            return process(*args)
+
+        with patch.object(sync, '_sync_source', side_effect=observe_admission):
+            result = self.run_sync(selections=selected)
+        self.assertEqual(admissions, [True])
+        self.assertEqual(result['sources']['synthetic']['covered_count'], 1)
+        self.assertEqual(result['sources']['added']['covered_count'], 1)
+        self.assertEqual(self.curator.calls, 2)
+        self.adapter.change_rows = self.adapter.rows
+        added.change_rows = added.rows
+        self.run_sync(selections=selected)
+        self.assertEqual(self.curator.calls, 2)
+        for name, raw in completed.items():
+            self.assertEqual((self.root / 'state' / name).read_bytes(), raw)
+
+    def test_addition_cannot_omit_mutate_or_change_prior_cutoff(self):
+        self.run_sync()
+        before = (self.root / 'state' / sync.SOURCE_STATE).read_bytes()
+        added = selection(Adapter(), 'added')
+        original = selection(self.adapter)
+        cases = [(added,)]
+        for field, value in (('kind', 'backstage'), ('account', 'other'), ('container', 'other'),
+                             ('route_sha256', 'a' * 64), ('source_sha256', 'b' * 64)):
+            changed = dict(vars(original), **{field: value})
+            cases.append((sync.SourceSelection(**changed), added))
+        for selected in cases:
+            with self.subTest(selections=selected), patch.object(sync, '_sync_source') as process:
+                with self.assertRaises(sync.SyncError):
+                    self.run_sync(selections=selected)
+                process.assert_not_called()
+                self.assertEqual((self.root / 'state' / sync.SOURCE_STATE).read_bytes(), before)
+        with patch.object(sync, '_sync_source') as process:
+            with self.assertRaises(sync.SyncError):
+                sync.sync_sources(config(self.root), selections=(original, added),
+                                  cutoff='2026-10-08T12:00:00Z', curator=self.curator)
+            process.assert_not_called()
+        self.assertEqual((self.root / 'state' / sync.SOURCE_STATE).read_bytes(), before)
+        self.assertEqual(self.curator.calls, 1)
+
+    def test_addition_refuses_malformed_prior_state_without_repair(self):
+        self.run_sync()
+        valid = self.state()
+        path = self.root / 'state' / sync.SOURCE_STATE
+        for field, value in (('page_count', -1), ('pending', {'page': {}, 'checkpoint': None, 'offset': 0}),
+                             ('inflight', {'references': [], 'end': 1}), ('gaps', [{'code': 'retention_gap', 'count': -1}])):
+            malformed = json.loads(json.dumps(valid))
+            malformed['sources']['synthetic'][field] = value
+            raw = json.dumps(malformed).encode()
+            path.write_bytes(raw)
+            with self.subTest(field=field), patch.object(sync, '_sync_source') as process:
+                with self.assertRaises(sync.SyncError):
+                    self.run_sync(selections=(selection(self.adapter), selection(Adapter(), 'added')))
+                process.assert_not_called()
+                self.assertEqual(path.read_bytes(), raw)
+        self.assertEqual(self.curator.calls, 1)
+
+    def test_addition_refuses_corrupt_completed_revision_before_admission(self):
+        self.run_sync()
+        before = (self.root / 'state' / sync.SOURCE_STATE).read_bytes()
+        completed = next((self.root / 'state').glob('source-completed-*.json'))
+        completed.write_bytes(b'{"raw_body":"invalid checkpoint"}')
+        with patch.object(sync, '_sync_source') as process:
+            with self.assertRaises(sync.SyncError):
+                self.run_sync(selections=(selection(self.adapter), selection(Adapter(), 'added')))
+            process.assert_not_called()
+        self.assertEqual((self.root / 'state' / sync.SOURCE_STATE).read_bytes(), before)
+        self.assertEqual(completed.read_bytes(), b'{"raw_body":"invalid checkpoint"}')
+
+    def test_addition_progresses_without_replaying_prior_uncertain_dispatch(self):
+        self.interrupt('uncertain_send')
+        before = self.state()['sources']['synthetic']
+        added = Adapter()
+        added.rows[0]['container'] = 'second'
+        selected = (selection(self.adapter),
+                    sync.SourceSelection('added', 'slack', 'workspace-fixture', 'second', added))
+        with patch.object(self.adapter, 'fetch') as old_fetch:
+            result = self.run_sync(selections=selected)
+            old_fetch.assert_not_called()
+        self.assertEqual(self.state()['sources']['synthetic'], before)
+        self.assertEqual(result['sources']['synthetic']['state'], 'uncertain')
+        self.assertEqual(result['sources']['synthetic']['covered_count'], 0)
+        self.assertEqual(result['sources']['added']['covered_count'], 1)
+        self.assertEqual(self.curator.calls, 1)
+        self.run_sync(selections=selected)
+        self.assertEqual(self.curator.calls, 1)
+        self.assertEqual(self.state()['sources']['synthetic'], before)
+
     def test_frozen_binding_and_adapter_identity_drift_refuse(self):
         self.run_sync()
         before = self.state()

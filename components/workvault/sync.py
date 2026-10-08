@@ -528,7 +528,8 @@ def _source_state(value, bindings, cutoff):
     import sources
     curation._object(value, {'schema_version', 'sources'})
     curation._literal(value['schema_version'], 'workvault-multi-source-state-v2')
-    if type(value['sources']) is not dict or set(value['sources']) != set(bindings):
+    if (type(value['sources']) is not dict or not value['sources']
+            or not set(value['sources']).issubset(bindings)):
         raise SyncError('selected source inventory changed')
     for source_id, row in value['sources'].items():
         curation._object(row, {'binding', 'cutoff', 'phase', 'cursor', 'change_cursor', 'pending',
@@ -891,10 +892,16 @@ def sync_sources(config, *, selections, cutoff, curator, page_budget=1):
             try:
                 state = _source_state(_json(_read(directory, SOURCE_STATE)), bindings, cutoff)
             except FileNotFoundError:
-                state = {'schema_version': 'workvault-multi-source-state-v2', 'sources': {
-                    source_id: {'binding': binding, 'cutoff': cutoff, 'phase': 'backfill', 'cursor': None,
-                        'change_cursor': None, 'pending': None, 'inflight': None, 'failed': False,
-                        'page_count': 0, 'gaps': []} for source_id, binding in bindings.items()}}
+                state = {'schema_version': 'workvault-multi-source-state-v2', 'sources': {}}
+            additions = {source_id: {'binding': binding, 'cutoff': cutoff, 'phase': 'backfill', 'cursor': None,
+                'change_cursor': None, 'pending': None, 'inflight': None, 'failed': False,
+                'page_count': 0, 'gaps': []} for source_id, binding in bindings.items()
+                if source_id not in state['sources']}
+            if additions:
+                # Validate retained revision evidence before admitting any new authority.
+                for source_id, row in state['sources'].items():
+                    _completed_sources(directory, source_id, row['binding'])
+                state['sources'].update(additions)
                 _save_state(directory, state, SOURCE_STATE)
             from lifecycle import recover_source_lifecycle
             recover_source_lifecycle(config)
