@@ -103,6 +103,19 @@ def metadata_interrupt(root):
     sync.sync_sources(config(root), selections=(selection(adapter),), cutoff=CUTOFF, curator=Curator())
 
 
+def counted_gap_restart(root, interrupt=False):
+    class GapAdapter(Adapter):
+        def list_page(self, **kwargs):
+            page = super().list_page(**kwargs)
+            page['gaps'] = [{'code': 'historical_body_unavailable', 'count': 2},
+                            {'code': 'revision_history_incomplete', 'count': None}]
+            return page
+    if interrupt:
+        sync._ack_source_batch = lambda *args: os._exit(77)
+    return sync.sync_sources(config(root), selections=(selection(GapAdapter(2)),),
+                             cutoff=CUTOFF, curator=Curator())
+
+
 class SourceSyncTests(unittest.TestCase):
     def setUp(self):
         self.assertTrue(hasattr(sync, 'sync_sources'), 'multi-source coordinator is missing')
@@ -309,7 +322,40 @@ class SourceSyncTests(unittest.TestCase):
         self.assertEqual(result['sources']['synthetic']['page_count'], 0)
         self.assertFalse(result['full_source_coverage'])
 
-    def test_more_than_32_cumulative_gaps_resume_after_process_restart(self):
+    def test_equal_count_pages_aggregate_once_through_publication_ack_restart(self):
+        first = counted_gap_restart(self.root)
+        self.assertEqual(first['sources']['synthetic']['gaps'], [
+            {'code': 'historical_body_unavailable', 'count': 2},
+            {'code': 'revision_history_incomplete', 'count': None}])
+        script = 'from pathlib import Path; from test_source_sync import counted_gap_restart; counted_gap_restart(Path(__import__("sys").argv[1]), True)'
+        result = subprocess.run([sys.executable, '-B', '-c', script, str(self.root)],
+                                cwd=Path(__file__).parent, capture_output=True)
+        self.assertEqual(result.returncode, 77, result.stderr.decode())
+        self.assertEqual(self.state()['sources']['synthetic']['page_count'], 1)
+        self.assertEqual(self.state()['sources']['synthetic']['gaps'][0]['count'], 2)
+        for _ in range(2):
+            report = counted_gap_restart(self.root)
+            self.assertEqual(report['sources']['synthetic']['gaps'], [
+                {'code': 'historical_body_unavailable', 'count': 4},
+                {'code': 'revision_history_incomplete', 'count': None}])
+            self.assertEqual(report['sources']['synthetic']['covered_count'], 2)
+        for path in self.root.rglob('*'):
+            if path.is_file():
+                self.assertNotIn(RAW, path.read_bytes())
+
+    def test_unchanged_change_checkpoint_does_not_recount_acknowledged_page(self):
+        self.run_sync()
+        original = self.adapter.changes
+        def changes(**kwargs):
+            result = original(**kwargs)
+            result['page']['gaps'] = [{'code': 'historical_body_unavailable', 'count': 2}]
+            return result
+        self.adapter.changes = changes
+        for _ in range(2):
+            self.assertEqual(self.run_sync()['sources']['synthetic']['gaps'], [
+                {'code': 'historical_body_unavailable', 'count': 2}])
+
+    def test_more_than_32_counted_gap_pages_resume_after_process_restart(self):
         for _ in range(33):
             gap_restart(self.root)
         script = 'import json,sys; from pathlib import Path; from test_source_sync import gap_restart; print(json.dumps(gap_restart(Path(sys.argv[1]))))'
@@ -320,7 +366,7 @@ class SourceSyncTests(unittest.TestCase):
             report = json.loads(result.stdout)
         self.assertEqual(report['sources']['gaps']['page_count'], 40)
         self.assertEqual(report['sources']['gaps']['gaps'],
-                         [{'code': 'retention_gap', 'count': count} for count in range(1, 41)])
+                         [{'code': 'retention_gap', 'count': 820}])
         self.assertEqual(report['sources']['healthy']['page_count'], 40)
         self.assertEqual(report['sources']['healthy']['covered_count'], 1)
 

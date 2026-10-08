@@ -688,13 +688,32 @@ def _ack_source_batch(directory, state, source_id, references, end):
     _save_state(directory, state, SOURCE_STATE)
 
 
+def _source_gaps(*pages):
+    counts = {}
+    for page in pages:
+        for gap in page:
+            code, count = gap['code'], gap['count']
+            if code not in counts:
+                counts[code] = count
+            elif counts[code] is None or count is None:
+                counts[code] = None
+            else:
+                counts[code] += count
+    return [{'code': code, 'count': count} for code, count in counts.items()]
+
+
+def _repeated_change_page(row, pending):
+    return (row['phase'] == 'changes' and pending['page']['complete']
+            and pending['checkpoint'] is not None and pending['checkpoint'] == row['change_cursor'])
+
+
 def _source_report(directory, state, page_budget):
     report = {}
     for source_id, row in state['sources'].items():
         completed = _completed_sources(directory, source_id, row['binding'])
-        gaps = list(row['gaps'])
-        if row['pending']:
-            gaps.extend(gap for gap in row['pending']['page']['gaps'] if gap not in gaps)
+        gaps = _source_gaps(row['gaps'])
+        if row['pending'] and not _repeated_change_page(row, row['pending']):
+            gaps = _source_gaps(gaps, row['pending']['page']['gaps'])
         report[source_id] = {'state': 'uncertain' if row['inflight'] else 'failed' if row['failed'] else 'ready',
             'phase': row['phase'], 'covered_count': len(completed),
             'page_count': row['page_count'], 'cursor': row['cursor'], 'change_cursor': row['change_cursor'],
@@ -799,9 +818,8 @@ def _sync_source(config, directory, state, selection, curator, page_budget):
             completed.update((sources.revision_key(ref), ref) for ref in refs)
         page = pending['page']
         row['page_count'] += 1
-        for gap in page['gaps']:
-            if gap not in row['gaps']:
-                row['gaps'].append(gap)
+        if not _repeated_change_page(row, pending):
+            row['gaps'] = _source_gaps(row['gaps'], page['gaps'])
         row['cursor'] = page['next_cursor']
         if page['complete']:
             if row['phase'] == 'changes':
