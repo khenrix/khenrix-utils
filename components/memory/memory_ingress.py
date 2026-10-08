@@ -334,9 +334,16 @@ def prepare_hook(stream: BinaryIO, platform: str, event: str) -> Iterator[bytes 
                 continue
             if key in document and document[key] is not None and not isinstance(document[key], str):
                 _reject()
+        # Native Claude startup uses inline metadata/prompt, before its history
+        # may exist. Qwen shares this platform but uses the path to identify its
+        # host; retain its existing transcript boundary.
+        native_claude_startup = platform == "claude-code" and event in {"context", "session-init"} and not (
+            os.environ.get("QWEN_PROJECT_DIR")
+            or any("/.qwen/" in (document.get(key) or "").replace("\\", "/") for key in TRANSCRIPT_KEYS)
+        )
         # Only Codex summaries without inline text need history. Never forward
         # an unused transcript path for the worker to read outside this boundary.
-        if platform == "codex" and (
+        if native_claude_startup or platform == "codex" and (
             event != "summarize"
             or isinstance(document.get("last_assistant_message"), str) and document["last_assistant_message"]
         ):

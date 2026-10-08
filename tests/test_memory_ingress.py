@@ -44,14 +44,21 @@ memoryctl._ensure_relay = lambda selected: None
 memoryctl._ensure_gateway = lambda: None
 memoryctl._bun_path = lambda: sys.executable
 memoryctl._worker_script = lambda: pathlib.Path(sys.argv[2])
+if __import__('os').environ.get('MEMORY_TEST_FORBID_TRANSCRIPT'):
+    def unused_transcript(*args, **kwargs):
+        raise RuntimeError('unused transcript accessed')
+    memoryctl.memory_ingress._read_transcript = unused_transcript
+    memoryctl.memory_ingress.tempfile.TemporaryDirectory = unused_transcript
 if __import__('os').environ.get('MEMORY_TEST_CHANGE_SOURCE'):
     source = pathlib.Path(__import__('os').environ['MEMORY_TEST_CHANGE_SOURCE'])
+    identity = (source.stat().st_dev, source.stat().st_ino)
     read = memoryctl.memory_ingress.os.read
     changed = False
     def changing_read(descriptor, size):
         global changed
         chunk = read(descriptor, size)
-        if not changed:
+        opened = memoryctl.memory_ingress.os.fstat(descriptor)
+        if not changed and (opened.st_dev, opened.st_ino) == identity:
             changed = True
             source.write_bytes(b'changed concurrently')
         return chunk
@@ -179,6 +186,117 @@ def _transcript(tmp_path, entries):
 
 
 @pytest.mark.parametrize("event,fields", [
+    ("context", {"hook_event_name": "SessionStart", "source": "startup"}),
+    ("session-init", {"hook_event_name": "UserPromptSubmit", "permission_mode": "plan",
+                      "prompt_id": "prompt-1", "prompt": "before <private>synthetic-secret</private> after"}),
+])
+def test_native_claude_early_transcript_not_created_yet(ingress, tmp_path, event, fields):
+    path = tmp_path / "not-created.jsonl"
+    result, captured, routed = ingress(_hook(transcript_path=str(path), **fields), event=event)
+    assert result.returncode == 0, result.stderr.decode()
+    assert routed and captured is not None
+    assert "transcript_path" not in captured["payload"]
+    assert captured["transcripts"] == []
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("event,fields", [
+    ("context", {"hook_event_name": "SessionStart", "source": "startup"}),
+    ("session-init", {"hook_event_name": "UserPromptSubmit", "permission_mode": "plan",
+                      "prompt_id": "prompt-1", "prompt": "before <private>synthetic-secret</private> after"}),
+])
+@pytest.mark.parametrize("kind", ["missing", "unreadable", "symlink", "oversized", "changing"])
+def test_native_claude_startup_ignores_unused_transcript(ingress, tmp_path, event, fields, kind):
+    path = tmp_path / "early-transcript.jsonl"
+    original = None
+    if kind != "missing":
+        path.write_bytes(b'{"type":"assistant","message":{"content":"history synthetic-secret"}}\n')
+        original = path.read_bytes()
+        if kind == "unreadable":
+            path.chmod(0)
+        elif kind == "symlink":
+            link = tmp_path / "linked-transcript.jsonl"
+            link.symlink_to(path)
+            path = link
+        elif kind == "oversized":
+            with path.open("wb") as handle:
+                handle.truncate(16 * 1024 * 1024 + 1)
+    payload = _hook(transcript_path=str(path), transcriptPath=str(path), **fields)
+    result, captured, routed = ingress(
+        payload, event=event, MEMORY_TEST_FORBID_TRANSCRIPT="1",
+        **({"MEMORY_TEST_CHANGE_SOURCE": str(path)} if kind == "changing" else {}),
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert routed and captured is not None
+    expected = _hook(**fields)
+    if event == "session-init":
+        expected["prompt"] = "before  after"
+    assert captured["payload"] == expected
+    assert captured["transcripts"] == []
+    assert "synthetic-secret" not in captured["raw"]
+    if kind == "changing":
+        assert path.read_bytes() == original
+    if kind == "missing":
+        assert not path.exists()
+
+
+@pytest.mark.parametrize("identity", [False, True], ids=["private-prompt", "unsafe-session"])
+def test_native_claude_early_prompt_still_skips_private_or_rejects_identity(ingress, tmp_path, identity):
+    result, captured, routed = ingress(_hook(
+        transcript_path=str(tmp_path / "not-created.jsonl"), hook_event_name="UserPromptSubmit",
+        session_id="session-<private>synthetic-secret</private>" if identity else "synthetic-session",
+        prompt="safe prompt" if identity else "<private>synthetic-secret</private>",
+    ), MEMORY_TEST_FORBID_TRANSCRIPT="1")
+    assert (result.returncode != 0) is identity
+    assert captured is None and not routed
+    assert b"synthetic-secret" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("key", ["transcript_path", "transcriptPath"])
+@pytest.mark.parametrize("event", ["context", "session-init"])
+def test_native_claude_unused_transcript_still_requires_string_alias(ingress, key, event):
+    result, captured, routed = ingress(_hook(prompt="safe prompt", **{key: ["not-a-path"]}), event=event)
+    assert result.returncode != 0
+    assert captured is None and not routed
+
+
+@pytest.mark.parametrize("event", ["context", "session-init"])
+@pytest.mark.parametrize("signal", ["environment", "path", "windows-alias"])
+def test_qwen_shaped_startup_keeps_existing_sanitized_transcript(ingress, tmp_path, event, signal):
+    path = _transcript(tmp_path, [{"type": "user", "uuid": "qwen-user-1",
+                                 "message": {"content": "history <private>synthetic-secret</private> end"}}])
+    env = {}
+    fields = {"transcript_path": str(path)}
+    if signal == "environment":
+        env["QWEN_PROJECT_DIR"] = "/synthetic/project"
+    elif signal == "path":
+        directory = tmp_path / ".qwen"
+        directory.mkdir()
+        destination = directory / path.name
+        path.rename(destination)
+        path = destination
+        fields["transcript_path"] = str(path)
+    else:
+        # Both aliases participate in the upstream host heuristic, including
+        # Windows separators. A conflicting path still fails closed.
+        fields["transcriptPath"] = r"C:\synthetic\.qwen\session.jsonl"
+    result, captured, routed = ingress(_hook(prompt="safe prompt", **fields), event=event, **env)
+    if signal == "windows-alias":
+        assert result.returncode != 0
+        assert captured is None and not routed
+    else:
+        assert result.returncode == 0, result.stderr.decode()
+        assert routed
+        snapshot = captured["transcripts"][0]
+        assert snapshot["path"] != str(path)
+        assert snapshot["file_mode"] == 0o600
+        assert snapshot["directory_mode"] == 0o700
+        assert json.loads(snapshot["text"]) == {"type": "user", "uuid": "qwen-user-1",
+                                              "message": {"content": "history  end"}}
+        assert not pathlib.Path(snapshot["path"]).exists()
+
+
+@pytest.mark.parametrize("event,fields", [
     ("context", {}),
     ("session-init", {"prompt": "current <private>synthetic-secret</private> prompt"}),
     ("file-context", {"tool_input": {"command": "current <private>synthetic-secret</private> command"}}),
@@ -278,15 +396,23 @@ def test_claude_summary_child_sees_only_sanitized_transcript(ingress, tmp_path):
         {"type": "assistant", "uuid": "assistant-1", "message": {"model": "synthetic-model", "content": [
             {"type": "text", "text": "summary <persisted-output>secret</persisted-output> end"}]}},
     ])
+    original = path.read_bytes()
     result, captured, _ = ingress(_hook(transcript_path=str(path)), event="summarize")
     assert result.returncode == 0, result.stderr.decode()
     entries = [json.loads(line) for line in captured["transcripts"][0]["text"].splitlines()]
     assert entries[1] == {"type": "assistant", "uuid": "assistant-1", "message": {
         "model": "synthetic-model", "content": [{"type": "text", "text": "summary  end"}]}}
     assert "secret" not in captured["transcripts"][0]["text"]
+    snapshot = captured["transcripts"][0]
+    assert snapshot["path"] != str(path)
+    assert snapshot["file_mode"] == 0o600
+    assert snapshot["directory_mode"] == 0o700
+    assert not pathlib.Path(snapshot["path"]).exists()
+    assert not pathlib.Path(snapshot["path"]).parent.exists()
+    assert path.read_bytes() == original
 
 
-@pytest.mark.parametrize("kind", ["malformed", "duplicate", "oversized", "symlink", "parent-link", "parent-link-dotdot", "fifo"])
+@pytest.mark.parametrize("kind", ["missing", "malformed", "duplicate", "oversized", "symlink", "parent-link", "parent-link-dotdot", "fifo"])
 def test_unsafe_transcript_rejected_before_route_and_never_falls_back(ingress, tmp_path, kind):
     path = tmp_path / "synthetic-transcript.jsonl"
     if kind == "malformed":
@@ -297,7 +423,7 @@ def test_unsafe_transcript_rejected_before_route_and_never_falls_back(ingress, t
         path.write_bytes(b"s" * (16 * 1024 * 1024 + 1))
     elif kind == "fifo":
         os.mkfifo(path)
-    else:
+    elif kind != "missing":
         target = _transcript(tmp_path, [{"type": "assistant", "message": {"content": "synthetic-secret"}}])
         if kind == "symlink":
             path = tmp_path / "linked-transcript.jsonl"

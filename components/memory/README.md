@@ -48,6 +48,13 @@ and a successful hook exit so prompts, tools and Stop can continue; rejected
 data never reaches the worker. Codex uses inline prompt, tool and summary fields
 without opening or forwarding its full transcript. Only a summary lacking
 nonempty inline assistant text uses the bounded transcript fallback.
+Native Claude Code context and prompt-initialization hooks likewise use inline
+metadata/prompt without opening or forwarding an unused transcript, which may
+not exist at startup. Transcript alias types are still checked before removal.
+Qwen-shaped events sharing the Claude adapter retain their existing transcript
+boundary: a nonempty `QWEN_PROJECT_DIR` or a whole `/.qwen/` path segment in
+either alias (after separator normalization) prevents this native-only removal.
+Claude summary and other transcript-consuming events retain strict validation.
 Transcript sources are opened through no-follow descriptors and
 never modified. The child receives only a sanitized temporary snapshot in a
 0700 directory with a 0600 file, removed when the hook finishes. Text blocks use
