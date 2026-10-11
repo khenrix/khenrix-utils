@@ -82,6 +82,84 @@ This builds a complete candidate under
 package overlay. It leaves the active component and `~/.local/bin/maka`
 unchanged.
 
+## Install a reviewed source SDK companion
+
+The source-runtime commands deliver an independently validated source-built SDK
+under the installed component's `runtime/source-candidate/`. The npm CLI pin,
+wrapper, and npm install receipt continue to describe the npm installation.
+Companion delivery does not start a Runtime Host or certify a native model call.
+
+Prepare an owner-only JSON file containing the full reference of the candidate's
+`runtime-manifest.json`: `path`, `sha256`, `bytes`, `owner`, `mode`, `device`, and
+`inode`. The manifest must enumerate the complete regular-file closure with
+those same fields, plus `artifact_root`, `schema`, `files`, `entrypoints`, `worker`,
+and `statistics` (`files`, `bytes`, `symlinks: 0`). Any packaging repair's `staged`
+reference must identify a closure file; its `original` reference stays intact.
+Source manifests are consumed as frozen inputs; their schema name is recorded
+without imposing a particular build workflow.
+
+Generate the plan without writing installed state, then review its complete JSON
+and SHA-256 before applying it. Plan output uses sorted, indented JSON with a
+trailing newline, so the saved output's SHA-256 is the approval digest:
+
+```sh
+mise -C components/maka run maka:source-runtime-plan -- \
+  --input-ref /absolute/path/manifest-reference.json > /absolute/path/reviewed-plan.json
+shasum -a 256 /absolute/path/reviewed-plan.json
+mise -C components/maka run maka:source-runtime-apply -- \
+  --plan /absolute/path/reviewed-plan.json --plan-sha256 '<reviewed SHA-256>'
+mise -C components/maka run maka:source-runtime-doctor
+```
+
+The helper verifies every file's hash, size, mode, owner, path and inode, rejects
+extra files, directories, symlinks and unsafe ancestors, then verifies independent
+staged copies. It rebinds installed references to their final paths and inodes,
+including worker, entrypoints and staged packaging repairs. Original build
+references and the full source manifest reference remain in the installed record.
+Upgrades use native atomic directory exchange on macOS or Linux, serialize under
+an owner-only lock, and compare the reviewed prior receipt and closure before and
+after cutover. Receipt publication uses an atomic exchange or exclusive rename,
+preserving any concurrent replacement. Staged files, directories and a transaction
+journal are fsynced before cutover. Recovery classifies bound tree and receipt
+identities; it never deletes a previous tree based on a process-local phase flag.
+
+The independent receipt is
+`~/.local/state/khenrix-utils/maka/source-runtime/receipt.json` (mode `0600`).
+Backups remain under that directory's `backups/`; rollback preserves the removed
+candidate there. Review the current receipt and its SHA-256 before rollback:
+
+```sh
+mise -C components/maka run maka:source-runtime-rollback -- \
+  --receipt-sha256 '<reviewed current receipt SHA-256>'
+```
+
+An interrupted process leaves `source-runtime/transaction.json`. Plan, doctor and
+ordinary mutations refuse pending transactions. Review that owner-only journal
+and its SHA-256 before recovering it:
+
+```sh
+mise -C components/maka run maka:source-runtime-recover -- \
+  --transaction-sha256 '<reviewed transaction SHA-256>'
+```
+
+Recovery completes a fully published transaction or restores its exact prior
+state. An unknown tree or concurrent receipt is preserved and reported for
+reconciliation. Retained staging and backup paths remain available for review.
+
+Normal component activation and component rollback share the companion lock and
+refuse an active companion or pending transaction. Explicitly retire the SDK
+before replacing the npm component; retirement moves the verified companion and
+receipt into owner-only backups without changing npm provenance:
+
+```sh
+mise -C components/maka run maka:source-runtime-retire -- \
+  --receipt-sha256 '<reviewed current receipt SHA-256>'
+```
+
+For isolated delivery, all commands accept absolute `--component-root` and
+`--state-root` paths. Apply uses the paths recorded in its reviewed plan. Run the
+credential-free companion tests with `mise -C components/maka run maka:source-runtime-test`.
+
 ## Migrate an existing Agentic Setup installation
 
 The component installer refuses to activate its launcher when it finds an old

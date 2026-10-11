@@ -109,6 +109,34 @@ run = "python ./scripts/migrate_legacy_state.py rollback"
 description = "Verify pins, provenance, attribution, platform lock, and installed component drift"
 run = "python ./scripts/component_doctor.py"
 
+[tasks."maka:source-runtime-plan"]
+description = "Review a complete source-built SDK companion without changing installed state"
+run = "python -B ./scripts/source_runtime.py plan"
+
+[tasks."maka:source-runtime-apply"]
+description = "Install the exact reviewed SDK companion plan with an independent receipt"
+run = "python -B ./scripts/source_runtime.py apply"
+
+[tasks."maka:source-runtime-doctor"]
+description = "Verify the installed source SDK companion closure and receipt"
+run = "python -B ./scripts/source_runtime.py doctor"
+
+[tasks."maka:source-runtime-rollback"]
+description = "Restore the previous SDK companion after checking the current receipt digest"
+run = "python -B ./scripts/source_runtime.py rollback"
+
+[tasks."maka:source-runtime-test"]
+description = "Test source SDK companion drift guards, atomic cutover and rollback"
+run = "python -B -m unittest discover -s scripts -p test_source_runtime.py"
+
+[tasks."maka:source-runtime-recover"]
+description = "Recover an interrupted source SDK transaction after reviewing its digest"
+run = "python -B ./scripts/source_runtime.py recover"
+
+[tasks."maka:source-runtime-retire"]
+description = "Retire a verified SDK companion explicitly before replacing the npm component"
+run = "python -B ./scripts/source_runtime.py retire"
+
 [tasks."maka:test"]
 description = "Run current and frozen Harbor regressions with an explicit unpatched .62 baseline"
 run = "./scripts/test.sh"

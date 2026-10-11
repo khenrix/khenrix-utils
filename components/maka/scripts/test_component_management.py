@@ -24,6 +24,42 @@ import apply_gpt6_compat as compat
 
 
 class ComponentInstallerTests(unittest.TestCase):
+    def test_activation_requires_explicit_source_companion_retirement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            layout = component.canonical_layout(pathlib.Path(temporary).resolve())
+            companion = layout.component / "runtime/source-candidate"
+            companion.mkdir(parents=True)
+            (companion / "retained").write_bytes(b"original companion")
+            with mock.patch.object(component, "canonical_layout", return_value=layout):
+                with mock.patch.object(component.subprocess, "run", side_effect=AssertionError("must guard before work")):
+                    with self.assertRaises(component.ComponentInstallError):
+                        component.install(pathlib.Path(__file__).resolve().parent.parent, activate=True)
+            self.assertEqual((companion / "retained").read_bytes(), b"original companion")
+
+    def test_component_rollback_refuses_active_companion_before_state_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            layout = component.canonical_layout(pathlib.Path(temporary).resolve())
+            companion = layout.component / "runtime/source-candidate"
+            companion.mkdir(parents=True)
+            identifier = "20261011T120000Z-1"
+            (layout.state / "backups" / identifier / "component").mkdir(parents=True)
+            with mock.patch.object(component, "canonical_layout", return_value=layout):
+                with self.assertRaises(component.ComponentInstallError):
+                    component.rollback(identifier)
+            self.assertTrue(companion.exists())
+
+    def test_component_rollback_refuses_backup_with_unreceipted_companion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            layout = component.canonical_layout(pathlib.Path(temporary).resolve())
+            layout.component.mkdir(parents=True)
+            (layout.component / "retained").write_bytes(b"active component")
+            identifier = "20261011T120000Z-1"
+            (layout.state / "backups" / identifier / "component/runtime/source-candidate").mkdir(parents=True)
+            with mock.patch.object(component, "canonical_layout", return_value=layout):
+                with self.assertRaises(component.ComponentInstallError):
+                    component.rollback(identifier)
+            self.assertEqual((layout.component / "retained").read_bytes(), b"active component")
+
     @classmethod
     def setUpClass(cls) -> None:
         if package_root := os.environ.get("KHENRIX_MAKA_PACKAGE_ROOT"):

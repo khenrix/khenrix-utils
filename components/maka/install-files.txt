@@ -106,6 +106,7 @@ scripts/pier-preflight.sh
 scripts/relay-artifact-setup-smoke.sh
 scripts/relay_tier_status.py
 scripts/run_hardened_python.py
+scripts/source_runtime.py
 scripts/synthetic-import.mjs
 scripts/test-secret-volume-cleanup.sh
 scripts/test.sh
@@ -117,6 +118,7 @@ scripts/test_maka_gpt6_compat.py
 scripts/test_maka_test_gate.py
 scripts/test_relay_tier_status.py
 scripts/test_runtime_manifest_verify.py
+scripts/test_source_runtime.py
 scripts/verify_gpt6_candidate.mjs
 third_party/README.md
 third_party/apache-maka/DISCLAIMER-WIP

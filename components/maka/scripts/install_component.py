@@ -485,6 +485,18 @@ def assert_cutover_safe(layout: InstallLayout) -> None:
         )
 
 
+def assert_source_runtime_retired(layout: InstallLayout) -> None:
+    """A component replacement cannot invalidate the independent SDK receipt."""
+    guarded = (layout.component / "runtime/source-candidate",
+               layout.state / "source-runtime/receipt.json",
+               layout.state / "source-runtime/transaction.json")
+    if any(path.exists() or path.is_symlink() for path in guarded):
+        raise ComponentInstallError(
+            "source SDK companion must be explicitly retired with source_runtime.py retire "
+            "before component activation or rollback; recover any pending source transaction first"
+        )
+
+
 def installation_plan(source: pathlib.Path, *, activate: bool) -> dict[str, object]:
     source = source.resolve(strict=True)
     files = read_manifest(source)
@@ -527,10 +539,24 @@ def backup_id() -> str:
 
 
 def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
+    if not activate:
+        return _install(source, activate=False)
+    from source_runtime import lock_state
+
+    layout = canonical_layout()
+    assert_source_runtime_retired(layout)
+    with lock_state(layout.state.resolve()):
+        assert_source_runtime_retired(layout)
+        return _install(source, activate=True)
+
+
+def _install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
     supported_platform()
     source = source.resolve(strict=True)
     package_identity = reviewed_package_identity(source)
     layout = canonical_layout()
+    if activate:
+        assert_source_runtime_retired(layout)
     account = pwd.getpwuid(os.getuid())
     mise = resolve_mise(layout.home)
     environment = clean_environment(layout, mise, account.pw_name)
@@ -567,6 +593,7 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
     had_previous_wrapper = False
     try:
         shutil.copytree(candidate, staging, dirs_exist_ok=True)
+        assert_source_runtime_retired(InstallLayout(layout.home, staging, layout.wrapper, layout.state))
         subprocess.run(
             [str(mise), "trust", str(staging / "mise.toml")],
             env=environment,
@@ -575,6 +602,7 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
             timeout=30,
         )
         if layout.component.exists() or layout.component.is_symlink():
+            assert_source_runtime_retired(layout)
             if layout.component.is_symlink() or not layout.component.is_dir():
                 raise ComponentInstallError("managed Maka component path is unsafe")
             ensure_private_state_directory(layout.state)
@@ -671,7 +699,20 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
 def rollback(identifier: str) -> None:
     if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9]+", identifier):
         raise ComponentInstallError("backup id is invalid")
+    from source_runtime import lock_state
+
     layout = canonical_layout()
+    assert_source_runtime_retired(layout)
+    with lock_state(layout.state.resolve()):
+        assert_source_runtime_retired(layout)
+        return _rollback(identifier)
+
+
+def _rollback(identifier: str) -> None:
+    if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9]+", identifier):
+        raise ComponentInstallError("backup id is invalid")
+    layout = canonical_layout()
+    assert_source_runtime_retired(layout)
     backup = layout.state / "backups" / identifier
     previous_component = backup / "component"
     previous_wrapper = backup / "maka"
@@ -679,6 +720,7 @@ def rollback(identifier: str) -> None:
     current_receipt = layout.state / "install-receipt.json"
     if not backup.is_dir() or backup.is_symlink():
         raise ComponentInstallError("backup is unavailable")
+    assert_source_runtime_retired(InstallLayout(layout.home, previous_component, layout.wrapper, layout.state))
 
     previous_component_present = previous_component.exists() or previous_component.is_symlink()
     current_component_present = layout.component.exists() or layout.component.is_symlink()
