@@ -64,7 +64,7 @@ paths = [
   "components/maka/scripts/test.sh",
   "components/maka/install-files.txt",
 ]
-hash = "sha256:fccac4e769752d18c23b72882b2cde44ff8f599ff14af65f1a01d324cc5ed159"
+hash = "sha256:d6c6ff4dcb9f8cad3c0ecd7b1fcdf1f389d178a07a1cebfa641a9f1e97b7259c"
 required_text = [
   { path = "components/maka/scripts/test.sh", text = '''node "$LAB_ROOT/controller/provider-request-contract.mjs" "$package_root" "$request"
 python "$LAB_ROOT/controller/assert-provider-body.py" "$request"

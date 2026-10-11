@@ -33,7 +33,7 @@ paths = [
   "tests/test_memory_runtime.py",
   "tests/test_memory_exchange.py",
 ]
-hash = "sha256:ea749905fdc4878337ba05276848f0ad456c44eab67ef953693fd86bd957ef1a"
+hash = "sha256:90e5bc14e09ea8175ff681fa7b40d1aa4fdbfb08449f32f2cd233b09039ab63f"
 required_text = [
   { path = "components/memory/provenance.json", text = "sha512-UrAZzPh3MlEQwkJKuo08pb3GA0RNbpC9FjxNIBHOJEIjbLBP5bVO2+mBMy9/MH3/SWRWrYJTq0TCHSrMWUfg3Q==" },
   { path = "components/memory/provenance.json", text = "a80767e975dde7131cefaee46a90c130acec30d2" },
