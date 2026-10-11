@@ -130,8 +130,12 @@ def verify_manifest(reference, *, physical_root=None):
     require(type(document.get("entrypoints")) is dict and document["entrypoints"], "runtime entrypoints missing")
     require(all(path in payload_refs for path in document["entrypoints"].values()), "entrypoint outside closure")
     require(document.get("worker") in list(payload_refs.values()), "worker identity outside closure")
-    for repair in document.get("packaging_repairs", []):
-        require(repair.get("staged") in list(payload_refs.values()), "packaging repair outside closure")
+    for group in ("packaging_repairs", "source_repairs"):
+        repairs = document.get(group, [])
+        require(type(repairs) is list, "repair collection must be a list")
+        for repair in repairs:
+            require(type(repair) is dict and repair.get("staged") in list(payload_refs.values()),
+                    "repair outside closure")
     statistics = document.get("statistics", {})
     require(statistics.get("files") == len(document["files"]) and
             statistics.get("bytes") == sum(entry["bytes"] for entry in document["files"].values()) and
@@ -221,8 +225,9 @@ def staged_manifest(document, reference, staging, slot):
         mappings[original["path"]] = installed
     result["worker"] = mappings[document["worker"]["path"]]
     result["entrypoints"] = {key: mappings[path]["path"] for key, path in document["entrypoints"].items()}
-    for repair in result.get("packaging_repairs", []):
-        repair["staged"] = mappings[repair["staged"]["path"]]
+    for group in ("packaging_repairs", "source_repairs"):
+        for repair in result.get(group, []):
+            repair["staged"] = mappings[repair["staged"]["path"]]
     return result
 
 

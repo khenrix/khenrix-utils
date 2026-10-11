@@ -93,6 +93,42 @@ class SourceRuntimeTests(unittest.TestCase):
                 self.assertFalse((self.component / "runtime/source-candidate").exists())
                 self.setUp()
 
+    def test_source_repair_is_rebound_and_provenance_is_preserved(self):
+        document = json.loads(self.manifest.read_text())
+        repair = dict(kind="reviewed-source-repair", original=dict(path="/original/source.js"),
+                      source=dict(path="/reviewed/source.ts"), runtime=dict(path="/reviewed/source.js"),
+                      staged=reference(self.payload))
+        document["source_repairs"] = [repair]
+        self.manifest.write_text(json.dumps(document))
+        self.ref = reference(self.manifest)
+        self.apply()
+        installed = self.component / "runtime/source-candidate"
+        document = json.loads((installed / "runtime-manifest.json").read_text())
+        self.assertEqual(document["source_repairs"][0], repair | {"staged": reference(installed / "dist/worker.js")})
+        self.assertEqual(document["source_schema"], "validated-runtime-v1")
+        self.assertEqual(self.runtime.doctor(self.component, self.state)["status"], "verified")
+
+    def test_source_repair_outside_closure_refuses_before_delivery(self):
+        for defect in ("outside", "identity", "not-list", "not-record"):
+            with self.subTest(defect=defect):
+                document = json.loads(self.manifest.read_text())
+                repaired = reference(self.payload)
+                if defect == "outside":
+                    repaired["path"] = str(self.root / "outside.js")
+                elif defect == "identity":
+                    repaired["inode"] += 1
+                document["source_repairs"] = [dict(kind="reviewed-source-repair", staged=repaired)]
+                if defect == "not-list":
+                    document["source_repairs"] = {}
+                elif defect == "not-record":
+                    document["source_repairs"] = ["invalid"]
+                self.manifest.write_text(json.dumps(document))
+                self.ref = reference(self.manifest)
+                with self.assertRaises(self.runtime.SourceRuntimeError):
+                    self.plan()
+                self.assertFalse(self.state.exists())
+                self.assertFalse((self.component / "runtime/source-candidate").exists())
+
     def test_review_digest_and_existing_state_are_compare_and_swap_guards(self):
         plan = self.plan()
         with self.assertRaises(self.runtime.SourceRuntimeError):
