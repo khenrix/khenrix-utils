@@ -3,13 +3,15 @@
 The repo's eval harness IS the benchmark (`docs/skill-eval-process.md` is the authority;
 read it before scaffolding). Key invariants:
 
-- Executors run in fresh temporary working directories with provider tools, MCPs, rules,
-  plugins, and ambient skill discovery disabled. Authentication is bridged into the child
-  without copying credentials into its workspace or artifacts. Both conditions use the
-  same no-tools boundary; only `with_skill` receives the bounded textual skill closure.
-- `without_skill` is therefore a true bare-prompt baseline even when an older copy is
-  installed on the machine. Provider isolation is fail-closed and its exact boundary is
-  covered by `make eval-test`.
+- Executors and judges use fresh working directories with normal installed skills,
+  plugins, MCPs, HOME and authentication. Executors use medium effort; grading and review
+  use xhigh; Gemini uses high throughout. Native controls deny known writers where
+  supported, but trusted shell access is not OS confinement. No messages or other writes
+  are authorized by evaluation.
+- `with_skill` receives a bounded explicit source closure. `without_skill` receives no
+  explicit copy, but installed skills remain discoverable in both conditions. The delta
+  measures explicit guidance under native configuration, not target absence or causal
+  uplift. Keep source hashes, commands, actual tool evidence and observed CLI versions.
 - A run with `delta.pass_rate >= 0` (the skill doesn't make answers worse) passes the
   gate and writes `evals/<t>/receipt.json` — the exact artifact `make precommit` gates
   on. The blind A/B winner is **recorded but advisory**, not a gate: on a strong executor
@@ -18,13 +20,11 @@ read it before scaffolding). Key invariants:
   assertion delta yet a blind loss to the tighter baseline). Read it when triaging a weak
   delta; never fail a non-negative-delta run on it. The assertion delta is the "does it
   help" signal.
-- **Historical llm-council compatibility**: its receipt is WRITTEN by `make eval SKILL=llm-council`,
-  which gates on `fanout.py --self-test` alone, not the judge harness — executors run under
-  `LLM_COUNCIL_DEPTH=1`, so the judged delta never exercises a real council and is advisory
-  only. Keep `make council-test` and historical live smoke coverage distinct from current
-  `make smoke-llm-fanout`; a paid smoke needs its own authorization and earns no receipt.
-- Current executors and judges use the bounded fanout prompt-only bridge, with memory
-  and collaboration disabled. Only a verified unstarted spawn can retry automatically.
+- Fanout plan/execute receipts also require their named deterministic contracts. Native
+  tool discovery, actual service reads, collaboration and owner application need their
+  own scoped evidence; an answer-quality benchmark alone cannot establish them.
+- Current executors and judges share the native profile registry, parsers and process
+  supervisor. Automatic transport retries are zero.
   Malformed successful judge JSON receives one fresh semantic retry and both raw attempts
   remain available. Timeouts, quota/errors and uncertain spend are terminal transport
   evidence, not an automatic whole-eval replay.

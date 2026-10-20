@@ -22,11 +22,10 @@ under `[instructions.overlays]` are rendered inside that same block, exactly as
 the broader reconcile controller renders them, so the paths do not create
 drift for each other.
 
-`[historical_only]` retains Council/Forge source and evidence while excluding their
-two skills and two libraries from delivery. Direct skill declarations and bundle
-sources cannot reintroduce these historical subtrees, including through an ancestor
-directory. Plugin refresh moves exact stale historical children to an owner-only
-`.khenrix-historical-backup-*` directory and reports the recovery path. Cached
+Council/Forge skills and libraries are removed from current source and delivery.
+Their historical source is recoverable from retained Git history; private measured
+evidence is held separately. Plugin refresh moves exact retired installed children
+to an owner-only `.khenrix-retired-backup-*` directory and reports the recovery path. Cached
 plugin backups sit outside the version glob; fixed-location plugin backups are
 adjacent to the installed plugin, so subsequent refreshes leave them untouched.
 

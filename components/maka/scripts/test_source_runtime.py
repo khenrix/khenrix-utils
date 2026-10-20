@@ -7,7 +7,9 @@ import os
 import pathlib
 import stat
 import tempfile
+import types
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
 
@@ -54,6 +56,275 @@ class SourceRuntimeTests(unittest.TestCase):
     def apply(self, plan=None):
         plan = plan or self.plan()
         return self.runtime.apply_plan(plan, self.runtime.digest_json(plan))
+
+    @contextmanager
+    def remounted(self):
+        original = os.fstat
+        def new_device(descriptor):
+            value = original(descriptor)
+            fields = {key: getattr(value, key) for key in dir(value) if key.startswith("st_")}
+            return types.SimpleNamespace(**(fields | {"st_dev": value.st_dev + 1}))
+        with mock.patch.object(self.runtime.os, "fstat", side_effect=new_device):
+            yield
+
+    def remount_plan(self):
+        self.assertTrue(hasattr(self.runtime, "make_remount_retire_plan"), "explicit remount retirement is missing")
+        return self.runtime.make_remount_retire_plan(self.component, self.state, self.root / "reconciled-source")
+
+    def test_remount_retirement_preserves_originals_and_makes_strict_source_snapshot(self):
+        self.apply()
+        original_source = self.manifest.read_bytes()
+        receipt = self.state / "source-runtime/receipt.json"
+        original_receipt = receipt.read_bytes()
+        installed = self.component / "runtime/source-candidate"
+        original_installed = (installed / "runtime-manifest.json").read_bytes()
+        payload_inode = (installed / "dist/worker.js").stat().st_ino
+        with self.remounted():
+            with self.assertRaises(self.runtime.SourceRuntimeError):
+                self.runtime.doctor(self.component, self.state)
+            plan = self.remount_plan()
+            result = self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+            self.assertEqual(result["status"], "retired")
+            self.assertFalse(installed.exists())
+            self.assertFalse(receipt.exists())
+            backup = pathlib.Path(result["backup"])
+            self.assertEqual((backup / "rolled-back-receipt.json").read_bytes(), original_receipt)
+            self.assertEqual((backup / "rolled-back-candidate/runtime-manifest.json").read_bytes(), original_installed)
+            self.assertEqual((backup / "rolled-back-candidate/dist/worker.js").stat().st_ino, payload_inode)
+            self.assertEqual(self.manifest.read_bytes(), original_source)
+            fresh = self.runtime.verify_manifest(result["source_manifest"])
+            self.assertEqual(fresh["commit"], "a" * 40)
+            self.assertEqual(fresh["packaging_repairs"][0]["original"]["path"], "/original/build/package.json")
+            self.assertEqual(fresh["source_manifest"], self.ref)
+            normal = self.runtime.make_plan(result["source_manifest"], self.component, self.state)
+            self.apply(normal)
+            self.runtime.doctor(self.component, self.state)
+
+    def test_remount_plan_rejects_nondevice_drift_and_pending_transaction(self):
+        for mutation in ("content", "mode", "inode", "extra", "symlink", "hardlink", "worker", "mixed-device", "transaction"):
+            with self.subTest(mutation=mutation):
+                self.setUp()
+                self.apply()
+                installed = self.component / "runtime/source-candidate"
+                payload = installed / "dist/worker.js"
+                with self.remounted():
+                    if mutation == "content":
+                        payload.write_bytes(b"tamper")
+                    elif mutation == "mode":
+                        payload.chmod(0o644)
+                    elif mutation == "inode":
+                        moved = payload.with_suffix(".old")
+                        payload.rename(moved)
+                        payload.write_bytes(moved.read_bytes())
+                        payload.chmod(0o600)
+                        moved.unlink()
+                    elif mutation == "extra":
+                        (installed / "extra").write_bytes(b"extra")
+                    elif mutation == "symlink":
+                        (installed / "extra").symlink_to(payload)
+                    elif mutation == "hardlink":
+                        os.link(payload, self.root / "linked")
+                    elif mutation == "worker":
+                        self.payload.write_bytes(b"tamper")
+                    elif mutation == "transaction":
+                        (self.state / "source-runtime/transaction.json").write_text("{}")
+                    if mutation == "mixed-device":
+                        current = self.runtime.file_ref
+                        def mixed(path):
+                            value = current(path)
+                            return value | {"device": value["device"] + (pathlib.Path(path) == payload)}
+                        with mock.patch.object(self.runtime, "file_ref", side_effect=mixed):
+                            with self.assertRaises(self.runtime.SourceRuntimeError):
+                                self.remount_plan()
+                    else:
+                        with self.assertRaises(self.runtime.SourceRuntimeError):
+                            self.remount_plan()
+
+    def test_remount_apply_rejects_wrong_digest_and_receipt_replacement(self):
+        self.apply()
+        with self.remounted():
+            plan = self.remount_plan()
+            with self.assertRaises(self.runtime.SourceRuntimeError):
+                self.runtime.apply_remount_retire_plan(plan, "0" * 64)
+            receipt = self.state / "source-runtime/receipt.json"
+            old = receipt.with_suffix(".old")
+            receipt.rename(old)
+            receipt.write_bytes(old.read_bytes())
+            receipt.chmod(0o600)
+            replacement = self.runtime.file_ref(receipt)
+            with self.assertRaises(self.runtime.SourceRuntimeError):
+                self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+            self.assertEqual(self.runtime.file_ref(receipt), replacement)
+            self.assertTrue((self.component / "runtime/source-candidate").exists())
+
+    def test_remount_retirement_recovers_crashes_before_and_after_publication(self):
+        for publication in (False, True):
+            with self.subTest(publication=publication):
+                self.setUp()
+                self.apply()
+                receipt = self.state / "source-runtime/receipt.json"
+                original = receipt.read_bytes()
+                with self.remounted():
+                    plan = self.remount_plan()
+                    self.crash(lambda: self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan)),
+                               "move_new", lambda left, right: pathlib.Path(right).name ==
+                               ("rolled-back-receipt.json" if publication else "rolled-back-candidate"))
+                    self.recover()
+                    if publication:
+                        self.assertFalse(receipt.exists())
+                        self.assertFalse((self.component / "runtime/source-candidate").exists())
+                    else:
+                        self.assertEqual(receipt.read_bytes(), original)
+                        self.assertTrue((self.component / "runtime/source-candidate").exists())
+                        with self.assertRaises(self.runtime.SourceRuntimeError):
+                            self.runtime.doctor(self.component, self.state)
+
+    def test_remount_apply_revalidates_closures_and_rejects_corrupt_snapshot(self):
+        for mutation in ("source", "installed", "copy"):
+            with self.subTest(mutation=mutation):
+                self.setUp()
+                self.apply()
+                with self.remounted():
+                    plan = self.remount_plan()
+                    if mutation == "source":
+                        self.payload.write_bytes(b"tamper")
+                    elif mutation == "installed":
+                        (self.component / "runtime/source-candidate/dist/worker.js").write_bytes(b"tamper")
+                    original = self.runtime.shutil.copyfileobj
+                    def copy(source, destination, **kwargs):
+                        value = original(source, destination, **kwargs)
+                        if mutation == "copy":
+                            destination.seek(0)
+                            destination.write(b"broken")
+                        return value
+                    with mock.patch.object(self.runtime.shutil, "copyfileobj", side_effect=copy):
+                        with self.assertRaises(self.runtime.SourceRuntimeError):
+                            self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+                    self.assertTrue((self.state / "source-runtime/receipt.json").exists())
+                    self.assertTrue((self.component / "runtime/source-candidate").exists())
+                    self.assertFalse((self.root / "reconciled-source").exists())
+
+    def test_remount_retirement_retains_concurrent_receipt_and_restores_tree(self):
+        self.apply()
+        receipt = self.state / "source-runtime/receipt.json"
+        installed = self.component / "runtime/source-candidate"
+        inode = (installed / "dist/worker.js").stat().st_ino
+        move = self.runtime.move_new
+        with self.remounted():
+            plan = self.remount_plan()
+            replacement = None
+            def replace(left, right):
+                nonlocal replacement
+                value = move(left, right)
+                if pathlib.Path(right).name == "rolled-back-candidate":
+                    old = receipt.with_suffix(".raced")
+                    receipt.rename(old)
+                    receipt.write_bytes(old.read_bytes())
+                    receipt.chmod(0o600)
+                    replacement = self.runtime.file_ref(receipt)
+                return value
+            with mock.patch.object(self.runtime, "move_new", side_effect=replace):
+                with self.assertRaises(self.runtime.SourceRuntimeError):
+                    self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+            self.assertEqual(self.runtime.file_ref(receipt), replacement)
+            self.assertEqual((installed / "dist/worker.js").stat().st_ino, inode)
+
+    def test_source_symlink_race_never_chmods_unrelated_private_file(self):
+        self.payload.chmod(0o644)
+        document = json.loads(self.manifest.read_text())
+        payload = reference(self.payload)
+        document["files"]["dist/worker.js"] = payload
+        document["worker"] = payload
+        document["packaging_repairs"][0]["staged"] = payload
+        self.manifest.write_text(json.dumps(document))
+        self.ref = reference(self.manifest)
+        self.apply()
+        victim = self.root / "unrelated-private-file"
+        victim.write_bytes(b"unrelated fixture data")
+        victim.chmod(0o600)
+        injected = False
+        def inject():
+            nonlocal injected
+            if not injected:
+                injected = True
+                self.payload.rename(self.payload.with_suffix(".saved"))
+                self.payload.symlink_to(victim)
+        copyfile, copyfileobj = self.runtime.shutil.copyfile, self.runtime.shutil.copyfileobj
+        def raced_copy(source, destination, **kwargs):
+            inject()
+            return copyfile(source, destination, **kwargs)
+        def raced_descriptors(source, destination, **kwargs):
+            inject()
+            return copyfileobj(source, destination, **kwargs)
+        with self.remounted():
+            plan = self.remount_plan()
+            with mock.patch.object(self.runtime.shutil, "copyfile", side_effect=raced_copy):
+                with mock.patch.object(self.runtime.shutil, "copyfileobj", side_effect=raced_descriptors):
+                    with self.assertRaises(self.runtime.SourceRuntimeError):
+                        self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+        self.assertTrue(injected)
+        self.assertEqual(victim.read_bytes(), b"unrelated fixture data")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o600)
+        self.assertTrue((self.state / "source-runtime/receipt.json").exists())
+
+    def test_remount_retirement_rejects_snapshot_drift_after_reference_publication(self):
+        self.apply()
+        with self.remounted():
+            plan = self.remount_plan()
+            write = self.runtime.write_private
+            def corrupt(path, value):
+                result = write(path, value)
+                if pathlib.Path(path).name == "source-reference.json":
+                    (pathlib.Path(plan["source_snapshot"]) / "dist/worker.js").write_bytes(b"broken")
+                return result
+            with mock.patch.object(self.runtime, "write_private", side_effect=corrupt):
+                with self.assertRaises(self.runtime.SourceRuntimeError):
+                    self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+            self.assertTrue((self.state / "source-runtime/receipt.json").exists())
+            self.assertTrue((self.component / "runtime/source-candidate").exists())
+
+    def test_remount_cutover_and_recovery_require_unchanged_published_snapshot(self):
+        for point in ("tree", "receipt", "recover"):
+            with self.subTest(point=point):
+                self.setUp()
+                self.apply()
+                with self.remounted():
+                    plan = self.remount_plan()
+                    action = lambda: self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+                    snapshot_payload = pathlib.Path(plan["source_snapshot"]) / "dist/worker.js"
+                    if point == "recover":
+                        self.crash(action, "move_new", lambda left, right: pathlib.Path(right).name == "rolled-back-receipt.json")
+                        snapshot_payload.write_bytes(b"broken")
+                    else:
+                        move = self.runtime.move_new
+                        def corrupt(left, right):
+                            result = move(left, right)
+                            if pathlib.Path(right).name == ("rolled-back-candidate" if point == "tree" else "rolled-back-receipt.json"):
+                                snapshot_payload.write_bytes(b"broken")
+                            return result
+                        with mock.patch.object(self.runtime, "move_new", side_effect=corrupt):
+                            with self.assertRaises(self.runtime.SourceRuntimeError):
+                                action()
+                    journal = self.state / "source-runtime/transaction.json"
+                    self.assertTrue(journal.exists())
+                    with self.assertRaises(self.runtime.SourceRuntimeError):
+                        self.runtime.recover(self.component, self.state, self.runtime.file_ref(journal)["sha256"])
+                    self.assertTrue(journal.exists())
+
+    def test_remount_finish_rechecks_snapshot_before_removing_journal(self):
+        self.apply()
+        with self.remounted():
+            plan = self.remount_plan()
+            matches = self.runtime.state_matches
+            def corrupt_after_committed_state(bound, slot, receipt):
+                result = matches(bound, slot, receipt)
+                if bound is None and result:
+                    (pathlib.Path(plan["source_snapshot"]) / "dist/worker.js").write_bytes(b"broken")
+                return result
+            with mock.patch.object(self.runtime, "state_matches", side_effect=corrupt_after_committed_state):
+                with self.assertRaises(self.runtime.SourceRuntimeError):
+                    self.runtime.apply_remount_retire_plan(plan, self.runtime.digest_json(plan))
+            self.assertTrue((self.state / "source-runtime/transaction.json").exists())
 
     def test_install_rebinds_paths_and_inodes_and_keeps_original_provenance(self):
         plan = self.plan()
@@ -355,13 +626,13 @@ class SourceRuntimeTests(unittest.TestCase):
         self.assertEqual(reference(self.component / "runtime/source-candidate/dist/worker.js"), old)
 
     def test_copy_corruption_is_rejected_before_cutover(self):
-        copyfile = self.runtime.shutil.copyfile
+        copyfile = self.runtime.shutil.copyfileobj
         def corrupt_copy(source, destination, **kwargs):
             result = copyfile(source, destination, **kwargs)
-            if pathlib.Path(source) == self.payload:
-                pathlib.Path(destination).write_bytes(b"broken")
+            destination.seek(0)
+            destination.write(b"broken")
             return result
-        with mock.patch.object(self.runtime.shutil, "copyfile", side_effect=corrupt_copy):
+        with mock.patch.object(self.runtime.shutil, "copyfileobj", side_effect=corrupt_copy):
             with self.assertRaises(self.runtime.SourceRuntimeError):
                 self.apply()
         self.assertFalse((self.component / "runtime/source-candidate").exists())

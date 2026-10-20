@@ -6,15 +6,12 @@ them; render.check() prints + fails on any. Self-test (`--self-test`) covers the
 logic with no repo/network dependency.
 """
 from __future__ import annotations
-import hashlib, importlib.util, json, re, subprocess, sys, tempfile, tomllib
+import ast, hashlib, importlib.util, json, re, string, subprocess, sys, tempfile, tomllib, warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
-from historical_only import historical_only, read_historical
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
 
 # The CLIs a plugin is rendered for. Defined HERE and imported by render.py rather than
 # the other way round: render.py already imports this module (render.check), so the
@@ -58,25 +55,11 @@ def _load_caps(root: Path) -> dict:
         return tomllib.load(f)
 
 
-def model_crosscheck(root: Path, *, council_surface=None) -> list[str]:
-    """Active defaults and an explicitly supplied historical surface use registered models."""
+def model_crosscheck(root: Path) -> list[str]:
+    """Every active default uses a registered provider model."""
     caps = _load_caps(root)
-    historical_only(caps)
     models = caps.get("models", {})
     problems = []
-    for mode, cells in (council_surface.MODES.items() if council_surface is not None else ()):
-        for provider, cell in cells.items():
-            m = cell["model"]
-            reg = models.get(provider)
-            if not isinstance(reg, list):
-                problems.append(f"model-crosscheck: capabilities [models] has no list for "
-                                f"provider '{provider}' (used by MODES[{mode!r}])")
-            elif m not in reg:
-                where = next((p for p, v in models.items()
-                              if isinstance(v, list) and m in v), None)
-                extra = f" — it is registered under '{where}'" if where else ""
-                problems.append(f"model-crosscheck: fanout MODES[{mode!r}] model '{m}' not "
-                                f"in capabilities [models].{provider}{extra}")
     defaults = caps.get("settings", {}).get("defaults", {})
     for provider, setting in defaults.items():
         if not isinstance(setting, dict) or "model" not in setting:
@@ -89,21 +72,6 @@ def model_crosscheck(root: Path, *, council_surface=None) -> list[str]:
             problems.append(f"model-crosscheck: settings.defaults.{provider}.model "
                             f"'{m}' not in capabilities [models].{provider}")
     return sorted(set(problems))
-
-
-def _council_model_surface(source: Path):
-    try:
-        spec = importlib.util.spec_from_file_location("_llm_council_fanout", source)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {source}")
-        fanout = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = fanout
-        spec.loader.exec_module(fanout)
-        fanout = sys.modules.pop(spec.name)
-        return fanout
-    except Exception:
-        sys.modules.pop("_llm_council_fanout", None)
-        raise
 
 
 def pricing_coverage(root: Path) -> list[str]:
@@ -254,16 +222,10 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
     stay in render.validate_skill; this only covers what's deterministic here.)"""
     caps = caps or _load_caps(root)
     problems = []
-    try:
-        historical_skills, historical_libs = historical_only(caps)
-    except ValueError as error:
-        return [f"structure: {error}"]
-    declared = {s["name"] for s in caps.get("skills", []) if s["name"] not in historical_skills}
+    declared = {s["name"] for s in caps.get("skills", [])}
     tmpl = {p.name for p in (root / "shared" / "skill-templates").glob("*/") if p.is_dir()}
     # every per_cli declared skill must have a template; every template must be declared
     for s in caps.get("skills", []):
-        if s["name"] in historical_skills:
-            continue
         if s.get("per_cli") and s["name"] not in tmpl:
             problems.append(f"structure: declared per_cli skill '{s['name']}' has no template dir")
     for name in tmpl:
@@ -273,40 +235,9 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
     for cli in CLIS:
         sk = root / "marketplaces" / cli / "plugins" / "khenrix-utils" / "skills"
         if sk.is_dir():
-            for name in historical_skills:
-                if (sk / name).exists() or (sk / name).is_symlink():
-                    problems.append(f"structure: historical-only skill '{name}' in {cli} plugin")
             names = [p.name for p in sk.glob("*/") if (p / "SKILL.md").exists()]
             for n in {x for x in names if names.count(x) > 1}:
                 problems.append(f"structure: duplicate skill '{n}' in {cli} plugin")
-        for name in historical_libs:
-            path = sk.parent / "lib" / name
-            if path.exists() or path.is_symlink():
-                problems.append(f"structure: historical-only library '{name}' in {cli} plugin")
-    return problems
-
-
-def forge_packaging(root: Path) -> list[str]:
-    """A plugin that bundles lib/forge/ must bundle lib/checks.py beside it.
-
-    forge/screen.py imports SECRET_FAIL/SECRET_ALLOW_SHA from this module by path so the
-    patterns have one definition. Its repo-layout candidate dies the moment a marketplace
-    copies the plugin elsewhere, leaving <plugin>/lib/checks.py as the only reachable one;
-    absent that, screen.py raises on a user's first forge run. This moves the failure to
-    `make verify`, where someone is looking.
-
-    Enumerated from DISK, not from CLIS. This is the one restatement of the CLI list that
-    failed OPEN: a fourth plugin bundling lib/forge/ without lib/checks.py is exactly the
-    state the gate exists to catch, and a hardcoded triple would say nothing about it
-    while every other check that iterates CLIS at least fails loudly. The check must cover
-    whatever plugins are actually on disk, so an unlisted one cannot ship past it.
-    """
-    problems = []
-    for lib in sorted((root / "marketplaces").glob("*/plugins/khenrix-utils/lib")):
-        if (lib / "forge").is_dir() and not (lib / "checks.py").is_file():
-            cli = lib.parents[2].name
-            problems.append(f"forge-packaging: {cli} plugin bundles lib/forge/ without "
-                            f"lib/checks.py — screen.py would raise at runtime")
     return problems
 
 
@@ -335,15 +266,8 @@ def _optional(root: Path, module: str, fn: str) -> list[str]:
 
 def run_all(root: Path = ROOT) -> list[str]:
     caps = _load_caps(root)
-    try:
-        historical_only(caps)
-    except ValueError as error:
-        return [f"capabilities.toml: {error}"]
     return (model_crosscheck(root) + pricing_coverage(root)
             + scan_secrets(root) + structure_checks(root, caps)
-            + forge_packaging(root)
-            # THE TWO SIBLING LINTS, appended AFTER forge_packaging — the plans that
-            # specified them both name preserving its position as a constraint.
             + _optional(root, "portability", "run")
             + _optional(root, "charts", "check_charts"))
 
@@ -358,26 +282,17 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 # certified"; what "certified" means is decided by these files, so a change to them has to
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
-                 "shared/lib/fanout/historical_only.py",  # shared active-membership policy
                  "scripts/eval_harness.py",  # decides what the gate RUNS
-                 "scripts/fanout_baseline.py",  # observes the eval's installed CLI versions
                  "scripts/lib/portability.py",  # checks rendered vs native skill script delivery
                  "scripts/lib/checks.py",    # decides what the gate ACCEPTS
                  "Makefile"]                 # names the suites a gate can name
-# eval_harness loads the fanout package for its prompt-only adapter/supervisor bridge.
-# Include its transitive runtime imports; historical council/forge closures remain below.
+# Native evaluation loads the fanout provider/supervisor bridge and its runtime closure.
 GLOBAL_INPUT_DIRS = ["shared/lib/fanout"]
 # Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
-# capabilities.toml + house-style.md (+ overlays); llm-council bundles headless-invocation.md.
+# capabilities.toml + house-style.md (+ overlays).
 SKILL_EXTRA = {
     "khenrix-setup":   ["capabilities.toml", "house-style.md"],
     "khenrix-upgrade": ["capabilities.toml", "house-style.md"],
-    "llm-council":     ["headless-invocation.md"],
-    # forge/screen.py reads SECRET_FAIL + SECRET_ALLOW_SHA out of this module, so editing
-    # the patterns changes what forge screens before launching a fleet — behaviour-
-    # affecting by this closure's own definition, and reachable from no other entry here
-    # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
-    "llm-forge":       ["scripts/lib/checks.py"],
     # The planner's native bundle mapping chooses the runtime and memory files delivered
     # with the skill; a mapping edit must stale its certification even if both trees stay put.
     "llm-fanout-plan": ["capabilities.toml"],
@@ -395,13 +310,6 @@ SKILL_EXTRA = {
 SKILL_EXTRA_DIRS = {
     "khenrix-wiki-add":  ["shared/lib/wikisync"],
     "khenrix-wiki-sync": ["shared/lib/wikisync"],
-    # the council engine moved out of the skill dir; without this line, engine edits
-    # no longer move llm-council's source_hash and precommit stops gating them.
-    "llm-council":       ["shared/lib/council"],
-    # llm-forge drives BOTH shared engines; editing either must stale its receipt. The
-    # skill itself arrives in a later plan — the entry is inert until evals/llm-forge
-    # exists, because receipt_gate only walks skills that have an evals.json.
-    "llm-forge":         ["shared/lib/forge", "shared/lib/council"],
     "llm-fanout-plan":   ["shared/lib/fanout", "components/memory"],
     "llm-fanout-execute": ["shared/lib/fanout", "components/memory"],
     "skill-tuneup": ["shared/skills/llm-fanout-plan", "shared/skills/llm-fanout-execute",
@@ -448,7 +356,7 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
     return list(dict.fromkeys(files))
 
 
-def source_manifest(root: Path, skill: str) -> list:
+def legacy_source_manifest(root: Path, skill: str) -> list:
     """Sorted (relpath, sha256) pairs + canonical skill_facts slice for templated skills."""
     entries = []
     for p in _skill_source_files(root, skill):
@@ -463,6 +371,11 @@ def source_manifest(root: Path, skill: str) -> list:
 
 def source_hash(root: Path, skill: str) -> str:
     return _sha(json.dumps(source_manifest(root, skill), sort_keys=True).encode())
+
+
+def source_manifest(root: Path, skill: str) -> list:
+    """Delivered behavior closure used by current receipts and their consumers."""
+    return delivered_behavior_manifest(root, skill)
 
 
 def eval_set_hash(root: Path, skill: str) -> str:
@@ -481,10 +394,210 @@ def eval_set_hash(root: Path, skill: str) -> str:
     return h.hexdigest()
 
 
+ADOPTION_BASELINE_COMMIT = "60ff42b5f0a566bcf27b4c1a8d94c02bdc7a1ecf"
+ADOPTION_BASELINE_SHA256 = "920fe888600d5fdb9e854913138f4f2ffb39513b40cc2c2a0d032a48d2650a93"
+
+
+def _tree_files(base: Path) -> list[Path]:
+    return sorted(p for p in base.rglob("*") if p.is_file()
+                  and "__pycache__" not in p.parts and p.suffix != ".pyc") if base.is_dir() else []
+
+
+def _file_manifest(root: Path, files) -> list:
+    manifest = []
+    for path in set(files):
+        relative = path.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError(f"delivered source contains a symlink: {relative}")
+        manifest.append([str(relative), _sha(path.read_bytes())])
+    return sorted(manifest)
+
+
+def manifest_hash(manifest: list) -> str:
+    return _sha(json.dumps(manifest, sort_keys=True).encode())
+
+
+def delivered_behavior_manifest(root: Path, skill: str) -> list:
+    """Delivered skill inputs, distinct from the instrument that measures them.
+
+    The legacy combined manifest remains available for historical diagnostics.
+    Runtime extras are not dropped merely because the evaluator also imports them.
+    """
+    files = []
+    for directory in (f"shared/skills/{skill}", f"shared/skill-templates/{skill}"):
+        files.extend(_tree_files(root / directory))
+    for relative in LIB_SCRIPTS + SKILL_EXTRA.get(skill, []):
+        if (root / relative).is_file():
+            files.append(root / relative)
+    directories = list(SKILL_EXTRA_DIRS.get(skill, []))
+    caps = _load_caps(root)
+    bundles = caps.get("skill_delivery", {}).get("skill_bundles", {}).get(skill, {})
+    if bundles:
+        files.append(root / "capabilities.toml")
+    for relative in bundles.values():
+        source = Path(relative)
+        if source.is_absolute() or ".." in source.parts:
+            raise ValueError("delivered bundle source escapes the repository")
+        if (root / source).is_file():
+            files.append(root / source)
+        else:
+            directories.append(relative)
+    if skill == "skill-tuneup":
+        directories.append("shared/lib/fanout")
+        files.extend(root / p for p in ("scripts/lib/checks.py", "scripts/eval_harness.py")
+                     if (root / p).is_file())
+    for directory in directories:
+        runtime_files = _tree_files(root / directory)
+        if directory == "shared/lib/wikisync":
+            runtime_files = [p for p in runtime_files if "tests" not in p.relative_to(root / directory).parts]
+        files.extend(runtime_files)
+    if skill in ("khenrix-setup", "khenrix-upgrade"):
+        for overlay in (caps.get("instructions", {}).get("overlays") or {}).values():
+            if (root / overlay).is_file():
+                files.append(root / overlay)
+    manifest = _file_manifest(root, files)
+    facts = caps.get("skill_facts", {}).get(skill)
+    if facts is not None:
+        manifest.append([f"skill_facts:{skill}", _sha(json.dumps(facts, sort_keys=True).encode())])
+    return sorted(manifest)
+
+
+def criteria_manifest(root: Path, skill: str) -> list:
+    """The target's assertions and fixtures; grading/runner policy is instrument input."""
+    directory = root / "evals" / skill
+    files = _tree_files(directory / "fixtures")
+    if (directory / "evals.json").is_file():
+        files.append(directory / "evals.json")
+    gate = None
+    harness = root / "scripts/eval_harness.py"
+    if harness.is_file():
+        for statement in ast.parse(harness.read_text()).body:
+            if (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Dict)
+                    and any(isinstance(target, ast.Name) and target.id == "DETERMINISTIC_GATED"
+                            for target in statement.targets)):
+                for key, value in zip(statement.value.keys, statement.value.values):
+                    if isinstance(key, ast.Constant) and key.value == skill:
+                        gate = value
+    if gate is not None:
+        # Read the actual declared gate without importing its paid/runtime consumers.
+        for node in ast.walk(gate):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                name = node.value
+                if name.endswith(".py"):
+                    relative = name if "/" in name else f"tests/{name}"
+                    if (root / relative).is_file():
+                        files.append(root / relative)
+        if skill in ("khenrix-wiki-add", "khenrix-wiki-sync"):
+            files.extend(_tree_files(root / "shared/lib/wikisync/tests"))
+    manifest = _file_manifest(root, files)
+    if gate is not None:
+        manifest.append([f"deterministic_gate:{skill}", _sha(ast.dump(gate).encode())])
+    return sorted(manifest)
+
+
+def instrument_manifest(root: Path) -> list:
+    """Actual eager fanout import and deterministic acceptance/assembly surface."""
+    files = [root / p for p in GLOBAL_INPUTS if (root / p).is_file()]
+    for directory in ("shared/lib/fanout", "tests", "shared/lib/wikisync/tests"):
+        files.extend(_tree_files(root / directory))
+    return _file_manifest(root, files)
+
+
+def capture_evaluation_snapshot(root: Path, skill: str, *, judge_config=None, providers=None) -> dict:
+    manifests = {"source_manifest": delivered_behavior_manifest(root, skill),
+                 "criteria_manifest": criteria_manifest(root, skill),
+                 "instrument_manifest": instrument_manifest(root)}
+    selected = []
+    for provider in sorted(set(providers or [])):
+        source = root / "shared/skills" / skill
+        if not (source / "SKILL.md").is_file():
+            source = root / "marketplaces" / provider / "plugins/khenrix-utils/skills" / skill
+            template = root / "shared/skill-templates" / skill / "SKILL.md.tmpl"
+            facts = _load_caps(root).get("skill_facts", {}).get(skill, {}).get(provider)
+            if (not template.is_file() or not isinstance(facts, dict)
+                    or (source / "SKILL.md").read_text() != string.Template(template.read_text()).substitute(facts)):
+                raise ValueError(f"{skill}/{provider} rendered source does not match current template/facts")
+        for path in _tree_files(source):
+            selected.append([f"{provider}:{path.relative_to(source).as_posix()}", _sha(path.read_bytes())])
+        if not (source / "SKILL.md").is_file():
+            raise ValueError(f"{skill}/{provider} selected skill source is missing")
+    return {**manifests, **({"judge_config": dict(judge_config)} if judge_config is not None else {}),
+            **({"selected_input_manifest": selected, "selected_input_hash": manifest_hash(selected)}
+               if providers is not None else {}),
+            "source_hash": manifest_hash(manifests["source_manifest"]),
+            "criteria_hash": manifest_hash(manifests["criteria_manifest"]),
+            "instrument_hash": manifest_hash(manifests["instrument_manifest"])}
+
+
+def _digest(value) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None and value != "0" * 64
+
+
+def instrument_proof_problems(root: Path) -> list[str]:
+    """Validate an owner record, not infer tool use or manufacture a certification."""
+    try:
+        proof = json.loads((root / "evals/instrument-proof.json").read_text())
+        current = instrument_manifest(root)
+        if (proof.get("schema_version") != 1 or proof.get("instrument_manifest") != current
+                or proof.get("instrument_hash") != manifest_hash(current)):
+            raise ValueError("does not bind the current instrument")
+        tests = proof.get("tests")
+        if not isinstance(tests, list) or not tests:
+            raise ValueError("has no actual test counts")
+        for test in tests:
+            counts = test["counts"]
+            if (type(counts.get("tests_run")) is not int or counts["tests_run"] <= 0
+                    or type(counts.get("failed")) is not int or counts["failed"] != 0
+                    or type(counts.get("skipped")) is not int or counts["skipped"] != 0
+                    or not _digest(test.get("evidence_sha256"))
+                    or not test.get("command")
+                    or receipt_path_privacy_problems({"gate_command": test.get("command")}, "instrument")):
+                raise ValueError("has invalid actual test evidence")
+        sessions = proof["native_sessions"]
+        for provider in ("claude", "codex", "agy"):
+            session = sessions[provider]
+            if (session.get("valid") is not True or not isinstance(session.get("session_id"), str)
+                    or session.get("role") != "evaluator" or not _judge_config_valid(session.get("judge_config"), provider)
+                    or not session["session_id"] or not isinstance(session.get("cli_version"), str)
+                    or not session["cli_version"] or not _digest(session.get("raw_capture_sha256"))
+                    or not _digest(session.get("read_tool_evidence_sha256"))):
+                raise ValueError(f"has no valid {provider} session/read evidence")
+        if not _digest(proof.get("private_artifact_manifest_sha256")):
+            raise ValueError("has no complete private artifact manifest digest")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+        return [f"receipt: current instrument proof unavailable or invalid: {error}"]
+    return []
+
+
+def _judge_config_valid(config, provider=None) -> bool:
+    return (isinstance(config, dict) and all(isinstance(config.get(key), str) and config[key]
+                                          for key in ("model", "thinking"))
+            and (provider is None or config["thinking"] == {"claude": "xhigh", "codex": "xhigh", "agy": "high"}.get(provider)))
+
+
+def _historical_adoption_matches(root: Path, skill: str, receipt: Path) -> bool:
+    try:
+        raw = (root / "evals/legacy-adoption-baseline.json").read_bytes()
+        if _sha(raw) != ADOPTION_BASELINE_SHA256:
+            return False
+        baseline = json.loads(raw)
+        if (baseline.get("schema_version") != 1 or baseline.get("baseline_commit") != ADOPTION_BASELINE_COMMIT
+                or baseline.get("status") != "HISTORICAL_UNVERIFIED"):
+            return False
+        entry = baseline["skills"][skill]
+        return (entry["receipt_sha256"] == _sha(receipt.read_bytes())
+                and entry["source_manifest"] == delivered_behavior_manifest(root, skill)
+                and entry["criteria_manifest"] == criteria_manifest(root, skill))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False
+
+
 def _evald_skills(root: Path) -> list[str]:
-    historical_skills, _ = read_historical(root)
     return sorted(p.name for p in (root / "evals").glob("*/")
-                  if (p / "evals.json").exists() and p.name not in historical_skills)
+                  if (p / "evals.json").exists())
 
 
 def _receipt_is_certified(rec: dict) -> bool:
@@ -516,7 +629,7 @@ def _receipt_is_certified(rec: dict) -> bool:
     return str(rec.get("provenance", "")).startswith("seeded")
 
 
-CURRENT_RECEIPT_SCHEMA = 2
+CURRENT_RECEIPT_SCHEMA = 3
 
 
 def receipt_path_privacy_problems(rec: dict, skill: str) -> list[str]:
@@ -564,18 +677,15 @@ def is_self_test_gated(rec: dict) -> bool:
 
 def validate_receipt(root: Path, skill: str, *, final: bool = False,
                      panel: list | None = None) -> list[str]:
-    """The single source of receipt truth. Freshness + certification always; provenance,
-    full panel and per-provider data only when `final`.
+    """V3 source/criteria evidence plus current shared instrument proof.
 
     TWO CALLERS, ONE RULEBOOK: `receipt_gate` (make precommit) calls it with final=False,
     and skill-tuneup's `verify-final-receipt` with final=True. They used to reimplement
     overlapping rules in two files, which is how `verify-final-receipt` could say "proven"
     on a receipt `make precommit` would reject.
 
-    GRANDFATHERING: a receipt with NO `schema_version` key predates the per-provider
-    schema and is judged on freshness alone, so existing receipts do not have to be
-    re-earned until their skills next change. An explicit `"schema_version": null` is NOT
-    the same thing — that is a malformed receipt and is rejected.
+    Old receipts require the immutable unverified adoption boundary; no old receipt
+    can pass final validation or become fresh by recomputing its hashes.
     """
     rp = root / "evals" / skill / "receipt.json"
     if not rp.is_file():
@@ -585,38 +695,70 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
         rec = json.loads(rp.read_text())
     except Exception as e:  # noqa: BLE001
         return [f"receipt: {skill} is unreadable: {e}"]
+    if not isinstance(rec, dict):
+        return [f"receipt: {skill} is malformed (expected an object)"]
 
     problems = receipt_path_privacy_problems(rec, skill)
     if not _receipt_is_certified(rec):
         problems.append(f"receipt: {skill} records a certification that did not pass "
                         f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")
+    version = rec.get("schema_version", 1)
+    if type(version) is not int or version < 1:
+        return problems + [f"receipt: {skill} has a malformed schema_version {version!r}"]
+    if version > CURRENT_RECEIPT_SCHEMA:
+        return problems + [f"receipt: {skill} has an unknown schema_version {version}"]
+    if version < 3:
+        if not _historical_adoption_matches(root, skill, rp):
+            return problems + [f"receipt: {skill} requires fresh V3 evidence; historical baseline does not match"]
+        if final:
+            return problems + [f"receipt: {skill} is HISTORICAL_UNVERIFIED, never a final receipt"]
+        problems.extend(instrument_proof_problems(root))
+        if not problems:
+            warnings.warn(f"receipt: {skill} HISTORICAL_UNVERIFIED; unchanged adoption baseline only", UserWarning)
+        return problems
     # FAIL CLOSED, NEVER RAISE. A gate that crashes on an unreadable closure is worse
     # than one that reports it: the caller (make precommit, verify-final-receipt) gets a
     # traceback instead of a verdict, and a traceback is not a refusal anyone can act on.
     try:
-        if rec.get("source_hash") != source_hash(root, skill):
+        providers = rec.get("providers")
+        if (not isinstance(providers, list) or not providers
+                or not all(isinstance(provider, str) and provider in CLIS for provider in providers)
+                or len(set(providers)) != len(providers)):
+            return problems + [f"receipt: {skill} has invalid evaluated providers"]
+        snapshot = capture_evaluation_snapshot(root, skill, providers=providers)
+        if rec.get("source_hash") != snapshot["source_hash"] or rec.get("source_manifest") != snapshot["source_manifest"]:
             problems.append(f"receipt: {skill} changed since last eval — "
                             f"run `make eval SKILL={skill}`")
-        elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
+        if rec.get("criteria_hash") != snapshot["criteria_hash"] or rec.get("criteria_manifest") != snapshot["criteria_manifest"]:
             problems.append(f"receipt: {skill} eval set changed — "
                             f"run `make eval SKILL={skill}`")
+        if (not isinstance(rec.get("instrument_manifest"), list)
+                or manifest_hash(rec["instrument_manifest"]) != rec.get("instrument_hash")):
+            problems.append(f"receipt: {skill} has invalid measured instrument provenance")
+        if not _judge_config_valid(rec.get("judge_config")):
+            problems.append(f"receipt: {skill} has no actual requested evaluator config")
+        versions = rec.get("cli_versions")
+        required_versions = set(rec.get("providers") or []) | ({rec["judge"]} if rec.get("judge") else set())
+        if (not isinstance(versions, dict) or not versions or not required_versions <= set(versions)
+                or any(not isinstance(value, str) or not value for value in versions.values())):
+            problems.append(f"receipt: {skill} has incomplete measured CLI versions")
+        if (not isinstance(rec.get("selected_input_manifest"), list) or not rec["selected_input_manifest"]
+                or manifest_hash(rec["selected_input_manifest"]) != rec.get("selected_input_hash")
+                or rec["selected_input_manifest"] != snapshot["selected_input_manifest"]):
+            problems.append(f"receipt: {skill} has no authenticated evaluated skill inputs")
+        if not isinstance(rec.get("raw_refs"), list) or not rec["raw_refs"]:
+            problems.append(f"receipt: {skill} has no raw evidence references")
+        else:
+            for ref in rec["raw_refs"]:
+                if (not isinstance(ref, dict) or not _digest(ref.get("sha256"))
+                        or receipt_path_privacy_problems({"gate_command": [ref.get("path")]}, skill)
+                        or ".." in Path(ref["path"]).parts):
+                    problems.append(f"receipt: {skill} has invalid raw evidence references")
+                    break
+        problems.extend(instrument_proof_problems(root))
     except Exception as e:  # noqa: BLE001
         problems.append(f"receipt: {skill} — cannot recompute hashes: {e}")
 
-    # GRANDFATHERING IS NARROW ON PURPOSE: a receipt with no `schema_version` predates
-    # the per-provider schema, so it is exempt from the `per_provider` requirement ONLY.
-    # It is NOT exempt from the final gate's provenance and full-panel checks — those read
-    # `providers` and `provenance`, which every receipt has carried since v1. Exempting
-    # them too would let a v1 receipt print "proven" at the convergence gate having been
-    # neither earned nor full-panel, which is the exact assurance that gate exists to give.
-    v1 = "schema_version" not in rec
-    if not v1:
-        ver = rec["schema_version"]
-        if not isinstance(ver, int):
-            return problems + [f"receipt: {skill} has a malformed schema_version {ver!r}"]
-        if ver > CURRENT_RECEIPT_SCHEMA:
-            return problems + [f"receipt: {skill} has an unknown schema_version {ver} — "
-                               f"this checkout understands up to {CURRENT_RECEIPT_SCHEMA}"]
     if not final:
         return problems
 
@@ -635,8 +777,8 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
         if not want <= got:
             problems.append(f"receipt: {skill} is not FULL-PANEL — earned on "
                             f"{sorted(got)}, needs {sorted(want)}")
-        if not v1 and not rec.get("per_provider"):
-            problems.append(f"receipt: {skill} is schema v2 but carries no per_provider "
+        if not rec.get("per_provider"):
+            problems.append(f"receipt: {skill} is schema v3 but carries no per_provider "
                             f"block — re-run `make eval SKILL={skill}`")
     return problems
 
@@ -737,19 +879,19 @@ def _self_test() -> int:
         ok.append(("pricing_coverage accepts a valid zero rate", _price("0.0") == []))
         ok.append(("pricing_coverage accepts a valid positive rate", _price("2.5") == []))
     # hash stability + closure membership (mutating any listed file WILL change source_hash)
-    ok.append(("source_hash stable", source_hash(ROOT, "llm-council") == source_hash(ROOT, "llm-council")))
-    ok.append(("llm-council closure includes the moved engine",
-               any(r == "shared/lib/council/engine.py"
-                   for r, _ in source_manifest(ROOT, "llm-council"))))
+    ok.append(("source_hash stable", source_hash(ROOT, "llm-fanout-plan") == source_hash(ROOT, "llm-fanout-plan")))
+    ok.append(("fanout closure includes the native provider runtime",
+               any(r == "shared/lib/fanout/providers.py"
+                   for r, _ in source_manifest(ROOT, "llm-fanout-plan"))))
     ok.append(("every skill closure includes reconcile.py (LIB_SCRIPTS)",
                any("reconcile.py" in r for r, _ in source_manifest(ROOT, "expense-review"))))
-    ok.append(("khenrix-setup closure includes capabilities.toml + render.py",
-               {"capabilities.toml", "scripts/render.py"} <=
-               {r for r, _ in source_manifest(ROOT, "khenrix-setup")}))
+    ok.append(("setup behavior includes capabilities; renderer remains instrument",
+               "capabilities.toml" in {r for r, _ in source_manifest(ROOT, "khenrix-setup")}
+               and "scripts/render.py" in {r for r, _ in instrument_manifest(ROOT)}))
     # eval_set_hash stays backward-compatible for a skill with no fixtures/ dir
     ok.append(("eval_set_hash == sha256(evals.json) when no fixtures",
-               eval_set_hash(ROOT, "llm-council") ==
-               _sha((ROOT / "evals" / "llm-council" / "evals.json").read_bytes())))
+               eval_set_hash(ROOT, "llm-fanout-plan") ==
+               _sha((ROOT / "evals" / "llm-fanout-plan" / "evals.json").read_bytes())))
     # the wiki skills route their shared engine into the closure via SKILL_EXTRA_DIRS
     ok.append(("wiki skills map shared/lib/wikisync into their closure",
                SKILL_EXTRA_DIRS.get("khenrix-wiki-add") == ["shared/lib/wikisync"] and
@@ -817,7 +959,7 @@ def _self_test() -> int:
             ok.append(("...and it names the errno cause, not just the path",
                        any("PermissionError" in x for x in _p)))
         (_r / "locked.txt").chmod(0o644)
-    # ---- receipt schema v2 + grandfathering + the single validator -------------
+    # ---- receipt schema v3 + explicit historical refusal ----------------------
     with tempfile.TemporaryDirectory() as _td:
         _r = Path(_td)
         _ev = _r / "evals" / "alpha"
@@ -832,56 +974,46 @@ def _self_test() -> int:
             _ev.joinpath("receipt.json").write_text(json.dumps(rec))
             return " ".join(validate_receipt(_r, "alpha", **kw))
 
-        _fresh = {"source_hash": source_hash(_r, "alpha"),
+        _fresh = {**capture_evaluation_snapshot(_r, "alpha", providers=["claude"],
+                  judge_config={"provider": "claude", "model": "synthetic", "thinking": "xhigh"}),
+                  "schema_version": 3, "providers": ["claude"],
+                  "cli_versions": {"claude": "synthetic"},
                   "eval_set_hash": eval_set_hash(_r, "alpha"),
+                  "raw_refs": [{"path": "workspace/raw.json", "sha256": "a" * 64}],
                   "provenance": "eval", "certified_by": "assertion_delta"}
-        ok.append(("v1 receipt with no schema_version is grandfathered", _v(_fresh) == ""))
+        ok.append(("legacy receipt without explicit baseline is refused",
+                   "requires fresh V3" in _v({**_fresh, "schema_version": 2})))
         ok.append(("explicit null schema_version is malformed, not grandfathered",
                    "malformed" in _v({**_fresh, "schema_version": None})))
         ok.append(("unknown future schema_version is rejected",
                    "unknown schema_version" in _v({**_fresh, "schema_version": 99})))
-        ok.append(("v2 without per_provider passes the NON-final gate",
-                   _v({**_fresh, "schema_version": 2}) == ""))
-        ok.append(("v2 without per_provider FAILS the final gate",
-                   "per_provider" in _v({**_fresh, "schema_version": 2},
+        ok.append(("v3 requires current instrument proof",
+                   "instrument proof" in _v(_fresh)))
+        ok.append(("v3 without per_provider FAILS the final gate",
+                   "per_provider" in _v(_fresh,
                                         final=True, panel=["claude"])))
-        ok.append(("v2 with per_provider passes the final gate",
-                   _v({**_fresh, "schema_version": 2, "providers": ["claude"],
+        ok.append(("v3 with per_provider meets the provider requirement",
+                   "per_provider" not in _v({**_fresh, "providers": ["claude"],
                        "per_provider": {"claude": {"delta": 0.1}}},
-                      final=True, panel=["claude"]) == ""))
-        _seeded = {**_fresh, "schema_version": 2,
+                      final=True, panel=["claude"])))
+        _seeded = {**_fresh,
                    "provenance": "seeded: blessed current committed state"}
         _seeded.pop("certified_by")
-        ok.append(("seeded v2 is legal for the non-final gate", _v(_seeded) == ""))
-        ok.append(("seeded v2 is rejected by the final gate",
+        ok.append(("seeded v3 is rejected by the final gate",
                    "seeded" in _v(_seeded, final=True, panel=["claude"])))
         ok.append(("a single-provider receipt fails the FULL-PANEL final gate",
-                   "FULL-PANEL" in _v({**_fresh, "schema_version": 2,
+                   "FULL-PANEL" in _v({**_fresh,
                                        "providers": ["claude"],
                                        "per_provider": {"claude": {"delta": 0.1}}},
                                       final=True, panel=["claude", "codex", "agy"])))
         ok.append(("a self-test-gated receipt skips the panel requirement",
-                   "FULL-PANEL" not in _v({**_fresh, "schema_version": 2,
+                   "FULL-PANEL" not in _v({**_fresh,
                                            "self_test": True, "providers": ["claude"]},
                                           final=True, panel=["claude", "codex", "agy"])))
-        ok.append(("stale source_hash fails even a grandfathered v1",
+        ok.append(("stale source_hash fails V3",
                    "changed since last eval" in _v({**_fresh, "source_hash": "deadbeef"})))
         ok.append(("a missing receipt is reported, not skipped",
                    "no receipt" in " ".join(validate_receipt(_r, "zeta"))))
-        # Grandfathering is exemption from per_provider ONLY. A v1 receipt must still
-        # face the final gate's provenance and panel checks — both read fields v1 has
-        # always carried, and exempting them would let a v1 receipt print "proven" at the
-        # convergence gate having been neither earned nor full-panel.
-        _v1seed = {**_fresh, "provenance": "seeded: blessed current committed state"}
-        _v1seed.pop("certified_by")
-        ok.append(("a v1 receipt is NOT exempt from the final provenance check",
-                   "seeded, not earned" in _v(_v1seed, final=True, panel=["claude"])))
-        ok.append(("a v1 receipt is NOT exempt from the final panel check",
-                   "FULL-PANEL" in _v({**_fresh, "providers": ["claude"]},
-                                      final=True, panel=["claude", "codex", "agy"])))
-        ok.append(("a v1 receipt IS exempt from the per_provider requirement",
-                   "per_provider" not in _v({**_fresh, "providers": ["claude"]},
-                                            final=True, panel=["claude"])))
 
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")

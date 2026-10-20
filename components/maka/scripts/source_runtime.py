@@ -78,10 +78,20 @@ def file_ref(path):
         os.close(descriptor)
 
 
-def check_ref(reference):
+def remount_reference(reference, transition):
+    if transition is None:
+        return reference
+    require(type(transition) is dict and set(transition) == {"old", "new"} and
+            all(type(value) is int and value > 0 for value in transition.values()) and
+            transition["old"] != transition["new"], "invalid device transition")
+    require(reference["device"] == transition["old"], "nonuniform recorded device")
+    return reference | {"device": transition["new"]}
+
+
+def check_ref(reference, *, device_transition=None):
     require(type(reference) is dict and set(reference) == {"path", "sha256", "bytes", "owner", "mode", "device", "inode"},
             "a full file reference is required")
-    require(file_ref(reference["path"]) == reference, "file reference drift")
+    require(file_ref(reference["path"]) == remount_reference(reference, device_transition), "file reference drift")
 
 
 def load_json(path):
@@ -100,8 +110,8 @@ def relative_path(raw):
     return pathlib.Path(*path.parts)
 
 
-def verify_manifest(reference, *, physical_root=None):
-    check_ref(reference)
+def verify_manifest(reference, *, physical_root=None, device_transition=None):
+    check_ref(reference, device_transition=device_transition)
     document = load_json(reference["path"])
     logical_root = safe_path(document["artifact_root"], absent=physical_root is not None)
     root = safe_path(physical_root) if physical_root is not None else logical_root
@@ -112,7 +122,7 @@ def verify_manifest(reference, *, physical_root=None):
     for raw, entry in document["files"].items():
         relative = relative_path(raw)
         require(entry.get("path") == str(logical_root / relative), "manifest payload path does not match root")
-        check_ref(entry | {"path": str(root / relative)})
+        check_ref(entry | {"path": str(root / relative)}, device_transition=device_transition)
         expected.add(raw)
         directories.update(str(parent) for parent in relative.parents)
     found = set()
@@ -140,7 +150,7 @@ def verify_manifest(reference, *, physical_root=None):
     require(statistics.get("files") == len(document["files"]) and
             statistics.get("bytes") == sum(entry["bytes"] for entry in document["files"].values()) and
             statistics.get("symlinks") == 0, "closure statistics mismatch")
-    check_ref(reference)
+    check_ref(reference, device_transition=device_transition)
     return document
 
 
@@ -205,7 +215,42 @@ def write_private(path, value):
         os.fsync(stream.fileno())
 
 
-def staged_manifest(document, reference, staging, slot):
+def copy_payload(reference, destination, *, device_transition=None):
+    check_ref(reference, device_transition=device_transition)
+    expected = remount_reference(reference, device_transition)
+    source = os.open(reference["path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(source, "rb") as incoming:
+        before = os.fstat(incoming.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and
+                (before.st_dev, before.st_ino, before.st_size, before.st_uid, stat.S_IMODE(before.st_mode)) ==
+                tuple(expected[key] for key in ("device", "inode", "bytes", "owner", "mode")),
+                "source identity changed before copy")
+        parent = os.open(safe_path(destination.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            target = os.open(destination.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=parent)
+            with os.fdopen(target, "wb") as outgoing:
+                shutil.copyfileobj(incoming, outgoing)
+                outgoing.flush()
+                after = os.fstat(incoming.fileno())
+                identity = lambda metadata: (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                                             metadata.st_uid, metadata.st_mode, metadata.st_nlink,
+                                             metadata.st_mtime_ns, metadata.st_ctime_ns)
+                require(identity(before) == identity(after), "source changed during copy")
+                check_ref(reference, device_transition=device_transition)
+                os.fchmod(outgoing.fileno(), reference["mode"])
+                installed = file_ref(destination)
+                created = os.fstat(outgoing.fileno())
+                require((installed["device"], installed["inode"]) == (created.st_dev, created.st_ino),
+                        "destination replaced during copy")
+                require(all(installed[key] == reference[key] for key in ("sha256", "bytes", "owner", "mode")),
+                        "staged copy differs from reviewed payload")
+                return installed
+        finally:
+            os.close(parent)
+
+
+def staged_manifest(document, reference, staging, slot, *, device_transition=None):
     result = copy.deepcopy(document)
     result["source_schema"] = result["schema"]
     result["schema"] = "source-runtime-manifest-v1"
@@ -216,10 +261,7 @@ def staged_manifest(document, reference, staging, slot):
     for raw, original in document["files"].items():
         destination = staging / relative_path(raw)
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.copyfile(original["path"], destination, follow_symlinks=False)
-        destination.chmod(original["mode"])
-        installed = file_ref(destination)
-        require(all(installed[key] == original[key] for key in ("sha256", "bytes", "owner", "mode")), "staged copy differs from reviewed payload")
+        installed = copy_payload(original, destination, device_transition=device_transition)
         installed["path"] = str(slot / raw)
         result["files"][raw] = installed
         mappings[original["path"]] = installed
@@ -297,22 +339,27 @@ def move_new(left, right):
     sync_move(left, right)
 
 
-def matches(reference, path):
+def matches(reference, path, *, device_transition=None):
     if reference is None:
         return not pathlib.Path(path).exists() and not pathlib.Path(path).is_symlink()
     if not pathlib.Path(path).exists():
         return False
-    return file_ref(path) | {"path": reference["path"]} == reference
+    return file_ref(path) | {"path": reference["path"]} == remount_reference(reference, device_transition)
 
 
-def tree_matches(reference, root):
+def tree_matches(reference, root, *, device_transition=None):
     if reference is None:
         return not pathlib.Path(root).exists() and not pathlib.Path(root).is_symlink()
     path = pathlib.Path(root) / "runtime-manifest.json"
-    if not matches(reference, path):
+    if not matches(reference, path, device_transition=device_transition):
         return False
-    verify_manifest(reference | {"path": str(path)}, physical_root=root)
+    verify_manifest(reference | {"path": str(path)}, physical_root=root, device_transition=device_transition)
     return True
+
+
+def bound_tree_matches(bound, root):
+    return tree_matches(bound["installed_manifest"] if bound else None, root,
+                        device_transition=bound.get("device_transition") if bound else None)
 
 
 def require_no_transaction(state):
@@ -321,7 +368,7 @@ def require_no_transaction(state):
 
 
 def state_matches(bound, slot, receipt):
-    return tree_matches(bound["installed_manifest"] if bound else None, slot) and matches(bound["receipt"] if bound else None, receipt)
+    return bound_tree_matches(bound, slot) and matches(bound["receipt"] if bound else None, receipt)
 
 
 def publish_receipt(pending, receipt, before, after):
@@ -340,7 +387,15 @@ def publish_receipt(pending, receipt, before, after):
     require(matches(after, receipt), "published receipt changed")
 
 
+def verify_transaction_source(transaction):
+    if transaction["kind"] == "remount-retire":
+        document = verify_manifest(transaction["source_manifest"])
+        require(document.get("remount_retire_plan_sha256") == transaction["reviewed_plan_sha256"],
+                "source snapshot differs from reviewed remount plan")
+
+
 def finish_transaction(transaction, journal):
+    verify_transaction_source(transaction)
     slot, receipt = pathlib.Path(transaction["slot"]), pathlib.Path(transaction["receipt"])
     before, after = transaction["before"], transaction["after"]
     if transaction["kind"] == "apply" and before:
@@ -353,29 +408,30 @@ def finish_transaction(transaction, journal):
         if matches(before["receipt"], pending):
             move_new(pending, archived_receipt)
     if before:
-        require(tree_matches(before["installed_manifest"], transaction["tree_archive"]), "archived tree drift")
+        require(bound_tree_matches(before, transaction["tree_archive"]), "archived tree drift")
         require(matches(before["receipt"], transaction["receipt_archive"]), "archived receipt drift")
     require(state_matches(after, slot, receipt), "committed source state drift")
+    verify_transaction_source(transaction)
     journal.unlink()
     sync_directory(journal.parent)
 
 
 def recover_transaction(transaction, journal):
+    verify_transaction_source(transaction)
     slot, receipt = pathlib.Path(transaction["slot"]), pathlib.Path(transaction["receipt"])
     before, after = transaction["before"], transaction["after"]
     if state_matches(after, slot, receipt):
         finish_transaction(transaction, journal)
         return dict(status="recovered", outcome="committed")
-    before_tree = before["installed_manifest"] if before else None
     after_tree = after["installed_manifest"] if after else None
-    if not tree_matches(before_tree, slot):
+    if not bound_tree_matches(before, slot):
         require(tree_matches(after_tree, slot), "unknown tree blocks recovery")
         if before is None:
             move_new(slot, pathlib.Path(transaction["tree_archive"]))
         else:
             candidates = [pathlib.Path(transaction[key]) for key in ("tree_exchange", "tree_archive")]
             candidates = list(dict.fromkeys(candidates))
-            found = [path for path in candidates if tree_matches(before_tree, path)]
+            found = [path for path in candidates if bound_tree_matches(before, path)]
             require(len(found) == 1, "previous bound tree is unavailable")
             if slot.exists():
                 exchange(found[0], slot)
@@ -398,6 +454,7 @@ def recover_transaction(transaction, journal):
             else:
                 move_new(found[0], receipt)
     require(state_matches(before, slot, receipt), "recovered source state drift")
+    verify_transaction_source(transaction)
     journal.unlink()
     sync_directory(journal.parent)
     return dict(status="recovered", outcome="restored")
@@ -406,22 +463,25 @@ def recover_transaction(transaction, journal):
 def execute_transaction(transaction, journal):
     slot, receipt = pathlib.Path(transaction["slot"]), pathlib.Path(transaction["receipt"])
     before, after = transaction["before"], transaction["after"]
+    verify_transaction_source(transaction)
     require(state_matches(before, slot, receipt), "source state changed before cutover")
     write_private(journal, transaction)
     sync_directory(journal.parent)
     try:
+        verify_transaction_source(transaction)
         require(state_matches(before, slot, receipt), "source state changed before exchange")
         other = pathlib.Path(transaction["tree_exchange"])
         if before and after:
             exchange(other, slot)
             sync_move(other, slot)
-            require(tree_matches(before["installed_manifest"], other), "exchanged previous tree drift")
+            require(bound_tree_matches(before, other), "exchanged previous tree drift")
         elif after:
             move_new(other, slot)
         else:
             move_new(slot, other)
-            require(tree_matches(before["installed_manifest"], other), "retired tree drift")
+            require(bound_tree_matches(before, other), "retired tree drift")
         require(matches(before["receipt"] if before else None, receipt), "active receipt changed during cutover")
+        verify_transaction_source(transaction)
         require(tree_matches(after["installed_manifest"] if after else None, slot), "installed tree drift before publication")
         if after:
             publish_receipt(pathlib.Path(transaction["receipt_exchange"]), receipt,
@@ -447,6 +507,83 @@ def new_backup(receipt):
     sync_directory(backup.parent)
     sync_directory(backup.parent.parent)
     return backup
+
+
+def make_remount_retire_plan(component, state, source_snapshot):
+    """Review one uniform device renumbering; never change the frozen evidence."""
+    require_no_transaction(state)
+    slot, receipt = paths(component, state)
+    current_receipt = file_ref(receipt)
+    require(current_receipt["mode"] == 0o600, "receipt must have mode 0600")
+    record = load_json(receipt)
+    require(record.get("schema") == "source-runtime-receipt-v1" and record.get("slot") == str(slot), "invalid companion receipt")
+    installed = record["installed_manifest"]
+    require(installed["path"] == str(slot / "runtime-manifest.json"), "receipt manifest outside companion")
+    transition = dict(old=installed["device"], new=file_ref(installed["path"])["device"])
+    document = verify_manifest(installed, device_transition=transition)
+    reference = record["source_manifest"]
+    require(document.get("source_manifest") == reference, "source provenance differs from receipt")
+    source = verify_manifest(reference, device_transition=transition)
+    snapshot = safe_path(source_snapshot, absent=True)
+    require(not snapshot.exists(), "source snapshot destination exists")
+    parent = safe_path(snapshot.parent)
+    require(parent.stat().st_uid == os.getuid() and stat.S_IMODE(parent.stat().st_mode) == 0o700,
+            "source snapshot parent must be owner-only")
+    source_root = pathlib.Path(source["artifact_root"])
+    for left, right in ((source_root, component), (source_root, state), (snapshot, source_root),
+                        (snapshot, component), (snapshot, state)):
+        left, right = pathlib.Path(left), pathlib.Path(right)
+        require(left != right and left not in right.parents and right not in left.parents,
+                "source snapshot or source overlaps delivery state")
+    require(file_ref(receipt) == current_receipt, "receipt changed during remount review")
+    return dict(schema="source-runtime-remount-retire-plan-v1", component_root=str(component), state_root=str(state),
+                slot=str(slot), receipt=str(receipt), source_manifest=reference, source_snapshot=str(snapshot),
+                device_transition=transition, source_statistics=source["statistics"],
+                installed_statistics=document["statistics"],
+                previous=dict(receipt=current_receipt, installed_manifest=installed, device_transition=transition))
+
+
+def apply_remount_retire_plan(plan, approved_sha256):
+    require(digest_json(plan) == approved_sha256, "reviewed plan digest mismatch")
+    require(plan.get("schema") == "source-runtime-remount-retire-plan-v1", "invalid remount retirement plan")
+    component, state = pathlib.Path(plan["component_root"]), pathlib.Path(plan["state_root"])
+    snapshot = pathlib.Path(plan["source_snapshot"])
+    with lock_state(state):
+        require(make_remount_retire_plan(component, state, snapshot) == plan, "reviewed remount plan is stale")
+        slot, receipt = paths(component, state)
+        backup = new_backup(receipt)
+        write_private(backup / "remount-retire-plan.json", plan)
+        staging = backup / "source-snapshot"
+        staging.mkdir(mode=0o700)
+        source = verify_manifest(plan["source_manifest"], device_transition=plan["device_transition"])
+        document = staged_manifest(source, plan["source_manifest"], staging, snapshot,
+                                   device_transition=plan["device_transition"])
+        document["schema"] = source["schema"]
+        for key in ("source_schema", "installed"):
+            if key in source:
+                document[key] = source[key]
+            else:
+                document.pop(key, None)
+        document["remount_retire_plan_sha256"] = approved_sha256
+        write_private(staging / "runtime-manifest.json", document)
+        sync_tree(staging)
+        source_reference = file_ref(staging / "runtime-manifest.json") | {"path": str(snapshot / "runtime-manifest.json")}
+        require(tree_matches(source_reference, staging), "source snapshot drift")
+        require(make_remount_retire_plan(component, state, snapshot) == plan, "reviewed remount plan is stale")
+        # Publish a new immutable source; cutover still checks the exact old receipt/tree.
+        move_new(staging, snapshot)
+        verify_manifest(source_reference)
+        write_private(backup / "source-reference.json", source_reference)
+        sync_directory(backup)
+        transaction = dict(schema="source-runtime-transaction-v1", kind="remount-retire", slot=str(slot), receipt=str(receipt),
+                           reviewed_plan_sha256=approved_sha256, source_manifest=source_reference,
+                           before=plan["previous"], after=None, tree_exchange=str(backup / "rolled-back-candidate"),
+                           tree_archive=str(backup / "rolled-back-candidate"),
+                           receipt_exchange=str(backup / "rolled-back-receipt.json"),
+                           receipt_archive=str(backup / "rolled-back-receipt.json"))
+        execute_transaction(transaction, receipt.parent / "transaction.json")
+        return dict(status="retired", installed=False, backup=str(backup), source_manifest=source_reference,
+                    source_reference=str(backup / "source-reference.json"))
 
 
 def apply_plan(plan, approved_sha256):
@@ -536,10 +673,13 @@ def recover(component, state, transaction_sha256):
         require(journal_reference["mode"] == 0o600 and journal_reference["sha256"] == transaction_sha256, "reviewed transaction digest mismatch")
         transaction = load_json(journal)
         require(transaction.get("schema") == "source-runtime-transaction-v1" and
-                transaction.get("kind") in {"apply", "rollback", "retire"} and
+                transaction.get("kind") in {"apply", "rollback", "retire", "remount-retire"} and
                 transaction.get("slot") == str(slot) and transaction.get("receipt") == str(receipt), "invalid transaction binding")
         for bound in (transaction["before"], transaction["after"]):
             if bound:
+                require("device_transition" not in bound or
+                        (transaction["kind"] == "remount-retire" and bound is transaction["before"] and
+                         transaction["after"] is None), "device transition outside remount retirement")
                 require(bound["receipt"]["path"] == str(receipt) and
                         bound["installed_manifest"]["path"] == str(slot / "runtime-manifest.json"), "transaction state outside companion")
         for key in ("tree_exchange", "tree_archive", "receipt_exchange", "receipt_archive"):
@@ -552,7 +692,8 @@ def recover(component, state, transaction_sha256):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("plan", "apply", "doctor", "rollback", "retire", "recover"))
+    parser.add_argument("command", choices=("plan", "apply", "doctor", "rollback", "retire", "recover",
+                                            "remount-retire-plan", "remount-retire-apply"))
     layout = canonical_layout()
     parser.add_argument("--component-root", type=pathlib.Path, default=layout.component)
     parser.add_argument("--state-root", type=pathlib.Path, default=layout.state)
@@ -561,9 +702,16 @@ def main():
     parser.add_argument("--plan-sha256")
     parser.add_argument("--receipt-sha256")
     parser.add_argument("--transaction-sha256")
+    parser.add_argument("--source-snapshot", type=pathlib.Path, help="new private source snapshot outside component and state")
     args = parser.parse_args()
     try:
-        if args.command == "plan":
+        if args.command == "remount-retire-plan":
+            require(args.source_snapshot is not None, "remount retirement plan requires --source-snapshot")
+            result = make_remount_retire_plan(args.component_root, args.state_root, args.source_snapshot)
+        elif args.command == "remount-retire-apply":
+            require(args.plan is not None and args.plan_sha256 is not None, "remount retirement apply requires --plan and --plan-sha256")
+            result = apply_remount_retire_plan(load_json(args.plan), args.plan_sha256)
+        elif args.command == "plan":
             require(args.input_ref is not None, "plan requires --input-ref")
             result = make_plan(load_json(args.input_ref), args.component_root, args.state_root)
         elif args.command == "apply":

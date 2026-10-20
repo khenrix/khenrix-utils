@@ -203,6 +203,77 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+@pytest.mark.parametrize("caps,total", [({"claude": 1, "codex": 2, "agy": 10}, 13),
+                                        ({"claude": 2, "codex": 3, "agy": 4}, 9)])
+def test_independent_iteration_caps_reserve_the_sum_and_round_trip(caps, total):
+    policy = fanout.ProviderPolicyV1(iteration_limits=caps)
+    assert policy.projected_turns == total
+    assert policy.max_iterations == max(caps.values())
+    assert fanout.ProviderPolicyV1.from_dict(policy.to_dict(), where="policy") == policy
+    caps["claude"] = 9
+    assert policy.iteration_cap("claude") in {1, 2}
+
+
+@pytest.mark.parametrize("panel", [("a",), ("a", "b"), ("a", "b", "c", "d")])
+def test_every_configured_identity_is_required(panel):
+    policy = fanout.ProviderPolicyV1(executor_ids=panel)
+    assert policy.minimum_success == len(panel)
+    assert policy.projected_turns == 2 * len(panel)
+    if len(panel) > 1:
+        with pytest.raises(PlanValidationError, match="all configured"):
+            fanout.ProviderPolicyV1(executor_ids=panel, minimum_success=len(panel) - 1)
+
+
+@pytest.mark.parametrize("changes", [{"rounds": 0}, {"rounds": 11},
+    {"iteration_limits": {"claude": 0}}, {"iteration_limits": {"claude": 11}},
+    {"iteration_limits": {"unknown": 2}}, {"executor_ids": ("a", "a")}, {"retries": 1}])
+def test_invalid_caps_identities_and_automatic_retries_fail_before_launch(changes):
+    with pytest.raises(PlanValidationError):
+        fanout.ProviderPolicyV1(**changes)
+
+
+@pytest.mark.parametrize("rounds", [1, 2, 10])
+def test_uniform_legacy_rounds_remains_the_iteration_cap_alias(rounds):
+    policy = fanout.ProviderPolicyV1(rounds=rounds)
+    assert policy.iteration_cap("codex") == rounds
+    assert policy.projected_turns == 3 * rounds
+
+
+def test_owner_action_retains_owned_paths_checks_and_proposal_dependencies():
+    data = _data()
+    action = data["tasks"][1]
+    action.update(execution_class="orchestrator-action", required_skills=[],
+                  none_reason="Owner applies the reviewed proposal.", provider_policy=None,
+                  owned_paths=["shared/lib/fanout/plan.py"],
+                  checks=[{"argv": ["python", "-m", "pytest", "-q"], "cwd": "",
+                           "env_allowlist": [], "timeout": 30, "accepted_exit_codes": [0],
+                           "expected_artifacts": []}])
+    plan = _plan(data)
+    assert plan.tasks[1].depends_on == ("prepare",)
+    assert plan.tasks[1].owned_paths == ("shared/lib/fanout/plan.py",)
+    assert plan.tasks[1].checks[0].argv == ("python", "-m", "pytest", "-q")
+    assert _plan(plan.to_dict()) == plan
+
+
+@pytest.mark.parametrize("owned_paths,checks,accepted", [(["src/change.py"], True, True),
+                                                       ([], True, False), (["src/change.py"], False, False)])
+def test_owner_handover_authority_requires_owned_paths_and_declared_checks(owned_paths, checks, accepted):
+    data = _v2_data()
+    owner = data["tasks"][0]
+    owner.update(execution_class="orchestrator-action", required_skills=[],
+                 none_reason="Owner applies proposal.", provider_policy=None, owned_paths=owned_paths)
+    if not checks:
+        owner["checks"] = []
+    data["tasks"][1]["dependency_modes"] = {"prepare": "handover"}
+    if accepted:
+        plan = plan_module.load_fanout_plan(data)
+        assert plan.tasks[1].dependency_modes["prepare"] == "handover"
+        assert plan.tasks[0].execution_class == "orchestrator-action"
+    else:
+        with pytest.raises(PlanValidationError, match="handover"):
+            plan_module.load_fanout_plan(data)
+
+
 def _data() -> dict[str, object]:
     return {
         "schema_version": "v1",
@@ -215,8 +286,8 @@ def _data() -> dict[str, object]:
             "executor_ids": ["claude", "codex", "agy"],
             "rounds": 2,
             "timeout": 120,
-            "retries": 1,
-            "minimum_success": 2,
+            "retries": 0,
+            "minimum_success": 3,
         },
         "source_steps": [
             {"id": "Task 1/Step 1", "sha256": _hash("step one")},
@@ -264,7 +335,7 @@ def _data() -> dict[str, object]:
                     "executor_ids": ["claude", "codex"],
                     "rounds": 3,
                     "timeout": 300,
-                    "retries": 2,
+                    "retries": 0,
                     "minimum_success": 2,
                 },
             },
@@ -474,7 +545,7 @@ def test_orchestrator_actions_are_barriers_without_provider_work():
 
 @pytest.mark.parametrize("mutate", [
     lambda value: value["defaults"].__setitem__("executor_ids", ["maka"]),  # type: ignore[index]
-    lambda value: value["defaults"].__setitem__("rounds", 4),  # type: ignore[index]
+    lambda value: value["defaults"].__setitem__("rounds", 11),  # type: ignore[index]
     lambda value: value["defaults"].__setitem__("minimum_success", 4),  # type: ignore[index]
     lambda value: value["tasks"][0]["provider_policy"].__setitem__("timeout", 0),  # type: ignore[index]
     lambda value: value["tasks"][0]["provider_policy"].__setitem__("retries", 4),  # type: ignore[index]
@@ -489,11 +560,11 @@ def test_provider_policy_has_bounded_admitted_executor_settings(mutate):
 
 
 @pytest.mark.parametrize("override", [
-    {"executor_ids": ["claude"], "minimum_success": 1},
+    {"executor_ids": ["claude", "claude"], "minimum_success": 2},
     {"minimum_success": 1},
 ])
-def test_default_policy_requires_two_distinct_executors_and_two_successes(override):
-    """A default single seat violates the plan's mandatory redundant execution contract."""
+def test_default_policy_requires_every_unique_configured_executor(override):
+    """Missing identities cannot be masked by a lower success threshold."""
     data = _data()
     data["defaults"].update(override)  # type: ignore[index]
 
@@ -502,11 +573,11 @@ def test_default_policy_requires_two_distinct_executors_and_two_successes(overri
 
 
 @pytest.mark.parametrize("override", [
-    {"executor_ids": ["claude"], "minimum_success": 1},
+    {"executor_ids": ["claude", "claude"], "minimum_success": 2},
     {"minimum_success": 1},
 ])
-def test_task_policy_requires_two_distinct_executors_and_two_successes(override):
-    """A task override must not weaken the default multi-seat safety floor."""
+def test_task_policy_requires_every_unique_configured_executor(override):
+    """A task override cannot omit configured expected identities."""
     data = _data()
     data["tasks"][0]["provider_policy"] = copy.deepcopy(data["defaults"])  # type: ignore[index]
     data["tasks"][0]["provider_policy"].update(override)  # type: ignore[index]

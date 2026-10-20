@@ -7,7 +7,6 @@ import os
 import re
 import stat
 import tempfile
-import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping, Sequence
@@ -15,7 +14,6 @@ from urllib.parse import unquote, urlsplit
 
 from .artifacts import ArtifactStore, canonical_json
 from .errors import SkillAdmissionError
-from .historical_only import historical_only
 from .plan import FanoutPlanV1, FanoutPlanV2, effective_skills
 from .runstate import RunInputs
 from .verification import TargetEvidenceEnvelope, read_target_evidence
@@ -347,22 +345,6 @@ class SkillResolver:
         candidates: list[ResolvedSkill] = []
         for root in self.roots:
             root_path = _safe_existing_directory(root.path, f"skill root {root.identity}")
-            if root_path.name == "skills" and root_path.parent.name == "shared":
-                manifest = root_path.parent.parent / "capabilities.toml"
-                own_shared = Path(__file__).resolve().parents[2]
-                known_source = own_shared.name == "shared" and root_path == own_shared / "skills"
-                if manifest.is_file() or known_source:
-                    try:
-                        if manifest.is_symlink():
-                            raise ValueError("managed skill capability manifest is a symlink")
-                        with manifest.open("rb") as handle:
-                            caps = tomllib.load(handle)
-                        if known_source or "historical_only" in caps:
-                            retired, _ = historical_only(caps)
-                            if name in retired:
-                                raise SkillAdmissionError(f"historical-only skill cannot be admitted: {name}")
-                    except (OSError, ValueError) as error:
-                        raise SkillAdmissionError(f"managed historical skill policy is unavailable: {error}") from error
             skill_path = root_path / name
             if skill_path.exists() or skill_path.is_symlink():
                 candidates.append(self._resolve_from_root(root, name))

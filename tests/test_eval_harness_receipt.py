@@ -4,7 +4,9 @@
 code. Neither asks whether anything was TESTED — so an all-skipped run, a command that runs
 zero tests, and a certifier weakened between runs all left a fresh green receipt.
 """
+from collections import Counter
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,15 +20,20 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import checks  # noqa: E402
 import eval_harness  # noqa: E402
-import fanout_baseline  # noqa: E402
+from test_eval_receipt_v3 import JUDGE_CONFIG, put, write_proof
 
 
 @pytest.mark.parametrize("judge,effort", [("codex", "xhigh"), ("claude", "xhigh"), ("agy", "high")])
 def test_judge_launch_uses_review_effort_without_changing_executor_config(tmp_path, monkeypatch, judge, effort):
     cfg = {judge: {"model": "explicit-model", "thinking": "medium"}}
     argv = []
+    registry = eval_harness.eval_runtime.ProviderRegistry.default(
+        version_probe=lambda _: "1.0.0", contract_probe=lambda _: None)
     def turn(provider, prompt, config, workdir, **kwargs):
-        spec = eval_harness.eval_runtime.build_spec(provider, prompt, config)
+        spec = eval_harness.eval_runtime.build_native_spec(
+            provider, prompt, config, cwd=tmp_path, registry=registry, role=kwargs["role"])
+        assert spec.thinking == effort
+        assert kwargs["readonly"] is True and kwargs["retries"] == 0
         argv.append(spec.argv)
         return '{"winner":"A"}', {"valid": True}
     monkeypatch.setattr(eval_harness, "run_text", turn)
@@ -39,7 +46,7 @@ def test_judge_launch_uses_review_effort_without_changing_executor_config(tmp_pa
     elif judge == "claude":
         assert argv[0][argv[0].index("--effort") + 1] == effort
     else:
-        assert "--effort" not in argv[0]  # no-tools agy tier stays in its model
+        assert effort in argv[0]
 
 
 @pytest.mark.parametrize("providers,judge", [(("codex", "codex"), "claude"),
@@ -87,9 +94,11 @@ def measured_campaign(tmp_path, monkeypatch):
     (eval_dir / "evals.json").write_text(json.dumps({"evals": [
         {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]},
     ]}))
-    skill_dir = tmp_path / "skill"
-    skill_dir.mkdir()
+    skill_dir = tmp_path / "shared/skills/chunk-map"
+    skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# Test skill\nAnswer directly.\n")
+    shutil.copy2(ROOT / "capabilities.toml", tmp_path / "capabilities.toml")
+    monkeypatch.setattr(eval_harness, "ROOT", tmp_path)
     monkeypatch.setattr(eval_harness, "EVALS_ROOT", eval_dir.parent)
     monkeypatch.setattr(eval_harness, "skill_source_dir", lambda _skill, _provider: skill_dir)
     monkeypatch.setattr(eval_harness.eval_runtime, "resolve_mode_config", lambda _args: {
@@ -127,7 +136,7 @@ def test_real_eval_measures_before_spend_and_records_versions(measured_campaign,
         probes.append((provider, len(calls)))
         return {"codex": b"codex-cli 0.160.0\n", "claude": b"2.1.284 (Claude Code)\n"}[provider]
 
-    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", probe)
     assert eval_harness.run(args) == 0
 
     expected = {"claude": "2.1.284 (Claude Code)", "codex": "codex-cli 0.160.0"}
@@ -144,7 +153,7 @@ def test_real_eval_measures_before_spend_and_records_versions(measured_campaign,
 
 
 @pytest.mark.parametrize("failure", [b"", b"multi\nline", b"\xff", b"x" * 257,
-                                    fanout_baseline.BaselineError("installed CLI unavailable")])
+                                    RuntimeError("installed CLI unavailable")])
 def test_failed_initial_version_measurement_refuses_receipt_and_spend(
     measured_campaign, monkeypatch, failure, capsys,
 ):
@@ -155,7 +164,7 @@ def test_failed_initial_version_measurement_refuses_receipt_and_spend(
             raise failure
         return failure
 
-    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", probe)
     assert eval_harness.run(args) == 1
     assert calls == [] and artifacts == []
     assert not (eval_dir / "receipt.json").exists()
@@ -178,7 +187,7 @@ def test_post_campaign_version_failure_keeps_raw_results_without_receipt(
             return b"2.1.284 (Claude Code)\n"
         return after if calls else b"codex-cli 0.160.0\n"
 
-    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", probe)
     assert eval_harness.run(args) == 1
     assert len(calls) == 5
     assert [path.read_text() for path, _raw in artifacts] == [raw for _path, raw in artifacts]
@@ -208,38 +217,78 @@ def test_seeded_receipt_never_claims_measured_cli_versions(tmp_path, monkeypatch
     assert "cli_versions" not in receipt
 
 
+def test_campaign_source_change_after_first_turn_keeps_raw_without_receipt(
+    measured_campaign, monkeypatch, capsys,
+):
+    args, eval_dir, calls, artifacts = measured_campaign
+    real_boundary = eval_harness.run_text
+
+    def changed_turn(*positional, **keywords):
+        result = real_boundary(*positional, **keywords)
+        if len(calls) == 1:
+            (eval_harness.ROOT / "shared/skills/chunk-map/SKILL.md").write_text("Changed after measurement began.\n")
+        return result
+
+    monkeypatch.setattr(eval_harness, "run_text", changed_turn)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda provider: (provider + " version").encode())
+    assert eval_harness.run(args) == 1
+    assert len(calls) == 5
+    assert len(artifacts) == 5
+    assert not (eval_dir / "receipt.json").exists()
+    assert "changed during campaign" in capsys.readouterr().err
+
+
+def test_eval_edit_between_loading_and_snapshot_refuses_before_spend(
+    measured_campaign, monkeypatch, capsys,
+):
+    args, eval_dir, calls, artifacts = measured_campaign
+    original_loader = eval_harness.load_evals
+
+    def changed_loader(skill):
+        loaded = original_loader(skill)
+        (eval_dir / "evals.json").write_text(json.dumps({"evals": [
+            {"id": 0, "name": "sample", "prompt": "New prompt", "assertions": ["new criterion"]}]}))
+        return loaded
+
+    monkeypatch.setattr(eval_harness, "load_evals", changed_loader)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda provider: (provider + " version").encode())
+    assert eval_harness.run(args) == 1
+    assert calls == [] and artifacts == []
+    assert not (eval_dir / "receipt.json").exists()
+    assert "criteria" in capsys.readouterr().err
+
+
 def test_old_development_cli_measurement_does_not_expire_unchanged_receipt(
     tmp_path, monkeypatch,
 ):
-    receipt = json.loads((ROOT / "evals/chunk-map/receipt.json").read_text())
-    receipt["cli_versions"] = {"codex": "codex-cli 0.159.0"}
+    put(tmp_path, "capabilities.toml", "[instructions]\n")
+    put(tmp_path, "evals/chunk-map/evals.json", "{}\n")
+    source = put(tmp_path, "shared/skills/chunk-map/SKILL.md", "body\n")
+    receipt = {**checks.capture_evaluation_snapshot(tmp_path, "chunk-map", providers=["codex"]),
+        "providers": ["codex"],
+        "judge_config": JUDGE_CONFIG,
+        "schema_version": 3, "provenance": "eval", "certified_by": "delta-gate",
+        "raw_refs": [{"path": "workspace/raw.json", "sha256": "a" * 64}],
+        "cli_versions": {"codex": "codex-cli 0.159.0"}}
     eval_dir = tmp_path / "evals/chunk-map"
-    eval_dir.mkdir(parents=True)
+    eval_dir.mkdir(parents=True, exist_ok=True)
     (eval_dir / "receipt.json").write_text(json.dumps(receipt))
-    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: receipt["source_hash"])
-    monkeypatch.setattr(checks, "eval_set_hash", lambda _root, _skill: receipt["eval_set_hash"])
-    monkeypatch.setattr(fanout_baseline, "installed_version",
+    write_proof(tmp_path)
+    monkeypatch.setattr(eval_harness, "observe_cli_version",
                         lambda _provider: pytest.fail("receipt reader probed host CLI"))
     assert checks.validate_receipt(tmp_path, "chunk-map") == []
 
-    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: "changed-source")
+    source.write_text("changed body\n")
     assert any("changed since last eval" in problem
                for problem in checks.validate_receipt(tmp_path, "chunk-map"))
 
 
-def test_the_deterministic_gate_runs_the_whole_forge_suite_not_three_modules():
-    """The receipt names `forge-handover-cli-gc-suites` and the Makefile names 31 suites.
-
-    The omitted set includes `test_forge_packaging.py` — the module that checks rendered
-    façade resolution and the quote prose — so breaking the façade left the gate green.
-    """
-    cmd = eval_harness.DETERMINISTIC_GATED["llm-forge"]
+def test_executor_receipt_gate_covers_owner_and_recovery_contracts():
+    cmd = eval_harness.DETERMINISTIC_GATED["llm-fanout-execute"]
     named = {Path(a).name for a in cmd if a.endswith(".py")}
-    mk = (ROOT / "Makefile").read_text()
-    on_disk = {p.name for p in (ROOT / "tests").glob("test_forge_*.py")}
-    assert named == on_disk, (
-        f"the gate runs {len(named)} of {len(on_disk)} forge suites; missing "
-        f"{sorted(on_disk - named)}")
+    assert named >= {"test_fanout_execute.py", "test_fanout_cold_recovery.py",
+                     "test_fanout_repo.py", "test_fanout_verification.py"}
+    assert eval_harness.DETERMINISTIC_GATE_NAMES["llm-fanout-execute"] == "fanout-execute-contracts"
 
 
 def test_planner_receipt_gate_runs_its_deterministic_contracts():
@@ -255,15 +304,14 @@ def test_planner_receipt_gate_runs_its_deterministic_contracts():
 
 
 def test_deterministic_receipt_command_removes_the_machine_checkout_path():
-    executable = eval_harness.DETERMINISTIC_GATED["llm-forge"]
+    executable = eval_harness.DETERMINISTIC_GATED["llm-fanout-plan"]
     portable = eval_harness.portable_gate_command(executable)
 
     assert portable[:5] == executable[:5]
     assert all(not Path(argument).is_absolute() for argument in portable)
     assert all(str(Path.home()) not in argument for argument in portable)
-    assert {Path(argument).name for argument in portable if argument.endswith(".py")} == {
-        path.name for path in (ROOT / "tests").glob("test_forge_*.py")
-    }
+    assert "tests/test_fanout_compiler.py" in portable
+    assert "tests/test_fanout_plan_schema.py" in portable
 
 
 @pytest.mark.parametrize(
@@ -319,7 +367,8 @@ def test_receipt_gate_accepts_repo_relative_gate_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: "source")
     monkeypatch.setattr(checks, "eval_set_hash", lambda _root, _skill: "evals")
 
-    assert checks.validate_receipt(tmp_path, "example") == []
+    assert checks.receipt_path_privacy_problems(
+        {"gate_command": ["pytest", "tests/test_gate.py"]}, "example") == []
 
 
 def test_a_command_that_runs_no_tests_does_not_earn_a_receipt(tmp_path):
@@ -359,9 +408,9 @@ def test_the_certifier_and_the_test_manifest_are_in_the_source_closure():
     thing that decides what "certified" means, so a gate could be narrowed and every existing
     receipt stayed fresh.
     """
-    paths = [rel for rel, _h in checks.source_manifest(ROOT, "llm-forge")]
+    paths = [rel for rel, _h in checks.instrument_manifest(ROOT)]
     for rel in ("scripts/eval_harness.py", "scripts/lib/checks.py", "Makefile"):
-        assert rel in paths, f"{rel} is not in llm-forge's source closure"
+        assert rel in paths, f"{rel} is not in the planner's source closure"
     assert len(paths) == len(set(paths)), \
         f"a file is hashed twice: {sorted({p for p in paths if paths.count(p) > 1})}"
 
@@ -370,15 +419,15 @@ def test_the_certifier_and_the_test_manifest_are_in_the_source_closure():
 @pytest.mark.parametrize("instrument", ["shared/lib/fanout/eval_provider.py",
                                         "shared/lib/fanout/providers.py",
                                         "shared/lib/fanout/process.py",
-                                        "shared/lib/fanout/agy_guard.py",
+                                        "shared/lib/fanout/collaboration.py",
                                         "shared/lib/fanout/artifacts.py",
                                         "shared/lib/fanout/errors.py",
                                         "shared/lib/fanout/skills.py",
-                                        "scripts/fanout_baseline.py"])
-def test_eval_instrument_changes_stale_every_behavior_eval_receipt(tmp_path, skill, instrument):
+                                        "scripts/eval_harness.py"])
+def test_eval_instrument_changes_stale_shared_proof_not_ordinary_behavior(tmp_path, skill, instrument):
     """Changing the evaluator or its version observer must invalidate revision evidence."""
     repo = tmp_path / "repo"
-    manifest = checks.source_manifest(ROOT, skill)
+    manifest = checks.source_manifest(ROOT, skill) + checks.instrument_manifest(ROOT)
     paths = [rel for rel, _hash in manifest if not rel.startswith("skill_facts:")]
     assert instrument in paths
     for relative in paths:
@@ -392,28 +441,32 @@ def test_eval_instrument_changes_stale_every_behavior_eval_receipt(tmp_path, ski
     eval_dir = repo / "evals" / skill
     eval_dir.mkdir(parents=True)
     (eval_dir / "evals.json").write_text("{}\n")
-    receipt = {
-        "source_hash": checks.source_hash(repo, skill),
-        "eval_set_hash": checks.eval_set_hash(repo, skill),
-        "provenance": "eval",
-        "certified_by": "delta-gate",
-    }
+    if not (repo / "shared/skills" / skill / "SKILL.md").is_file():
+        put(repo, f"shared/skills/{skill}/SKILL.md", "Synthetic source selected for this instrument test.\n")
+    snapshot = checks.capture_evaluation_snapshot(repo, skill, providers=["codex"])
+    selected = snapshot["selected_input_manifest"]
+    receipt = {**snapshot, "schema_version": 3, "provenance": "eval", "certified_by": "delta-gate", "judge_config": JUDGE_CONFIG,
+               "providers": ["codex"],
+               "cli_versions": {"codex": "observed-version"},
+               "selected_input_manifest": selected, "selected_input_hash": checks.manifest_hash(selected),
+               "raw_refs": [{"path": "workspace/raw.json", "sha256": "a" * 64}]}
     (eval_dir / "receipt.json").write_text(json.dumps(receipt))
+    write_proof(repo)
     assert checks.validate_receipt(repo, skill) == []
 
     changed = repo / instrument
     changed.write_bytes(changed.read_bytes() + b"\n# simulated certifier change\n")
 
     problems = checks.validate_receipt(repo, skill)
-    assert any("changed since last eval" in problem for problem in problems)
+    assert checks.source_hash(repo, skill) == snapshot["source_hash"]
+    assert any("instrument proof" in problem for problem in problems)
 
 
 def test_a_receipt_claiming_no_self_test_is_refused(tmp_path, monkeypatch):
     """receipt_gate compared input hashes only, so a receipt with matching hashes and
     `self_test: false` was accepted — "the certification failed" and "the certification
     passed" left the same verdict at the gate."""
-    rp = ROOT / "evals" / "llm-forge" / "receipt.json"
-    rec = json.loads(rp.read_text())
+    rec = {"self_test": True, "certified_by": "fanout-plan-contracts", "provenance": "eval"}
     rec["self_test"] = False
     bad = tmp_path / "receipt.json"
     bad.write_text(json.dumps(rec))
@@ -489,19 +542,28 @@ def test_an_absent_slot_is_not_a_repeated_slot():
                                        "winner_slot": "?"}]) == "tie"
 
 
-def test_the_gate_name_is_not_narrower_than_the_gate():
-    """A receipt exists to say what ran, so a provenance string naming three suites while
-    thirty-one execute is the same defect the receipt is supposed to prevent, one field over.
-
-    Pinned loosely — the name is prose and may be reworded — but it may not name a SUBSET it
-    no longer describes.
-    """
-    name = eval_harness.DETERMINISTIC_GATE_NAMES["llm-forge"]
-    cmd = eval_harness.DETERMINISTIC_GATED["llm-forge"]
-    suites = [a for a in cmd if a.endswith(".py")]
-    for narrow in ("handover", "cli", "gc"):
-        assert narrow not in name or len(suites) <= 3, (
-            f"the gate name {name!r} names a subset while {len(suites)} suites run")
+@pytest.mark.parametrize("skill", ["llm-fanout-plan", "llm-fanout-execute"])
+def test_native_deterministic_receipt_records_the_actual_command(tmp_path, monkeypatch, skill):
+    directory = tmp_path / "evals" / skill
+    directory.mkdir(parents=True)
+    put(tmp_path, f"shared/skills/{skill}/SKILL.md", "Synthetic skill under certification.\n")
+    put(tmp_path, f"evals/{skill}/evals.json", "{}\n")
+    shutil.copy2(ROOT / "capabilities.toml", tmp_path / "capabilities.toml")
+    monkeypatch.setattr(eval_harness, "ROOT", tmp_path)
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", directory.parent)
+    command = eval_harness.DETERMINISTIC_GATED[skill]
+    monkeypatch.setattr(eval_harness.subprocess, "run", lambda argv, **kwargs:
+        subprocess.CompletedProcess(argv, 0, "7 passed in 0.1s\n", ""))
+    eval_harness._write_receipt(skill, providers=["codex"], mode="normal",
+        judge="claude", delta=0, seeded=False,
+        evaluated_snapshot=checks.capture_evaluation_snapshot(tmp_path, skill, judge_config=JUDGE_CONFIG, providers=["codex"]),
+        judge_config=JUDGE_CONFIG, raw_refs=[], cli_versions={"codex": "observed-version", "claude": "observed-judge-version"})
+    receipt = json.loads((directory / "receipt.json").read_text())
+    assert receipt["gate_command"] == eval_harness.portable_gate_command(command)
+    assert receipt["certified_by"] == eval_harness.DETERMINISTIC_GATE_NAMES[skill]
+    assert receipt["gate_counts"]["tests_run"] == 7
+    capture = json.loads((directory / receipt["raw_refs"][0]["path"]).read_text())
+    assert capture["stdout"] == "7 passed in 0.1s\n"
 
 
 def test_the_counts_parser_reads_unittest_as_well_as_pytest():
@@ -683,7 +745,7 @@ def test_two_malformed_judge_replies_stop_campaign_without_receipt(
     monkeypatch.setattr(eval_harness.eval_runtime, "resolve_mode_config",
                         lambda _args: {"claude": {"model": "test-model"}})
     monkeypatch.setattr(eval_harness.eval_runtime, "effective_timeout", lambda _args: 30)
-    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"test-cli 1.0\n")
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda _provider: b"test-cli 1.0\n")
 
     # Keep the real campaign and its gate decision; replace only the costly provider call
     # and the deterministic subprocess behind receipt writing.
@@ -751,14 +813,24 @@ def test_judge_transport_error_keeps_its_reason_without_semantic_retry(
 
 @pytest.mark.parametrize("phase", ("grading", "comparison"))
 @pytest.mark.parametrize("retry_failure", ("malformed", "timeout"))
+@pytest.mark.parametrize("skill", ("chunk-map", "llm-fanout-plan"))
 def test_exhausted_judge_retains_completed_and_inflight_partial_benchmark(
-    measured_campaign, monkeypatch, phase, retry_failure,
+    measured_campaign, monkeypatch, phase, retry_failure, skill,
 ):
     args, eval_dir, calls, artifacts = measured_campaign
+    if skill != args.skill:
+        changed_dir = eval_dir.with_name(skill)
+        eval_dir.rename(changed_dir)
+        eval_dir = changed_dir
+        args.skill = skill
+        source = eval_harness.ROOT / "shared/skills" / skill
+        source.mkdir()
+        (source / "SKILL.md").write_text("Synthetic deterministic-gated measured source.\n")
+        monkeypatch.setattr(eval_harness, "skill_source_dir", lambda _skill, _provider: source)
     evals = [{"id": number, "name": f"case-{number}", "prompt": "Answer", "assertions": ["correct"]}
              for number in range(3)]
     (eval_dir / "evals.json").write_text(json.dumps({"evals": evals}))
-    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"fixture-cli 1.0\n")
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda _provider: b"fixture-cli 1.0\n")
     bad_attempts = []
     def turn(provider, _prompt, _cfg, workdir, **_kwargs):
         calls.append(provider)
@@ -810,23 +882,28 @@ def test_exhausted_judge_retains_completed_and_inflight_partial_benchmark(
 
 
 @pytest.mark.parametrize("gate", ("passed", "failed", "skipped", "empty"))
-def test_malformed_advisory_only_certifies_actual_nonzero_noskip_owning_success(
+def test_valid_advisory_only_certifies_actual_nonzero_noskip_owning_success(
     measured_campaign, monkeypatch, gate,
 ):
     args, old_dir, calls, artifacts = measured_campaign
     eval_dir = old_dir.with_name("llm-fanout-plan")
     old_dir.rename(eval_dir)
     args.skill = "llm-fanout-plan"
-    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"fixture-cli 1.0\n")
-    def malformed(provider, _prompt, _cfg, workdir, **_kwargs):
+    source = eval_harness.ROOT / "shared/skills/llm-fanout-plan"
+    source.mkdir()
+    (source / "SKILL.md").write_text("Synthetic measured planner.\n")
+    monkeypatch.setattr(eval_harness, "skill_source_dir", lambda _skill, _provider: source)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda _provider: b"fixture-cli 1.0\n")
+    def valid_turn(provider, _prompt, _cfg, workdir, **_kwargs):
         calls.append(provider)
-        raw = "{malformed" if workdir.name.startswith("judge") else "completed executor"
+        raw = ('{"expectations":[{"passed":true}]}' if workdir.name.startswith("judge")
+               else '{"winner":"A"}' if workdir.name.startswith("compare-") else "completed executor")
         workdir.mkdir(parents=True, exist_ok=True)
         path = workdir / f"{provider}.stdout.attempt-1.txt"
         path.write_text(raw)
         artifacts.append((path, raw))
         return raw, {"valid": True, "reason": "ok", "duration_sec": 0.1}
-    monkeypatch.setattr(eval_harness, "run_text", malformed)
+    monkeypatch.setattr(eval_harness, "run_text", valid_turn)
     # The certifier still launches a native owning process and parses its real counts.
     expected = "https://ex.com/?token=REDACTED" if gate != "failed" else "deliberately wrong fault"
     owner = ("import sys,unittest\nsys.path.insert(0,'shared/lib')\n"
@@ -858,8 +935,8 @@ def test_malformed_advisory_only_certifies_actual_nonzero_noskip_owning_success(
             eval_harness.run(args)
         assert not (eval_dir / "receipt.json").exists()
     benchmark = json.loads((eval_dir / "workspace/iteration-1/benchmark.json").read_text())
-    assert len(benchmark["runs"]) == 1 and benchmark["runs"][0]["result"]["judge_error"] == 1
-    assert len(artifacts) == 3
+    assert len(benchmark["runs"]) == 2 and all(run["result"]["judge_error"] == 0 for run in benchmark["runs"])
+    assert len(artifacts) == 5
     assert len(observed) == 1
     assert observed[0].returncode == (1 if gate == "failed" else 0)
     assert [path.read_text() for path, _raw in artifacts] == [raw for _path, raw in artifacts]
@@ -871,3 +948,104 @@ def test_execute_receipt_selects_material_makefile_target_handover_and_eval_owne
     assert named >= {"test_fanout_branch_handover.py", "test_fanout_targets.py", "test_eval_provider.py"}
     command = eval_harness.portable_gate_command(eval_harness.DETERMINISTIC_GATED["llm-fanout-execute"])
     assert all(not Path(argument).is_absolute() for argument in command)
+
+
+EXECUTOR_MEMBERS = (
+    "test_fanout_execute_skill.py", "test_fanout_execute.py",
+    "test_fanout_cold_recovery.py", "test_fanout_storage.py",
+    "test_fanout_memory.py", "test_fanout_repo.py", "test_fanout_targets.py",
+    "test_fanout_branch_handover.py", "test_eval_provider.py",
+    "test_fanout_verification.py", "test_skill_delivery.py",
+)
+FANOUT_MEMBERS = (
+    "test_fanout_artifacts.py", "test_fanout_benchmark.py",
+    "test_fanout_bootstrap_packages.py", "test_fanout_branch_handover.py",
+    "test_fanout_cold_recovery.py", "test_fanout_collaboration.py",
+    "test_fanout_compiler.py", "test_fanout_context_view.py",
+    "test_fanout_controller.py", "test_fanout_execute.py",
+    "test_fanout_execute_skill.py", "test_fanout_lifecycle.py",
+    "test_fanout_local_authority.py", "test_fanout_maka_native.py",
+    "test_fanout_memory.py", "test_fanout_multirepo_integration.py",
+    "test_fanout_native_profiles.py", "test_fanout_native_write_policy.py",
+    "test_fanout_owner_actions.py", "test_fanout_owner_reconciliation.py",
+    "test_fanout_plan_schema.py", "test_fanout_plan_skill.py",
+    "test_fanout_process.py", "test_fanout_profiles.py",
+    "test_fanout_providers.py", "test_fanout_recorded_cli.py",
+    "test_fanout_repo.py", "test_fanout_runstate.py", "test_fanout_scheduler.py",
+    "test_fanout_skills.py", "test_fanout_smoke.py", "test_fanout_storage.py",
+    "test_fanout_targets.py", "test_fanout_verification.py",
+    "test_eval_provider.py", "test_tuneup_fanout.py",
+)
+PARALLEL_COMMAND = [
+    "uvx", "--python", "3.12.14", "--from", "pytest==9.1.1",
+    "--with", "pytest-xdist==3.8.0", "--with", "execnet==2.1.2",
+    "pytest", "-q", "-n", "4", "--dist", "loadfile", "--max-worker-restart", "0",
+]
+
+
+def test_executor_gate_changes_scheduling_without_dropping_or_duplicating_cases():
+    command = eval_harness.DETERMINISTIC_GATED["llm-fanout-execute"]
+    first_file = next(i for i, argument in enumerate(command) if argument.endswith(".py"))
+    assert command[:first_file] == PARALLEL_COMMAND
+    assert command[first_file:] == [str(ROOT / "tests" / name) for name in EXECUTOR_MEMBERS]
+    planner = eval_harness.DETERMINISTIC_GATED["llm-fanout-plan"]
+    assert "-n" not in planner and "--dist" not in planner
+    assert str(ROOT / "tests/test_render_packaging.py") in planner
+
+
+@pytest.mark.parametrize("target", ["fanout-test", "core-test"])
+def test_make_launches_audited_members_once_and_keeps_other_members_serial(tmp_path, target):
+    log = tmp_path / "launches.jsonl"
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    # Replace only the external launch boundary; execute the real Makefile recipes.
+    source = "#!" + sys.executable + "\n" + """
+import json, os, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+if name == 'python-probe':
+    raise SystemExit(1)
+with open(os.environ['GATE_LAUNCH_LOG'], 'a') as handle:
+    handle.write(json.dumps([name, *sys.argv[1:]]) + '\\n')
+"""
+    for name in ("uvx", "mise", "python-probe"):
+        binary = binaries / name
+        binary.write_text(source)
+        binary.chmod(0o700)
+    environment = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+                       GATE_LAUNCH_LOG=str(log))
+    result = subprocess.run(
+        ["make", "-f", str(ROOT / "Makefile"), target, "PY=" + str(binaries / "python-probe")],
+        cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    launches = [json.loads(line) for line in log.read_text().splitlines()]
+    pytest_launches = [argv for argv in launches if argv[0] == "uvx"]
+    if target == "core-test":
+        assert len(pytest_launches) == 1 and "-n" not in pytest_launches[0]
+        assert "tests/test_render_packaging.py" in pytest_launches[0]
+        return
+    assert len(pytest_launches) == 2
+    parallel, serial = pytest_launches
+    assert parallel[:len(PARALLEL_COMMAND)] == PARALLEL_COMMAND
+    assert "-n" not in serial and "--dist" not in serial
+    named = lambda argv: [Path(argument).name for argument in argv if argument.endswith(".py")]
+    assert Counter(named(parallel) + named(serial)) == Counter(FANOUT_MEMBERS)
+    assert set(named(parallel)) == set(EXECUTOR_MEMBERS) - {"test_skill_delivery.py"}
+    assert "test_fanout_plan_skill.py" in named(serial)
+    assert len([argv for argv in launches if argv[0] == "mise"]) == 1
+
+
+@pytest.mark.parametrize("summary,accepted,counts", [
+    ("4 workers [8 items]\n........ [100%]\n8 passed in 1.20s\n", True,
+     {"tests_run": 8, "skipped": 0, "failed": 0}),
+    ("4 workers [8 items]\n7 passed, 1 skipped in 1.20s\n", False,
+     {"tests_run": 7, "skipped": 1, "failed": 0}),
+    ("4 workers [8 items]\n1 failed, 7 passed in 1.20s\n", False,
+     {"tests_run": 8, "skipped": 0, "failed": 1}),
+    ("4 workers [0 items]\nno tests ran in 0.20s\n", False,
+     {"tests_run": 0, "skipped": 0, "failed": 0}),
+])
+def test_xdist_controller_counts_preserve_strict_receipt_acceptance(summary, accepted, counts):
+    measured = eval_harness._pytest_counts(summary)
+    assert measured == counts
+    assert eval_harness._counts_are_evidence(measured) is accepted

@@ -51,8 +51,8 @@ instead on whatever gate the target repo itself provides, if any.
 
 - `evals/<t>/evals.json` exists, 2-7 cases (prefer 2-5) covering the happy path + key
   §4 edge cases; a case above five earns its place by covering a contract nothing else does.
-- Assertions are discriminating (a no-skill baseline would structurally fail them) and
-  objective — not tautological, not "is well written".
+- Assertions distinguish correct target behavior from plausible mistakes and remain
+  objective. The native baseline may discover installed skills; do not label it skill-free.
 - `evals/<t>/receipt.json` is fresh (`tuneup.py triage` shows the state).
 
 ## 7. Over-engineering smells (reasons to REMOVE, never to add)
@@ -89,11 +89,17 @@ beats completeness.
 
 Behavior change to what the skill delivers · any model-ID change · a new dependency ·
 rewriting the eval set · touching another skill's files · `scripts/lib/reconcile.py`,
-`scripts/lib/inventory.py`, or `scripts/render.py` (bundled into EVERY skill — stales every
-receipt; say so) · `capabilities.toml` (in BOTH templated skills' closures, so it owes a
+`scripts/lib/inventory.py` (bundled helpers affect every skill that delivers them) or
+`scripts/render.py` (assembly is part of the shared instrument; changed delivered output
+also needs affected behavior evidence) · `capabilities.toml` (in BOTH templated skills' closures, so it owes a
 `khenrix-setup` AND a `khenrix-upgrade` eval no matter which skill you are tuning — and a
 new model id *requires* a `[models]` entry, enforced by `scripts/lib/checks.py`).
 
 Derive the checkpoint's cost note from the paths you intend to touch, checked against
-`checks.py`'s closures — not from the target's name. Other `scripts/lib/*` files and
-`scripts/eval_harness.py` are in no closure and cost zero eval runs.
+`checks.py`'s actual closures — not from the target's name. Separate delivered behavior
+(including its actual bundled runtime) and target criteria from the shared measurement
+instrument (harness, checks, renderer, Makefile and eager fanout imports). Instrument-only
+changes require a current shared instrument proof, not unrelated unchanged body campaigns.
+Changed behavior or criteria require fresh V3 evidence; unchanged explicit historical
+adoption remains unverified and cannot pass the final gate. Report the affected set and
+its evidence requirement; never restamp old hashes or launch an unapproved global replay.

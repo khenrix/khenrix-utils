@@ -1,7 +1,0 @@
-min_version = "2026.9.10"
-
-[tools]
-python = "3.12.14"
-claude = "2.1.284"
-codex = "0.160.0"
-agy = "1.2.13"

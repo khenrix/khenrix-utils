@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "skill": "khenrix-setup",
-  "source_hash": "67bbd8d4dc6ff764bdab0a3df09cce7dc29bc3e4d42d8b3f0718781f2250b278",
+  "source_hash": "01561b717ccb94acad9bbea5c8d4dbbc84de3966f8c1ae4faa31331a0b27f075",
   "eval_set_hash": "208aa340ba018b1b9bfd9ff8c8646cc5347be586fb7e229f5a673d3e82ead105",
   "providers": [
     "claude",
@@ -10,7 +10,7 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.7408,
+  "delta_pass_rate": 0.8519,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
@@ -21,13 +21,13 @@
       "status": "ok"
     },
     "claude": {
-      "delta": 0.7778,
+      "delta": 0.8889,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.7778,
+      "delta": 1.0,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
@@ -35,9 +35,1724 @@
   },
   "models": {
     "claude": "claude-opus-5-5",
-    "codex": "gpt-6-sol",
-    "agy": "Gemini 3.8 Flash (High)",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
     "judge": "claude-opus-5-5"
+  },
+  "judge_config": {
+    "model": "claude-opus-5-5",
+    "thinking": "xhigh"
+  },
+  "source_manifest": [
+    [
+      "capabilities.toml",
+      "8b64bbb907c9b801a72760359f41124d0ccc7323b775fc417760473243b92759"
+    ],
+    [
+      "house-style.md",
+      "6a1da322b7d78481b8ab97271d003255ba62bde12035da791100b891513f80c2"
+    ],
+    [
+      "overlays/claude.md",
+      "7891206a373b92c982958518fd5266376ff2d78cde2d952c51593202e39ed38e"
+    ],
+    [
+      "scripts/lib/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "scripts/lib/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "shared/skill-templates/khenrix-setup/SKILL.md.tmpl",
+      "d5af3cbdc50d8fb9328f0369a24703fd4b8870c637e830debefe1ec0c3d4b983"
+    ],
+    [
+      "skill_facts:khenrix-setup",
+      "89bc11a2d4d0af7d74ff979079bf8f0496ee1580dc96ddfa746cbd6aa97fef19"
+    ]
+  ],
+  "criteria_manifest": [
+    [
+      "evals/khenrix-setup/evals.json",
+      "208aa340ba018b1b9bfd9ff8c8646cc5347be586fb7e229f5a673d3e82ead105"
+    ]
+  ],
+  "instrument_manifest": [
+    [
+      "Makefile",
+      "89847c4563a2bcb8bff2f406f62d6c2b15890ef44d9eef8c5c0a628a4b28974b"
+    ],
+    [
+      "scripts/eval_harness.py",
+      "726c0851689d5f1465426c9c1532255c37f4019419d35b7e8ab7ccaa0c99ba05"
+    ],
+    [
+      "scripts/lib/checks.py",
+      "2a61514bbddd57262172340ea9101c443029cd841775993a46dc9384e9809b56"
+    ],
+    [
+      "scripts/lib/portability.py",
+      "4f53d7a9668b07b6c1f733c0f750f1f1536a3e4a9dab34e64c9106f11bc67437"
+    ],
+    [
+      "scripts/render.py",
+      "98e9d6f4b581027121431fc7799b6edb4285f47dab18c9d2c858cf41177fd4d8"
+    ],
+    [
+      "shared/lib/fanout/__init__.py",
+      "0307efd7a8b2aa54a12cce49a04d7732e0827e395bb4ef1adc080efafcea0e2e"
+    ],
+    [
+      "shared/lib/fanout/artifacts.py",
+      "920fe65ca7f42417e2b8227011998447bda71d62caf7e8323a649e0860269bd9"
+    ],
+    [
+      "shared/lib/fanout/branch_handover.py",
+      "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
+    ],
+    [
+      "shared/lib/fanout/collaboration.py",
+      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+    ],
+    [
+      "shared/lib/fanout/compiler.py",
+      "8fff7727eecae58b45c6b52c727fdcae5617f559e9395872aed5de1e95aed1ae"
+    ],
+    [
+      "shared/lib/fanout/context_view.py",
+      "e249652b46b3f4c76cffe73db4d859df5ac5b46daa6257a7c6fa01cf7571f3df"
+    ],
+    [
+      "shared/lib/fanout/controller.py",
+      "a839354834065e64f5a5ce54385617144b620bc702a68d9dec24b9fa593fab66"
+    ],
+    [
+      "shared/lib/fanout/diagnostic.py",
+      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+    ],
+    [
+      "shared/lib/fanout/durable_io.py",
+      "571c045a1ec2ba711ec693c7d1e5d82213d4d753b0c8ca3b2f2cf98113c1e1f4"
+    ],
+    [
+      "shared/lib/fanout/errors.py",
+      "ca865c3cbee33ee3937d9c49fc2e282333c12673c1a9e99f90f07ab81c569d9d"
+    ],
+    [
+      "shared/lib/fanout/eval_provider.py",
+      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+    ],
+    [
+      "shared/lib/fanout/evaluation.py",
+      "f62a6e14851d9c7c33eb4a9861f11059837518b2826afa7e1dbb979832c59883"
+    ],
+    [
+      "shared/lib/fanout/execute.py",
+      "53914524078019edd94435d82a7f6af53e22e6818e7fabc46ba5f6c74dea48d7"
+    ],
+    [
+      "shared/lib/fanout/lifecycle.py",
+      "a90a56ac7da93c19d8db5c1fe697726eb8332f18051ea4cd0790dc4ff369ea27"
+    ],
+    [
+      "shared/lib/fanout/maka_native_session.mjs",
+      "1932bead31bc89e4d808397071533a1ef3b49cf92824aabd154c5532339742d0"
+    ],
+    [
+      "shared/lib/fanout/maka_transport.py",
+      "295ebffbb03bc7b73871c2f17ed080289c6b59a6cc4d9a5f8b8ead5259470f84"
+    ],
+    [
+      "shared/lib/fanout/memory.py",
+      "46bcebe5633dad9d2060ffa12dc3754ff401d4636683f835a24074c508565429"
+    ],
+    [
+      "shared/lib/fanout/native_trace.py",
+      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+    ],
+    [
+      "shared/lib/fanout/plan.py",
+      "d7c912f7d365d5babe23d35282f79541de072393780f7824b5c59b05b34fc3da"
+    ],
+    [
+      "shared/lib/fanout/process.py",
+      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+    ],
+    [
+      "shared/lib/fanout/providers.py",
+      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+    ],
+    [
+      "shared/lib/fanout/repo.py",
+      "f733a2936d5ad8f38ffc143df65bfa4a39642579edb035211ef61752fad84ea0"
+    ],
+    [
+      "shared/lib/fanout/runstate.py",
+      "915b35b6a913d45abf704c57be5e148cbe9228ed06f27c505cf37521559aec40"
+    ],
+    [
+      "shared/lib/fanout/scheduler.py",
+      "ff27c6487463cd4cbac13c7e8e061ac0378e3c1ed4e8a83c8b06cf269e6afd18"
+    ],
+    [
+      "shared/lib/fanout/scheduler_authority.py",
+      "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
+    ],
+    [
+      "shared/lib/fanout/skills.py",
+      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+    ],
+    [
+      "shared/lib/fanout/storage.py",
+      "4e3ee7dd8b341d32122c51c7655d0ee8341b47a6505962cb18a7acabe7f0d963"
+    ],
+    [
+      "shared/lib/fanout/targets.py",
+      "f1f7f35bc8034844a92cf9eb0c67b3fd2d39e1659826757cf7ad227afbfe22f1"
+    ],
+    [
+      "shared/lib/fanout/verification.py",
+      "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/wikisync/tests/__init__.py",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "shared/lib/wikisync/tests/chrome_profile_smoke.py",
+      "40019026c804a69271513f4d5fdc38cee5dbdde59a6ed3c13be893161b8994a1"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/Bookmarks",
+      "ceb38149d7614cd7a77fcbf6426017155a46c1e555d3ac48fc696500113e2a1b"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/ig_live.json",
+      "74f60d0765aa7d00f2f28eab348fa47f8fe40ed5dc5cead79b6e29847d9a8ad7"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/saved_posts.json",
+      "6df764e9e1dd1797384c8dda5834bab72bf20337bc64023a6c905ce698288c99"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_bookmarks.py",
+      "5d38afeade7598c46e07b1d0d4aeb6d39bebb0a792ddcfe377f87fbde8427f63"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_canonurl.py",
+      "dc93f98cf2579a2e5f1cdf3d77808b1da2b032497337a4953164f9cd70edcb1a"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_capture.py",
+      "84d6fd0ea27fe805999b7c8d9065750f78f9b3716f97c3591723b1d8d5f415ca"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_cli.py",
+      "0bafa8aae96e908a547d7c74c4b17ef279f735574937f33eb2dd318121ae6e8e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_instagram.py",
+      "b11e6adbd292dcdb18231cfe0caf8056e2f3a835b01631066ccb4aa6fa097ed2"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_ledger.py",
+      "e4b3a24151603bfa6b27ee77058872377373cd6ea193eccda8970929a3149d5e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_render.py",
+      "b996048993a040d31deaab1010f52d0bc338fbd4354a288cfe4373c0623d8066"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_vocab.py",
+      "a8f3f7e93d022d280d224ccad8cd7bb9b0ea75f1fd9efa088bb3acb0d1062a31"
+    ],
+    [
+      "tests/bats-fallback.sh",
+      "38ed9f03a33cd2fa8ddec12f3f6c4c29722c3c57a18b25ff5c8cb5bfcfab9cf2"
+    ],
+    [
+      "tests/fixtures/context_efficiency/README.md",
+      "bfe1869f2b5401bb963fdf57002cc314d27ac16836b47fcf568707d8868f3917"
+    ],
+    [
+      "tests/fixtures/context_efficiency/gold.json",
+      "e9632384e8f7e7262fab73bee895b098eeec091498a44e3c588b748e33e92d51"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/manifest.json",
+      "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/birch-attempts.py",
+      "298cee8e7e41e6bf12f54a7ec3926ea8acaf5babaf56c01ed70b33312dd64257"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/cache-exception.md",
+      "ef3fa6667725b6615caf8aac8793dba7783685d3dc5470104256bede21f352a6"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/crate-attempts.py",
+      "1a0779f78d5afc424ebae73df098b3c56e10b3062f10464e2b83f5a952e5da93"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/earlier-test.md",
+      "b9295e3b26dda3e934ab724a76a03b9d71c59c2a5f4b45e241aac91c3a86477f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/late-correction.md",
+      "6283e72f1493210e3186fe71a3b59f6b8069d8229b5cc112f4f5f8c79b8db66f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/later-correction.md",
+      "b2fdb8e7bc15362bf26abf4e672832cfee993bdd9296489577d52ab50ba658ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-amber.json",
+      "a4b3640012ed6e3528c1958f9c4f1f81c9c1c20a5e0d53770ed67b5b0f84a37d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-blue.json",
+      "3ea9b92d069d67dc3f8e0855cf1c013ff06ebbc69cab33aff1c39bcf6d9b6ec8"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-coral.json",
+      "4b2632c21f680be957a1c2b951cf3bf78c226f2e0deb5127b19ae5353c2af9ea"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/original-decision.md",
+      "ea67468e364aed4d6e7fc61e85a6face8e30f8edd86ff24e50447adc075ff83b"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/overlap.log",
+      "1b5b908b74987a4a7b590d21d775bcab8bc3f128db2878d3e70fb3e457918e1c"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/profiles.json",
+      "2d9dcc5f2d9dd82e8a8a65a4931dd00591b296052d6be9c0ef005eb105bb8458"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/quoted-example.md",
+      "fe736a4e84e4518c28225cbb328dc784d334c20adce8db43a29b3b00dd8a3b24"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-new.md",
+      "bfa7ba36446e92cd5c977b91cb6301d7f28ec850f256ae4ccefbeb8d200b753d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-old.md",
+      "daddbc8388125b2eeac8dc54e1048e3af1206d3785a544346ce3b89face71cc5"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/separate-operations.log",
+      "87f1285b113dec4a3035608a64e8379916e9561340b5d97cdd6d9b72138a6091"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/slot-decision.md",
+      "74ffd596595f3718167879b52df25db99d09067f97fae3b5a2279a9e64e4c6bf"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/spruce-attempts.py",
+      "c416de20f738871cdf1859fbb4754a7428f95fc4855553f9138e7c1b0ddfaab9"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-amber.json",
+      "0535f3044495f89d38b9c191f8112ed192f34fd761d98c2b11cc947c84fb75dc"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-blue.json",
+      "21b18e42d2ca77e12bd811b1343bb9bc1fed8417b8ca89ef1b3a8c91689fa7ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-decision.md",
+      "ce8eaa491e69218783fc3d9bd3bba4ba23589a3c8a825c76321509dcddfb581a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-replay.md",
+      "37ca4e8b07eea4e5eba9a7b7790a9b828cd00417ec7b3a6ba0d1fc5f8d111d11"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-new.json",
+      "1ee1ebee9a88c5f050e3861d94a08c2766953dcf5b8d2e5534e273a2fba5c6d3"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-old.json",
+      "85b9d0096dd9939fef4592c883963cfe83d3c8c0e4d8c27d794a4fc85acfbcba"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/uncertain-ack.md",
+      "fa8eae6977c27267224537a5dae79314afb8cbf1ca152cf5f0ecd2f523a37398"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-agent.md",
+      "fc85520188dea90225008f1758d093a0a16e5ce255c9f8c7193715f80c788a33"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-human.md",
+      "4e6f18132e4d34e99161968cd77c6cee19200051a473fbc18edad6687037c879"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-test.md",
+      "64132d32006005c06b402d551d438acabdf0340bba70a66ce6f0309fa7750ca1"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-aster.md",
+      "928d56ca92218b906a7e3609a9d3ebe7f3bf041ff901eaffff0ff423bee8cb68"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-bryn.md",
+      "ac7c826213bc5d5c7b150e86ff04413ec1f9a8794e0f911edc2e292bf589708a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/zones.json",
+      "3d4a40c2562c8b525e93039ccb59e2e3f0483e6e3181c0a1a54f7470893e5521"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/README.md",
+      "ba8cd8cb4039cd85c9ea2745d6a11f69db848cae951ed0794addfcd94848dbfd"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/descriptor.json",
+      "da5ede0b0f5af33f119287b6382d3837022cb05a041401eb099d72bf024b109e"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/events.jsonl",
+      "b788a3fad8c739f5304b7560d212d4b75f5b6a947bed5435294e43c5f2f502eb"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/generate.py",
+      "55340a72da844675ddf230ccb6ad799b7e5b327434c20f3275b3bab203c8fb31"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/inputs.json",
+      "0ec53c0613592346b41a8006578223d99a29b0653e7b0d7d9e350d19a6f643e4"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/manifest.json",
+      "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/owner.json",
+      "8a8690fecb1d966d3af540ffa93f99faeb28e76018b43e0cc2c3b33d801c4428"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-meta.json",
+      "3e30e3d242e030079c33f7910f35806a084b202468ed55b31bd59e6b8e1f028c"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-record.json",
+      "cca7f0e62d5ab255020fd51259bd2ff4b626828bda816b7a1645f29105cb7366"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/snapshot.json",
+      "83ebf490f03ed7df416f12c156471b9d14e5de0dfb78a4fe3edd3aa32fb05f1a"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-error.json",
+      "821e598806c48b2b91ec10c4929206c227c91916dec7a2cdcdac6df7e1767ec1"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-success.json",
+      "fa69a34a01105bd501d11d0fa67d1aae40fe003cb61ff93fc918319fa9ad7a58"
+    ],
+    [
+      "tests/fixtures/fanout_providers/claude-success.json",
+      "fc0393d0312453c115db00c61d7428d79929f8aabdeb55d0071aa87a8f8e5b93"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-error.ndjson",
+      "050a62511a60087f2ffe12cb2695a02c7da847fbcc681df8538364029645d277"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-success.ndjson",
+      "735107f037e9e188f40bd20d8cbc1c6b1a8797fad5b712243813dcf49d9762f8"
+    ],
+    [
+      "tests/skill_verbatim_cases.py",
+      "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
+    ],
+    [
+      "tests/test_bootstrap_machine.bats",
+      "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
+    ],
+    [
+      "tests/test_bootstrap_tier0.bats",
+      "678c491ad0eb1f912bdf1a49f5bfea39522b5f49bca6da628026dc7f5431282e"
+    ],
+    [
+      "tests/test_bootstrap_tier0_host_smoke.bats",
+      "0b58e407a8f8ee7fc68e806a4f02e96b400a6f8390005b518bb8450e69f1e28d"
+    ],
+    [
+      "tests/test_checks_secrets.py",
+      "4c1e970c82ff7ce9abd73af4ca03847ddb57243e65fcf9937b883a29fcdf8c98"
+    ],
+    [
+      "tests/test_context_efficiency_corpus.py",
+      "7b0177a8a8ba026d785c81b171071201fd0351633a4e25f289fbbc711e60ac6c"
+    ],
+    [
+      "tests/test_context_efficiency_pilot.py",
+      "7787a41df248f6250922d43abb82253711ef9db0ebc0a08032c510087aa17f8c"
+    ],
+    [
+      "tests/test_doctor.py",
+      "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
+    ],
+    [
+      "tests/test_eval_harness_receipt.py",
+      "4e92740886e2bfa171b8130ba78ba74e8d16fff5272492b378728feecad9fb5d"
+    ],
+    [
+      "tests/test_eval_native_consumers.py",
+      "ec515d96a978bfd79c03a6baa1c8212ad619bd38cc41b65ddd6a2eacca9587ab"
+    ],
+    [
+      "tests/test_eval_provider.py",
+      "7e322acfa591726aa9ddacee046241e9953987ca2e50b90f9db0faef505c6b16"
+    ],
+    [
+      "tests/test_eval_receipt_v3.py",
+      "f16b39068eea7c0c22637c4afa2d292007640de104d968e92ac775102e41a07b"
+    ],
+    [
+      "tests/test_fanout_artifacts.py",
+      "dc07415db0eb0aa3f9fcaec52b7bd82f98af28f3f598ff2b9c28ae55cb86ef8f"
+    ],
+    [
+      "tests/test_fanout_benchmark.py",
+      "d88b89e61d2b0ba31d997f502dfd256a8f2ab519551430246e0501f6984bab86"
+    ],
+    [
+      "tests/test_fanout_bootstrap_packages.py",
+      "19744e368077b50f01855c5148d179195c771871a316d964518b6e124403de8a"
+    ],
+    [
+      "tests/test_fanout_branch_handover.py",
+      "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
+    ],
+    [
+      "tests/test_fanout_cold_recovery.py",
+      "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
+    ],
+    [
+      "tests/test_fanout_collaboration.py",
+      "1c7df80b125f1c308ae1a4b532293c393ddc950b2af672714d4fd9dbe987d509"
+    ],
+    [
+      "tests/test_fanout_compiler.py",
+      "662ad6d87a7be97b2f5c2d96c7cda7af930803b0e7902e3b8bcf82d7907c3442"
+    ],
+    [
+      "tests/test_fanout_context_view.py",
+      "cd6695751689339c30847321cf655c21f996ff5e21d60d109eb5da650c848184"
+    ],
+    [
+      "tests/test_fanout_controller.py",
+      "0c28c87fff7321f0a5e9888c35e75a7aa89856c833f123d88902c9e7ddf17943"
+    ],
+    [
+      "tests/test_fanout_execute.py",
+      "5e18acda9b70ca6338deec59738b0b8476ee7a4cdf93f742783d3eb1c5a12316"
+    ],
+    [
+      "tests/test_fanout_execute_skill.py",
+      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+    ],
+    [
+      "tests/test_fanout_lifecycle.py",
+      "fbd5b11a328354dafd4f6e84cb6edc838969c88a369927be1f43dbb3375f130d"
+    ],
+    [
+      "tests/test_fanout_local_authority.py",
+      "c7ae473e39bde7a9e42d2acabf6120a42fc2b51609b8466bb1b39099e8a14dac"
+    ],
+    [
+      "tests/test_fanout_maka_native.py",
+      "aa6ee48e660d17a94829c89d8d542e131f32f145bfc7d22509f31aae5d44bef8"
+    ],
+    [
+      "tests/test_fanout_maka_native_session.mjs",
+      "5b0559bc0751ab3b4fe0864c1669175156d813feeb53c88adf7a862f1ef77ecd"
+    ],
+    [
+      "tests/test_fanout_memory.py",
+      "d5f92c90809dc3f194b1142614dddd830e5728b7c8c4e49ee7c81e0762bef56c"
+    ],
+    [
+      "tests/test_fanout_multirepo_integration.py",
+      "89e709440321c0b5edbedca00826153cbe89c926e478a537d947b57bd966c965"
+    ],
+    [
+      "tests/test_fanout_native_profiles.py",
+      "bbab1f6dc681c6a83dc6c8f1c6cda8c5e4aae636f5eb778adb801b8e6899c504"
+    ],
+    [
+      "tests/test_fanout_native_write_policy.py",
+      "7b6420452829426410689621a7e2f58681c944454662ec64de1f58ec361192aa"
+    ],
+    [
+      "tests/test_fanout_owner_actions.py",
+      "b5dccdd7bbc3af5b33c244c1f9cc57eda717484ccbafc0f4493b4bef6e96c899"
+    ],
+    [
+      "tests/test_fanout_owner_reconciliation.py",
+      "f2beab4d49f8bc353bb63fd6c1eb7725e9cc3e0555e2e82b9d8b7fa6b1f57e01"
+    ],
+    [
+      "tests/test_fanout_plan_schema.py",
+      "40b624f991c3c441084b0e77fe4d041f0a9129d7ef66b7abe615eb8e261d3045"
+    ],
+    [
+      "tests/test_fanout_plan_skill.py",
+      "3af1c030c1d98f3664745c01b13d256d7d562df9421aefdf15476ad1972cb68b"
+    ],
+    [
+      "tests/test_fanout_process.py",
+      "69a30ebe39b9374d61da16672c13626351f378e1b6b6f7638bfd263115f406ab"
+    ],
+    [
+      "tests/test_fanout_profiles.py",
+      "8cb3d5dd527c8a5c4d38c3623f770e950efa35a0ad1ba6c0fadf06e63ea33a77"
+    ],
+    [
+      "tests/test_fanout_providers.py",
+      "96e95b46fe482a72009a5fa5c694ae9f73c72802d79c6541c0c010182150d693"
+    ],
+    [
+      "tests/test_fanout_recorded_cli.py",
+      "af63ea99d350fa223cf3865e1cf76368d4e0f21849b49724d230c6a79f805c59"
+    ],
+    [
+      "tests/test_fanout_repo.py",
+      "dc7b411ea8ec602d72b50c146a96240d5b1a8a4887278c36fdc7bbf6471d496a"
+    ],
+    [
+      "tests/test_fanout_runstate.py",
+      "86e0646c576d231e52d036cb39d9b0dffc7b14e619a4bcf3d4bd12e8bbcbfcf3"
+    ],
+    [
+      "tests/test_fanout_scheduler.py",
+      "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
+    ],
+    [
+      "tests/test_fanout_skills.py",
+      "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
+    ],
+    [
+      "tests/test_fanout_smoke.py",
+      "64f5c0647d2844686f03150e03a0ba9581041ba3b682be772f448b4de0333107"
+    ],
+    [
+      "tests/test_fanout_storage.py",
+      "be38f24a4e6ec2c69d5d49448d3eaf6acb4dea96c12747e578764ba4b8e47a99"
+    ],
+    [
+      "tests/test_fanout_targets.py",
+      "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_verification.py",
+      "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
+    ],
+    [
+      "tests/test_maka_colima_mount_migration.py",
+      "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
+    ],
+    [
+      "tests/test_maka_skill_smoke.py",
+      "1d0c2077c4f3aca3c2d232ad7241833b70fb9a75c37ded0395e9ceb3546b2abc"
+    ],
+    [
+      "tests/test_memory_exchange.py",
+      "578e1bc7bc9165a53b645aeaabfe2a564e0a680cc026238e5b8463b9c0b7e423"
+    ],
+    [
+      "tests/test_memory_ingress.py",
+      "43fdfbdaa5bd4c7b9c19d994006a360c44c318689aaea4e2b58121d1351527c2"
+    ],
+    [
+      "tests/test_memory_runtime.py",
+      "4c69ad098fb37077ccf305823f1755822536bc5bf494e00d4b4aec2cdafa7374"
+    ],
+    [
+      "tests/test_model_policy.py",
+      "4a95f529736f0b1943ba80762787cf9dad1e718ceb1b960c82437a11ae153e6c"
+    ],
+    [
+      "tests/test_mutate.py",
+      "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
+    ],
+    [
+      "tests/test_reconcile_apply.bats",
+      "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
+    ],
+    [
+      "tests/test_reconcile_defaults.py",
+      "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
+    ],
+    [
+      "tests/test_refresh.py",
+      "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
+    ],
+    [
+      "tests/test_render_packaging.py",
+      "d6e32a97a4b3117ca1537d5bb5de9f05c3fbaffc3563912259c9f6bc9c7d0821"
+    ],
+    [
+      "tests/test_repo_sweep.bats",
+      "08b8cc4a229c4af406b6bb99b6db1df5eba7aaa4d816911de7aa856d6cf86b11"
+    ],
+    [
+      "tests/test_setup_audit.py",
+      "43a4798870afe5a98637983e9eb20f0750a334bf45d75fc2edd79caa6a3c4809"
+    ],
+    [
+      "tests/test_skill_delivery.py",
+      "bc3e9b54e2ad72b8b867a8d9aceed4696ddc76630d2c419f58c7bcb3dae6c2cd"
+    ],
+    [
+      "tests/test_skill_upstreams.py",
+      "c9bf886aa5c8d85870631fa7a84b14a5a208bc6637e3b443a1b7c477eafdac22"
+    ],
+    [
+      "tests/test_statusline.py",
+      "d1c2b35c3ae583001b4571551b3d270129d9b5420440065d187774dcb179ba54"
+    ],
+    [
+      "tests/test_statusline_reconcile.py",
+      "7df1d88e3d92998b4b22cada045dae644167b70d960c43caee6e5883347bb197"
+    ],
+    [
+      "tests/test_tuneup_fanout.py",
+      "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
+    ]
+  ],
+  "selected_input_manifest": [
+    [
+      "agy:SKILL.md",
+      "e7f0c77553cb7dced04905d4a7eb58cafbaac9fc45e94b501937ee8aeda20701"
+    ],
+    [
+      "agy:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "agy:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "claude:SKILL.md",
+      "6c838f2814f68dac09f90dd31c712b39d8d19e64499a689e8a0fb131e1cc1bce"
+    ],
+    [
+      "claude:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "claude:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "codex:SKILL.md",
+      "e0a0e3e0c51d1d7f2e718a04a6d96df12cca392263917e79b98601fc59c3f329"
+    ],
+    [
+      "codex:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "codex:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ]
+  ],
+  "selected_input_hash": "d40a04158ae5e294fa4b8cfad90077f283158e9f0ba2487c3d819fefc0f2e8d2",
+  "criteria_hash": "d8b8567bd573ad0e570606218b7a5c069424fefdb57bbce2d9078d52bb69a7c3",
+  "instrument_hash": "3133207cc4cbfc7c7a505242d555b59ad0541b8ddc37c1911a2e0d1ac7d1a20f",
+  "raw_refs": [
+    {
+      "path": "workspace/iteration-3/benchmark.json",
+      "sha256": "a1de045a9f8e3c84df20ce81cc5152007ece8f0f198ce344c062bca0ca4f560c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.result.txt",
+      "sha256": "dc9687104db26ad77f38e7902409ef82b432732a31b4a0824a71bd7cd57b6250"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "4d81ab71abe5b02b85bee145dfb729bfa88eb99b5807c838d4d00276296fccd8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/answer.md",
+      "sha256": "dc9687104db26ad77f38e7902409ef82b432732a31b4a0824a71bd7cd57b6250"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/grading.json",
+      "sha256": "f7164468e2ebdb222bad79c703aa87b677f5d1c1a260d01a560830abd632a826"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.result.txt",
+      "sha256": "14a9d8ed51ef53315e761e57dc6d58d1013d0aa42718630141a717565971bcb6"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9ab8a7c2d689f2ece207024e8eaafa4010f93d1425730803ec74678309bd5305"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/manifest.json",
+      "sha256": "90a57526166848e4f757f09247bc068c687b761c76d0dcf18ec1a767ed7dcda4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/manifest.json",
+      "sha256": "693814858a2451fede67e727cc742de24139b5cca9edc46679c59eb6a0887cf2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/prompt.txt",
+      "sha256": "a97f9c324956101c47895ca831de386722cd19e2f3f565b934765f97930dbd8c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.result.txt",
+      "sha256": "93ea1a122148473d7f59483cd5f953bcf05a35c8d9a36264bec7839905d49d20"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "617f77693e34a742781d41455af6ad443f2960248daf400a8fbd62c7f4ef7fb4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/answer.md",
+      "sha256": "93ea1a122148473d7f59483cd5f953bcf05a35c8d9a36264bec7839905d49d20"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/grading.json",
+      "sha256": "f81bb6855d302f0912c56935e82d2f565242a372b0296ac00d92735d4180b8ad"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.result.txt",
+      "sha256": "f4535b879f5efa49caf01ee16dd5da5a1ff903bd433c57dc4b06505ed22b7f7d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "d2c8e48c1cc5624381e27c200be26295eb89eae6e98587774803fd7f4ed14edb"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/manifest.json",
+      "sha256": "b8997045984b0c1b4e153fd7d4bdf9b9102fdc69c068b926c76894b2b2d15ed0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/manifest.json",
+      "sha256": "817062d630058aa8d0c32b10c27c768714b38d5fc1a2b3a525f58ad2178c0062"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/prompt.txt",
+      "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/answer.md",
+      "sha256": "4abacff3cdcb2497bd48d67b379c3e6b431ea2e7c696c45f29f3cb1b575e548a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.result.txt",
+      "sha256": "4abacff3cdcb2497bd48d67b379c3e6b431ea2e7c696c45f29f3cb1b575e548a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "07b810a284852014ef398ad681382e68c307fb321ae687bd977cdd81a2289aab"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/grading.json",
+      "sha256": "7dcb751f9caa85c29cfb0bfa176c3ffdcbdb2c8250d6ead10108ec6189b1b808"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.result.txt",
+      "sha256": "5a3a2c7c0c873e26c50889b3ec3c86627efbeceef422596004f37d830cd51066"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9d258e7fa72af4877f3dde7d419e61c49b17fcd37c047e98f7055c5b30fcc7db"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/manifest.json",
+      "sha256": "936c7bf6f5785fc829b22fb4ba558fb82516c04a10e3248949ffffa49268fdab"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/manifest.json",
+      "sha256": "87cefd822e44a60ad055c353de4bba1f935380617ae3026be91bf0c097db5730"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/prompt.txt",
+      "sha256": "6f2e0bb1e28a26ca57de4e824d46a8f37f68e2061acfc7372fb40c5bd2883f14"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/answer.md",
+      "sha256": "ec16476cf831a6396859b34b6beb6c73bc42c7eecc9bd6695787d0ddf9376fb6"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.result.txt",
+      "sha256": "ec16476cf831a6396859b34b6beb6c73bc42c7eecc9bd6695787d0ddf9376fb6"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "e568aa748bebec6e3e14987b9582d1569970f5bb03a2b1ec64af515dfc7baa07"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/grading.json",
+      "sha256": "71a5cc1db9a1d58cb9b68797f216db524af0eab918c62c2c183f0340625db013"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.result.txt",
+      "sha256": "977c3177e7af513e6a8bdba42dfa27cd4ec81ceeb50195fd63a430f79b478530"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "45259b573f6668fefbe947836641450e6dd5afc25b7a5a373ad87cef81b4616e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/manifest.json",
+      "sha256": "2fc4cc81768fd1a18277d2b99339f8b298fc50026a305d7e524d60f8bb3ee660"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/manifest.json",
+      "sha256": "c83e6da20f2247df675232fabd7c3c021c123e92186d9283b97ac87621f7d724"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/prompt.txt",
+      "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/answer.md",
+      "sha256": "f3bcb650ed24d9611971ba15c51204fa5c8e19612083a89300ad5385ca739f01"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.result.txt",
+      "sha256": "f3bcb650ed24d9611971ba15c51204fa5c8e19612083a89300ad5385ca739f01"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "2239f373db27d611ba7abfeba023fd85d15d3e9d4f0f94a5cc065ce9b89c02ab"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/grading.json",
+      "sha256": "fc18414796d384f81f0b47be723c349b16a29df1460fde7cdd237791bfe271ae"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.result.txt",
+      "sha256": "eaffb2eb2eb8bbad14ece568c7002f72c1775b9b17a7e361f854025390018f8b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "bd7c894dd19736bb6d5ebf449c05fd03a5b9941c363125d1420ede0b3924314c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/manifest.json",
+      "sha256": "bc47cf5b35da461dc6795baead518cc5d31be504bd63b3091e4e65a0acd2213e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/manifest.json",
+      "sha256": "ff6f9cda693af4c542faa77f344aaa4f4d5948437e251eba001a34d37cdc552d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/prompt.txt",
+      "sha256": "e8f95b5debac497bf299358d1ec2e2f205f00b62c62cec9a7d4d581d2aaabf2c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/answer.md",
+      "sha256": "15311d57623612146c40a7b8600867a17e656228dae5c958c50b4e996c0ce529"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.result.txt",
+      "sha256": "15311d57623612146c40a7b8600867a17e656228dae5c958c50b4e996c0ce529"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "00dcf86d51a2bac88adb79e3a4dc7bf62a7cb3ea2aa6eac1a7b864935560dd1e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/grading.json",
+      "sha256": "b69a708061d9dd8ffc55696d8672b461a0feb315a53d42f273f99d19db1752a4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.result.txt",
+      "sha256": "af94df557af3de24c452041b07a026ed962b082d069651536743f6c584af5ecd"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "bf5e83c4761da36357f8638979162309751c8d3d8e831e662083c7cc56dbd0b8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/manifest.json",
+      "sha256": "c7a0e73860c46238675d6ae90f60253976d61a3cb74a963448c459dcc0d6d7e3"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/manifest.json",
+      "sha256": "33bd9fb0503d76607746d0185b99815181fc95b65575f69078002e5b8d84d8c1"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/prompt.txt",
+      "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.result.txt",
+      "sha256": "8b640ffcf971e41c49d9e643269de9bef73a99bf0a5cfc930ca1ebd2bc399de3"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "57bcce74eaa163e8023bbf7cd2c57aa17cf489e3d6e4f7fe61072725a77ab31b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/manifest.json",
+      "sha256": "858728e34d583db3c3e926b119f5fefaca7b77e2f4393859d7512187057b02bc"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.result.txt",
+      "sha256": "410f61d3f9ab7a1c640c06b1f7b30ead1e5d2ca171667210d4dc08df47bf536d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "e837266ad53bc270d90b209423ef4bbab11a6222c566d3d959de54a55b6e54cf"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/manifest.json",
+      "sha256": "911f180981313edd24f6b4145a65f55a9ad378922e41a7f1bf65b017864c31a7"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.result.txt",
+      "sha256": "7364158891cbc264942432d12af43b77a9c135c0c44aeee25b7a517b2cd26262"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "1154753763fea10c026e7a42919e48204eeff685d44bcece598eeaee6d4dc8c1"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/manifest.json",
+      "sha256": "0f9f4ede763668f292112cf8f01979d5eb00b99bf145f342b66f07bec30386ce"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.agy.json",
+      "sha256": "cb83d409f7583925a9071753ec3d760d96652d929e6c80b5713007cd625c17ae"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.claude.json",
+      "sha256": "118400cabdbb812c0af9cfdb970e731d07081c19f7418bddafd475842065b928"
+    },
+    {
+      "path": "workspace/iteration-3/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.codex.json",
+      "sha256": "97ff4b3163b9e5f9e07eaaf8bc1bfea2bc9d3c7798a77de77c96bfe5941020f0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.result.txt",
+      "sha256": "4e06836eb352920dda8dee09cb81b18714843e13f4493c1d92c29a678f130936"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "db81e5e43f632924b99b08815e2dcaea5649df15915ae53085de87aa7a49775b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/answer.md",
+      "sha256": "4e06836eb352920dda8dee09cb81b18714843e13f4493c1d92c29a678f130936"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/grading.json",
+      "sha256": "c7fdca29bba393bdfb85cb1ceb4172baf6f85e1a1c10ad134c1792b12e13bf9e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.result.txt",
+      "sha256": "a3f13683a108496bda49693bc6db76e129e7538ed1618cb3af5608214d5c9142"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6dc1eac3426118f022f1fbd0885f12b6367b828b3f653a2d33b08dfa6e6952bf"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/manifest.json",
+      "sha256": "43fdbc3c3468877844c55d7cdadfc92e508a59506bd7f092e8e980fbdb40a5af"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/manifest.json",
+      "sha256": "f7d7901df6aafb546c4eb434b7b92d6a053c243bea9b96cf37d0489388ef65ba"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/prompt.txt",
+      "sha256": "ad0b7b03ca8ca8e5a128eef6ba9d0c9bbd79df60c3d5fb7452e41fd2b79fc30b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.result.txt",
+      "sha256": "81fa89c68f208ac710620f860d2af46c9507d963de44e2f10ac31fa977050601"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "770af57f688aa20d586a6f8c0b19d68808a22f086fc3220b28f6abfd48e73306"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/answer.md",
+      "sha256": "81fa89c68f208ac710620f860d2af46c9507d963de44e2f10ac31fa977050601"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/grading.json",
+      "sha256": "e812925448579306de5d939fb86d67f877f75966e88be03e5dcc3214bd933ee1"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.result.txt",
+      "sha256": "621c09e2671b0ed75e3f2b65d502e716df3e25bab23d6bb756ed5f5c8e46fd20"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "2e16be5e80df61263dd3c5dccd5cd1900e041f4c696a96bc85bba0fa06858e01"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/manifest.json",
+      "sha256": "23140532454bdc14d86e4c42337901907dcb05ec517a23973d38d2b24ff9c278"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/manifest.json",
+      "sha256": "5991a01ed03bbd7bb9fa30c068671984aa996e650a6965ab34065656bb04f128"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/prompt.txt",
+      "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/answer.md",
+      "sha256": "2c9b2c374d04545ee7ab367bbc3ee04a791068032119925bf3586fd4951bbcf2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.result.txt",
+      "sha256": "2c9b2c374d04545ee7ab367bbc3ee04a791068032119925bf3586fd4951bbcf2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "1fcafe2b321bdce99d0711e3b4d6fe57be7b1679d3b9f04c697dfd13a030dc47"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/grading.json",
+      "sha256": "41bdfafa0e57345fc04675e0f7f92babfb473b71059849d05ae35ecb8a2d4c01"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.result.txt",
+      "sha256": "211f0fa667c2e959cfa13a0abd2db2c59fc040b07bf56ca50ae6bf0605aa90c0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "79bdab9ce9e119ae3be68063de0dd285c3eb1f6f4dc7c7f0550bc5591d7fce6b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/manifest.json",
+      "sha256": "15cc5d765cb85ca3b0729a5cb42014ced4024522f1ecf3f98453f6a5cf1d4598"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/manifest.json",
+      "sha256": "636ab7544ef89f7a94c0d2e864a16943f5597f469191136d190e73e388c90ffa"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/prompt.txt",
+      "sha256": "ca4782e903fea67a409daaacf654ca336d9d8c47d0a74806c788f5eb3e7051cd"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/answer.md",
+      "sha256": "603b3837bc01e8dfee8fa929322bb4d27464498375b89216edb97d218ce399b5"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.result.txt",
+      "sha256": "603b3837bc01e8dfee8fa929322bb4d27464498375b89216edb97d218ce399b5"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "54bcddc48c1d00a826bdaf1d4f05e646fdd7c0daa3bf72a125827e772e0055f7"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/grading.json",
+      "sha256": "260f5b251b3c6acc51f5059541d292a6eb7406ef96f052104024f80be09eb958"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.result.txt",
+      "sha256": "f68862b349b06a7063c80ce11e8a26115219f357dc78fb48de1820be9c2dc07d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "e1ac2ab96af0cc1a890cc645e4f608ec871fcd37859e9a995efe35e3ee2d6d50"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/manifest.json",
+      "sha256": "714f935b79406b70153feb7b68e6ec9ead91a05c77b07020ab7b77b1fe776b10"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/manifest.json",
+      "sha256": "90af62645994f8e2ba2009183ba5ae1d65d6f82e26cf5b7614e7c880df985e13"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/prompt.txt",
+      "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/answer.md",
+      "sha256": "0238b1be6c7f5fd5ae5d6a89c902b62ea76822e68a72210888669897df32df5b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.result.txt",
+      "sha256": "0238b1be6c7f5fd5ae5d6a89c902b62ea76822e68a72210888669897df32df5b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "ccb46036a94f76b4cecf246dc79e5a43f5316d0450bbf8a739e41d7a2bbcb9b2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/grading.json",
+      "sha256": "fbba27f8e9ac145d12aa9b185b8748af803c4ce4af829d44679320b54e6198cc"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.result.txt",
+      "sha256": "774866951aca251de908f70bf6d589f7d01b07e2e19e86da1841b35d0793d9e4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b306cffaba7b212a2191d6908281108e4a981548e3375b617d92427b70e676ec"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/manifest.json",
+      "sha256": "b4e6b47be2dc02e558207d1cb92f25276b74ca9e4ec81657fd403fca2250bafe"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/manifest.json",
+      "sha256": "fa8f8a92813ca853a4cf07385751ceddd7bf29dc9d80a0f9b531fec5d1f3e8f2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/prompt.txt",
+      "sha256": "26512887711dcc78bd1384001eed464dcf2cb5ca7b7a349eb625e9961e80269b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/answer.md",
+      "sha256": "5daaaf38561069f6361470ed6bad818aa63e5d5afb4614b034e11e77f4d8156f"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.result.txt",
+      "sha256": "5daaaf38561069f6361470ed6bad818aa63e5d5afb4614b034e11e77f4d8156f"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "34cf39f8094bc0beaa86d942d892e15dba19b68d3ee3f0e9bedd0a27f6a39de2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/grading.json",
+      "sha256": "e81b30b4dcb42d123253e52e20010670c3384b6a6fbdbaa4e9547173ed51ca26"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.result.txt",
+      "sha256": "1f66199d1389ed3c6a3e100165946e487d7775f16619839ce316747fe732b503"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "98a0f85a4e15d384c4a457a1aefdce47f9cbaea19728c48f4302a81ea6311bed"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/manifest.json",
+      "sha256": "2d2233efdbf153621b525e213018332b746802570b8e0210a12a27888b99958b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/manifest.json",
+      "sha256": "fcb96d6f0b2783f8994019fe2e6596653e2a5d46e62e87ef4889d1171db42b55"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/prompt.txt",
+      "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.result.txt",
+      "sha256": "0e72de1183e7fee2f31a3b6c6d2a5075153f2ef30838720bde71678e3203383c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "ad7fe55be3cc4c2b0ce7d33f5c33ce13998fafd7610a0003c7666711ea04eaa8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/manifest.json",
+      "sha256": "f193436836affec8d8661f484a015ef6c8be67caa25b94a179b12c99407b0e0b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.result.txt",
+      "sha256": "fe4631270906415164397abe68dee6ed1703536a6866bf8c96495e66546ca09f"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "9f2394fcb8466fc55f878deb96f6c8591f90efdaaa05862f87673410bcaa230a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/manifest.json",
+      "sha256": "9799d1ac5190d24054c698e7e658e0764c71cc7d37e179bcfc107dbd9d463f13"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.result.txt",
+      "sha256": "f4354bf4f16b1ae5417422caeab25bbf1c90287b36bb9eb8bee08e2eb6f3a158"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "529e3e22ae70ab81d9faaf2363cd939880b9ff76c890bb7c426275da6d3e32e0"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/manifest.json",
+      "sha256": "3c7732744ff2f6ce0e884724a437249b212350d50ee701ff7c1bf6bbb7b1b6a1"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.agy.json",
+      "sha256": "642d8a787ba3e3c71cdce871516df1426515933ba8ab94d567addff914aae99b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.claude.json",
+      "sha256": "c3b2a599fdaf7109029f5995844b9aa34d70530dc2a02c2b6edeb0fd0ee65e52"
+    },
+    {
+      "path": "workspace/iteration-3/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.codex.json",
+      "sha256": "bef61b0823f741b188317a30b3b5387d71ce53ef00a07e54313706a53d673e50"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.result.txt",
+      "sha256": "2b10fcbb4717357641c4fc6875af097be39bbb3429575ad989e125ddc24a95f4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "7480f98179a422562e2ee54fc9b5d77a350ad835bf63e7e485bf034ce2d55baf"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/answer.md",
+      "sha256": "2b10fcbb4717357641c4fc6875af097be39bbb3429575ad989e125ddc24a95f4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/grading.json",
+      "sha256": "71d80b51758e6978136877f2c38e8907f26fcb659528384a815e66d2310734bb"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.result.txt",
+      "sha256": "ba6853b25082fdba93b880ab640280276047e27fa065e32b8a46b0fb2191ed5d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "257c7bb52bc9df3ed6b0d74ef51b085296864ce028c77e4a9c2fadb6ba880d81"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/manifest.json",
+      "sha256": "c4aa88fed090164d1ca4819849f2ed7e08057f0a4e6bc124788ffb2fb43f11c7"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/manifest.json",
+      "sha256": "2c2bfc1c58ecf3c72b5fceb61544bd48fd2ffc5caa4ece157f4eb29320e0611d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/prompt.txt",
+      "sha256": "161904a7045db2cf5ba9a41ed6f49cca355e2d513afdefa040bb8dead096e1fd"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.result.txt",
+      "sha256": "1c58e1c19fbe0ea589e71fd2eb9b3c0e075a030ef7c9ba9ea687cab5db4a0ee3"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "084c9208f30ac49c89c37d9d236369659ceab096e8e36648b495c8f79af2d9d2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/answer.md",
+      "sha256": "1c58e1c19fbe0ea589e71fd2eb9b3c0e075a030ef7c9ba9ea687cab5db4a0ee3"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/grading.json",
+      "sha256": "3355ad75f7cd77c0cc7d415b4843ac22b5981056f983eef9a6ddda32cf568cda"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.result.txt",
+      "sha256": "49854a1eb5a31967de426c7dc3d2c3aec45cefe97b981c379fa05e59ea2e915e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "757bbe07e559292e03b8d7aa44b14a2406996a4034512d373df11d7048bac6f6"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/manifest.json",
+      "sha256": "a16c540add5991fa4936c0fff4e6d29bf35ff49e7b044a750d284e567200fb52"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/manifest.json",
+      "sha256": "5348bbafa0787c150dcdcf80c3127d085d29bed5132504ab9f793d5153f5aca8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/prompt.txt",
+      "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/answer.md",
+      "sha256": "23d4c5604ecb87210b7b761d1f2afaf94a742904700b2f937c3bed9c7f99f73b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.result.txt",
+      "sha256": "23d4c5604ecb87210b7b761d1f2afaf94a742904700b2f937c3bed9c7f99f73b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "2956cac9c1f0a26b885f2ef8c2ae587bc269b567521109578f017ca1ea4d5f2d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/grading.json",
+      "sha256": "caebcb45445a3313c327411d598f313b0e2c432285238f334a431c2447b56111"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.result.txt",
+      "sha256": "cb59309213104644a77d66603e10355cf51fcd8ec3ace4784439086e0e19c38c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8883fcd31ee9ff75dad2a4bab5516e93f34b08fa5264287840e3108d76520698"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/manifest.json",
+      "sha256": "b4ce251e5347268fa268335dfd121c7a429429d4d1b2b6a89ecb4da22c04a570"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/manifest.json",
+      "sha256": "5302560c6a7ae06e52bac1530c0ddc6dc6842c76694438bb9e9307ed9f5c810a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/prompt.txt",
+      "sha256": "e4f2c2f3d47d02d211b296626eeec4b58d47bba6926ae4fa6e686004d4615e2d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/answer.md",
+      "sha256": "8e15a2e82c7e0dfc4b393eeec5065b5b0797dd7a07a206d2096a1768aea5c09a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.result.txt",
+      "sha256": "8e15a2e82c7e0dfc4b393eeec5065b5b0797dd7a07a206d2096a1768aea5c09a"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "4c84d92e2d1253e99219f2086e41bf44e5d9c59fc732c2fd833edadf60e5f6cf"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/grading.json",
+      "sha256": "0cba889e0c219a6afeb23c33972fdc1c2901bb47d6613ed2b9eb1c2f3c783096"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.result.txt",
+      "sha256": "084a0b2ad91aed9d68d1fd5f246502301f68970a1110effed459d5e891c9f30c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5baa9afa8ac29d53d959a40a073ac771a86d77794b4e7b26503ce06de397d46c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/manifest.json",
+      "sha256": "a21af24859f671441574e749d37819abd3880e66600dca99528151f7628b7182"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/manifest.json",
+      "sha256": "9cbd39247c47e28169172b20304ed5b75b463fa37267d521661898a0988b0e66"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/prompt.txt",
+      "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/answer.md",
+      "sha256": "b4ed387b0de05d89177e11c5af51eb56e841125c92f1256593b36016197526ec"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.result.txt",
+      "sha256": "b4ed387b0de05d89177e11c5af51eb56e841125c92f1256593b36016197526ec"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "57fcacfafca5fcb68ee1463fb1577e34e6c1bbe121e91df363e41bf16033335b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "e55f9a2a3314aa3c61706a0cfdd0079888c5f5ae7e0829de2a45d58b5962c5cf"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/grading.json",
+      "sha256": "9a0830f2e417845b738236520bdab66e7861f338fd0433ef80a27d565871674d"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.result.txt",
+      "sha256": "dc7036248448cab93024801f53236f6103d64d57cbd421256cbdc2cd9d9ea7ab"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6983cf7251d34c5bf28df8f9beeeab645d2d4c1e1749cf4a156c86586fbd6d95"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/manifest.json",
+      "sha256": "b408ab03035552ce3074fab5d5c348c83e11993943da618afdbff8861573ca07"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/manifest.json",
+      "sha256": "6008c6356ad5f815097dbb4f9168c1205b681b949116b39a68d8491798bccf21"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/prompt.txt",
+      "sha256": "9daf92b9655e622528fecc8f3c1f3f4cb3fec81779622b2746c75d966b183aa3"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/answer.md",
+      "sha256": "797b3e8598934202c3635319318de6e6395e191022cdbd82f7e81fefea003021"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.result.txt",
+      "sha256": "797b3e8598934202c3635319318de6e6395e191022cdbd82f7e81fefea003021"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "3adeb306887f651f6328c3d412f2e54ab81e62ac4abc610ae7d185fa2d459c80"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "f7384c42c4e3ccbfac61ffd0e17b9801574153bc10853f8eaab991cd51b9b7fa"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/grading.json",
+      "sha256": "2cce09b7732284994f1ee2153d186c7d4eee035cce3de36672c7337d3ef451a4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.result.txt",
+      "sha256": "90d10857bb12e7062b65f550ab18cace7734b2502ef7277591e6c3664b258da4"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5422ad3d067b64141dc4810078f079c8610cc16d337dcb7ed28fad611e838463"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/manifest.json",
+      "sha256": "f0b80acf7f3cb070b6008dd0c481489300e5a2fa67e4242e77a2803714c61c7b"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/manifest.json",
+      "sha256": "2f85e37bf423c08e3e4fc1efcca8705f1a3d0035d52eb0becf383a53d705bf48"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/prompt.txt",
+      "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.result.txt",
+      "sha256": "f705f09de29b50c84964d35387e2c9609c8ad328df45982b8caf801eff7f8ca9"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "620c1fdb2a2f0c337ce20b210d52f6ac7936b6444918d3e3676ca52993172c37"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/manifest.json",
+      "sha256": "38b37a568d8a180c2e239daa3a93c094385ef29d88a820d1e3db6173c24f0929"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.result.txt",
+      "sha256": "2fa3ed0e8603d88357f8575e10c0982dd563c76764d2aac8f2756a2ea4f2e2f2"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "74820b6d4d5b50bcc1346126f25daabecc764983cd6f595f55749e27f4402d5f"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/manifest.json",
+      "sha256": "c3c701f6c5f939a6f237b0e8679d3046a9d5187af406a00eb8f9d4b5f0494f6e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.result.txt",
+      "sha256": "8cc5c45c27cf58de1cfaec5846337cab1603b0268534ca9035ed6c8bec0e351e"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "49898e59720b5b983b197e762a1f1c2cb116776e053587c3253e35536bf87fa5"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/manifest.json",
+      "sha256": "0709fa5ebd0e237c65a2a9a53974ad1908e81585fb13938122f45f03d08c3a85"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.agy.json",
+      "sha256": "6f73aa8c81466613f78a5f9fb2eca8745dbc3348622cfa21319285183986cf7c"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.claude.json",
+      "sha256": "440aa2fc21a7e64d2aa49190c0b31e5760dd4d87a2c744352d3bb309a88b2b61"
+    },
+    {
+      "path": "workspace/iteration-3/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.codex.json",
+      "sha256": "2f3fa891e435843bd3ec3e7020a2a3de8dc040b51002d7900d664ed1b76f8bff"
+    }
+  ],
+  "native_counts": null,
+  "cli_versions": {
+    "agy": "1.4.2",
+    "claude": "2.1.302",
+    "codex": "0.163.0"
   },
   "certified_by": "delta-gate"
 }

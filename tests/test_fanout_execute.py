@@ -960,7 +960,7 @@ def test_mixed_plan_rejects_repo_write_before_first_read_only_profile_probe(tmp_
         runtime.service.start(owner=runtime.owner)
 
     assert version_probes == []
-    assert "native seat boundary" in str(error.value)
+    assert "repo-write workers are unsupported" in str(error.value)
     assert runtime.backend.record is None
 
 
@@ -976,7 +976,7 @@ def test_v2_read_only_service_preflight_refuses_before_provider_probe(provider_r
             "service authenticated or probed before v2 native gate"
         ),
     )
-    with pytest.raises(fanout.ExecutionPreflightError, match="native seat boundary"):
+    with pytest.raises(fanout.ExecutionPreflightError, match="target-bound coordinator"):
         fanout.ExecutionService._preflight(service, object())
 
 
@@ -1045,6 +1045,78 @@ def test_start_refuses_one_snapshot_reused_by_seats_of_different_tasks(tmp_path)
     assert runtime.backend.record is None
 
 
+def test_independent_caps_allocate_sum_and_frontier_completion_ends_execution(tmp_path, monkeypatch):
+    task = _task("work")
+    task["provider_policy"] = fanout.ProviderPolicyV1(
+        executor_ids=("claude", "codex"), rounds=2,
+        iteration_limits={"claude": 2, "codex": 10}).to_dict()
+    runtime = _runtime(tmp_path, _plan(task))
+    assert runtime.service._projected_turns == 12
+    monkeypatch.setattr(_Barrier, "is_complete", property(lambda self: self.round == 2), raising=False)
+    runtime.service.start(owner=runtime.owner)
+    status = runtime.service.resume(owner=runtime.owner)
+    assert status.tasks[0].phase == "reconciliation-pending"
+    assert [round for _task_id, round in runtime.coordinator.provider_dispatches] == [1, 2]
+    runtime.service.resume(owner=runtime.owner)
+    assert len(runtime.coordinator.provider_dispatches) == 2
+
+
+@pytest.mark.parametrize("execution_class", ["read-only", "repo-write"])
+def test_final_barrier_commit_recovers_to_reconciliation_without_replaying_turns(
+    tmp_path, monkeypatch, execution_class,
+):
+    task = _task("work", execution_class=execution_class)
+    task["provider_policy"]["rounds"] = 2
+    runtime = _runtime(tmp_path, _plan(task))
+    runtime.service.start(owner=runtime.owner)
+
+    def crash_before_reconciliation(*args, **kwargs):
+        raise SystemExit("final barrier committed before reconciliation")
+
+    with monkeypatch.context() as crash:
+        crash.setattr(runtime.scheduler, "begin_reconciliation", crash_before_reconciliation)
+        with pytest.raises(SystemExit, match="final barrier committed"):
+            runtime.service.resume(owner=runtime.owner)
+    assert len(runtime.backend.record.snapshot.tasks[0].barriers) == 2
+    recovered = fanout.ExecutionService(
+        plan=runtime.scheduler.plan, inputs=runtime.inputs,
+        preparations=runtime.preparations,
+        provider_profile_digests=dict(runtime.inputs.provider_profiles),
+        budget=fanout.ExecutionBudget(max_provider_turns=64),
+        scheduler=runtime.scheduler, journal=runtime.journal,
+        coordinator=runtime.coordinator, artifacts=runtime.artifacts,
+        backend=runtime.backend, memory_preflight=runtime.memory.preflight,
+        baseline=runtime.baseline, lifecycle_controller=runtime.controller,
+    )
+    status = recovered.resume(owner=runtime.owner)
+    assert status.tasks[0].phase == "reconciliation-pending"
+    assert runtime.coordinator.provider_dispatches == [("work", 1), ("work", 2)]
+
+
+@pytest.mark.parametrize("cap,accepted", [(2, True), (10, False)])
+def test_capacity_reserves_asymmetric_frontier_growth_before_dispatch(tmp_path, cap, accepted):
+    task = _task("work")
+    task["provider_policy"].update(rounds=2, iteration_limits={"codex": cap})
+    runtime = _runtime(tmp_path, _plan(task))
+
+    def bounded_service():
+        return fanout.ExecutionService(
+            plan=runtime.scheduler.plan, inputs=runtime.inputs, preparations=runtime.preparations,
+            provider_profile_digests=runtime.inputs.provider_profiles, budget=fanout.ExecutionBudget(64),
+            scheduler=runtime.scheduler, journal=runtime.journal, coordinator=runtime.coordinator,
+            artifacts=runtime.artifacts, backend=runtime.backend, memory_preflight=runtime.memory.preflight,
+            baseline=runtime.baseline, lifecycle_controller=runtime.controller,
+            limits=dataclasses.replace(fanout.ExecutionLimits(), max_snapshot_bytes=65536,
+                                      max_backend_record_bytes=65536))
+
+    if accepted:
+        assert bounded_service().status().tasks[0].phase == "unscheduled"
+    else:
+        with pytest.raises(fanout.ExecutionValidationError, match="snapshot|backend.*record"):
+            bounded_service()
+    assert runtime.backend.record is None and runtime.coordinator.execute_calls == []
+
+
 def test_resume_is_content_addressed_and_never_reruns_completed_provider_work(tmp_path):
     runtime = _runtime(tmp_path, _plan(_task("work")))
     started = runtime.service.start(owner=runtime.owner)
@@ -1079,6 +1151,24 @@ def test_resume_is_content_addressed_and_never_reruns_completed_provider_work(tm
     assert "safe answer" not in json.dumps(status.to_dict())
 
 
+def test_authenticated_blocked_memory_status_is_read_only_without_changing_scheduler(tmp_path):
+    runtime = _runtime(tmp_path, _plan(_task("work")))
+    runtime.coordinator.block_once.add("work")
+    runtime.service.start(owner=runtime.owner)
+    runtime.service.resume(owner=runtime.owner)
+    runtime.journal.append("blocked-memory", task_id="work", owner=runtime.owner)
+    before = copy.deepcopy(vars(runtime.journal.state)), runtime.backend.record, runtime.scheduler.revision
+    calls = tuple(runtime.coordinator.provider_dispatches)
+    for _ in range(2):
+        status = runtime.service.status()
+        assert status.tasks[0].phase == "blocked-memory"
+        assert status.tasks[0].completed_rounds == 1
+        assert status.authority_state == "resolved"
+    assert runtime.scheduler.task_phase("work") == "active"
+    assert (vars(runtime.journal.state), runtime.backend.record, runtime.scheduler.revision) == before
+    assert tuple(runtime.coordinator.provider_dispatches) == calls
+
+
 def test_resume_recovers_memory_barrier_without_repeating_provider_spend(tmp_path):
     runtime = _runtime(tmp_path, _plan(_task("work")))
     runtime.coordinator.block_once.add("work")
@@ -1100,6 +1190,7 @@ def test_round_one_recovery_caller_retains_original_three_seat_assignment(tmp_pa
 
     task = _task("work")
     task["provider_policy"]["executor_ids"] = ["claude", "codex", "agy"]
+    task["provider_policy"]["minimum_success"] = 3
     runtime = _runtime(tmp_path, _plan(task))
     runstate = sys.modules[f"{SPEC.name}.runstate"]
     anchor = controls._MemoryAnchor()
@@ -1177,7 +1268,7 @@ def test_round_one_recovery_caller_retains_original_three_seat_assignment(tmp_pa
     transport.fail_fetch = True
     try:
         caller.start(owner=owner)
-        assert caller.resume(owner=owner).tasks[0].phase == "active"
+        assert caller.resume(owner=owner).tasks[0].phase == "failed"
         ref = backend.read().snapshot.tasks[0].barriers[0]
         saved = coordinator.restore_barrier(ref, packet=runtime.preparations["work"].packet)
         assert len(saved.valid_terminals) == 2 and len(saved.terminals) == 3
@@ -1190,11 +1281,11 @@ def test_round_one_recovery_caller_retains_original_three_seat_assignment(tmp_pa
         backend = DurableBackend(owner)
         transport = controls._DurableObservationTransport(tmp_path / "observations.json")
         caller, coordinator = service(store, journal, owner, backend, transport)
-        assert caller.resume(owner=owner).tasks[0].phase == "reconciliation-pending"
+        assert caller.resume(owner=owner).tasks[0].phase == "failed"
         assert sorted(dispatches) == ["agy", "claude", "codex"]
         assert journal.state.uncertainty_resolutions[("work", "agy", 1, 1)] == "exclude"
         saves = [command for command in json.loads(transport.path.read_bytes())["commands"] if command["operation"] == "save"]
-        assert len(saves) == 2 and len({command["text"] for command in saves}) == 2
+        assert saves == []
     finally:
         journal.close()
         coordinator.artifacts.close()
@@ -1214,9 +1305,11 @@ def test_only_owner_can_submit_and_unverified_synthesis_stays_pending(tmp_path):
 
     assert runtime.scheduler.task_phase("work") == "reconciliation-pending"
     barrier = next(iter(runtime.coordinator.barriers.values()))
-    receipt = runtime.service.submit(
-        "work", barrier.valid_terminals[0].answer_ref, owner=runtime.owner,
+    synthesis = runtime.service.verify_read_only_synthesis(
+        "work", source_seat_ids=tuple(item.seat_id for item in barrier.valid_terminals),
+        synthesizer_id="owner", answer=b"Reviewed all final answers.\n", owner=runtime.owner,
     )
+    receipt = runtime.service.submit("work", synthesis, owner=runtime.owner)
     assert receipt.task_id == "work"
     assert runtime.scheduler.task_phase("work") == "completed"
 
@@ -1390,6 +1483,7 @@ def test_stale_or_forged_read_only_synthesis_stays_pending(tmp_path):
 def test_synthesis_cannot_disguise_an_unlisted_final_seat_answer(tmp_path):
     task = _task("work")
     task["provider_policy"]["executor_ids"] = ["claude", "codex", "agy"]
+    task["provider_policy"]["minimum_success"] = 3
     runtime = _runtime(tmp_path, _plan(task, _task("next", depends_on=("work",))))
     runtime.service.start(owner=runtime.owner)
     runtime.service.resume(owner=runtime.owner)
@@ -1404,7 +1498,7 @@ def test_synthesis_cannot_disguise_an_unlisted_final_seat_answer(tmp_path):
         synthesizer_id="orchestrator-codex", answer=result_bytes,
         checks=(), controller=runtime.controller,
     )
-    with pytest.raises(fanout.ExecutionPendingError, match="seat answer|new synthesis"):
+    with pytest.raises(fanout.ExecutionPendingError, match="synthesis"):
         runtime.service.submit("work", synthesis, owner=runtime.owner)
     assert runtime.scheduler.task_phase("next") == "unscheduled"
 
@@ -1446,15 +1540,15 @@ def test_declared_checks_prevent_unverified_single_seat_selection(tmp_path):
     runtime.service.start(owner=runtime.owner)
     runtime.service.resume(owner=runtime.owner)
     barrier = next(item for item in runtime.coordinator.barriers.values() if item.task_id == "work")
-    with pytest.raises(fanout.ExecutionPendingError, match="declared checks"):
+    with pytest.raises(fanout.ExecutionPendingError, match="synthesis"):
         runtime.service.submit("work", barrier.valid_terminals[0].answer_ref, owner=runtime.owner)
     assert runtime.scheduler.task_phase("work") == "reconciliation-pending"
     assert runtime.scheduler.task_phase("next") == "unscheduled"
 
 
-def test_identical_checked_answers_allow_fresh_explicit_selection_and_restart_proof(tmp_path):
+def test_identical_checked_answers_require_fresh_synthesis_and_restart_proof(tmp_path):
     check = fanout.PlanCheckV1(
-        argv=(sys.executable, "-c", "from pathlib import Path; assert Path('answer.md').read_text() == 'same safe answer\\n'"),
+        argv=(sys.executable, "-c", "from pathlib import Path; assert Path('answer.md').read_text() in ('same safe answer\\n', 'Reviewed all final answers.\\n')"),
         cwd="", env_allowlist=(), timeout=5,
         accepted_exit_codes=(0,), expected_artifacts=(),
     )
@@ -1470,13 +1564,19 @@ def test_identical_checked_answers_allow_fresh_explicit_selection_and_restart_pr
         "work", selected.seat_id, owner=runtime.owner,
     )
     assert receipt.valid
-    with pytest.raises(fanout.ExecutionPendingError, match="selection evidence"):
+    with pytest.raises(fanout.ExecutionPendingError, match="synthesis"):
         runtime.service.submit(
             "work", dataclasses.replace(receipt, seat_id="forged"), owner=runtime.owner,
         )
     assert runtime.scheduler.task_phase("next") == "unscheduled"
+    with pytest.raises(fanout.ExecutionPendingError, match="synthesis"):
+        runtime.service.submit("work", receipt, owner=runtime.owner)
+    receipt = runtime.service.verify_read_only_synthesis(
+        "work", source_seat_ids=tuple(item.seat_id for item in barrier.valid_terminals),
+        synthesizer_id="owner", answer=b"Reviewed all final answers.\n", owner=runtime.owner,
+    )
     result = runtime.service.submit("work", receipt, owner=runtime.owner)
-    assert runtime.artifacts.read_bytes(result.artifact) == b"same safe answer\n"
+    assert runtime.artifacts.read_bytes(result.artifact) == b"Reviewed all final answers.\n"
     assert runtime.scheduler.task_phase("next") == "scheduled"
     restarted, coordinator = _restart_before_profile_recovery(runtime, plan)
     assert restarted.status().tasks[0].phase == "completed"
@@ -1500,7 +1600,7 @@ def test_failed_checked_selection_remains_pending(tmp_path):
         "work", barrier.valid_terminals[0].seat_id, owner=runtime.owner,
     )
     assert not receipt.valid
-    with pytest.raises(fanout.ExecutionPendingError, match="fresh task verification"):
+    with pytest.raises(fanout.ExecutionPendingError, match="synthesis"):
         runtime.service.submit("work", receipt, owner=runtime.owner)
     assert runtime.scheduler.task_phase("work") == "reconciliation-pending"
 
@@ -1512,9 +1612,11 @@ def test_owner_can_reconcile_durable_work_after_memory_becomes_unavailable(tmp_p
     barrier = next(iter(runtime.coordinator.barriers.values()))
     runtime.memory.healthy = False
 
-    receipt = runtime.service.submit(
-        "work", barrier.valid_terminals[0].answer_ref, owner=runtime.owner,
+    synthesis = runtime.service.verify_read_only_synthesis(
+        "work", source_seat_ids=tuple(item.seat_id for item in barrier.valid_terminals),
+        synthesizer_id="owner", answer=b"Reviewed all final answers.\n", owner=runtime.owner,
     )
+    receipt = runtime.service.submit("work", synthesis, owner=runtime.owner)
 
     assert receipt.task_id == "work"
     assert runtime.scheduler.task_phase("work") == "completed"
@@ -2506,7 +2608,7 @@ def test_v2_partial_amendment_retains_authenticated_pending_context_after_cold_o
 
     runtime = collaboration_cases.fanout
     packet, live_seats, prototype, old_journal, _provider, old_store = collaboration_cases._v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write",
+        tmp_path, monkeypatch, execution_class="read-only",
     )
     old_journal.close()
     old_store.close()
@@ -4258,11 +4360,11 @@ def test_amendment_preserves_unaffected_live_task_context_across_restart(tmp_pat
         item for item in runtime.coordinator.barriers.values()
         if item.task_id == "live"
     )
-    result = recovered.submit(
-        "live",
-        barrier.valid_terminals[0].answer_ref,
-        owner=runtime.owner,
+    synthesis = recovered.verify_read_only_synthesis(
+        "live", source_seat_ids=tuple(item.seat_id for item in barrier.valid_terminals),
+        synthesizer_id="owner", answer=b"Reviewed all final answers.\n", owner=runtime.owner,
     )
+    result = recovered.submit("live", synthesis, owner=runtime.owner)
     assert result.task_id == "live"
 
 

@@ -36,7 +36,7 @@ SOURCES: dict[str, tuple[str, str]] = {
         "https://github.com/openai/codex.git",
         "FULL Rust source. codex-rs/exec/src/exec_events.rs is the authoritative "
         "definition of the JSONL events `codex exec --json` emits — the ground truth for "
-        "fanout.py's extract_codex_json.",
+        "native fanout's Codex event adapter.",
     ),
     "claude-code": (
         "https://github.com/anthropics/claude-code.git",

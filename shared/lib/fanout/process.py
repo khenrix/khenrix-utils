@@ -87,12 +87,8 @@ class ProcessCommand:
     max_depth: int = DEFAULT_MAX_DEPTH
     term_grace: float = 0.5
     reap_timeout: float = 2.0
-    native_original: ProcessCommand | None = field(default=None, repr=False, compare=False)
-    native_boundary: object | None = field(default=None, repr=False, compare=False)
-    native_request: object | None = field(default=None, repr=False, compare=False)
-    native_controller: object | None = field(default=None, repr=False, compare=False)
-    native_verification: object | None = field(default=None, repr=False, compare=False)
     max_output_bytes: int | None = None
+    trusted_native: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.argv, str) or not isinstance(self.argv, Sequence):
@@ -108,6 +104,8 @@ class ProcessCommand:
             raise ProcessValidationError("cwd must name an existing directory")
         if not isinstance(self.environment, Mapping):
             raise ProcessValidationError("environment must be a mapping")
+        if type(self.trusted_native) is not bool:
+            raise ProcessValidationError("trusted_native must be a boolean")
         _validate_duration("timeout", self.timeout, positive=True)
         _validate_duration("slot timeout", self.slot_timeout, positive=False)
         _validate_duration("TERM grace", self.term_grace, positive=False)
@@ -125,18 +123,43 @@ class ProcessCommand:
 
 def build_child_environment(base: Mapping[str, str] | None = None, *,
                             overrides: Mapping[str, str] | None = None,
-                            max_depth: int = DEFAULT_MAX_DEPTH) -> dict[str, str]:
-    """Build the minimal environment admitted to an executor child.
+                            max_depth: int = DEFAULT_MAX_DEPTH,
+                            trusted_native: bool = False) -> dict[str, str]:
+    """Build either a legacy minimal or trusted native child environment.
 
     Ambient variables are never inherited wholesale.  In particular, Git's repository
     selectors and injected config variables, ambient provider credentials, and memory
-    helpers cannot cross this boundary because none are inherited.
+    helpers cannot cross the legacy boundary because none are inherited. Trusted
+    native launches retain normal configuration and authentication discovery.
     """
     if isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < 0:
         raise ProcessValidationError("max depth must be a non-negative integer")
     source = os.environ if base is None else base
     if not isinstance(source, Mapping):
         raise ProcessValidationError("base environment must be a mapping")
+    if trusted_native:
+        # Same-user native sessions need their normal config and credential lookup.
+        # This is deliberately not a credential-blind or OS confinement boundary.
+        child = {
+            name: value for name, value in source.items()
+            if not name.startswith("GIT_CONFIG_") and name not in {
+                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                "CODEX_COLLABORATION_MODE", "MEMORY_WORKER_TOKEN",
+            }
+        }
+        child.update(overrides or {})
+        for name, value in child.items():
+            _validate_environment_value(name, value)
+        raw_depth = source.get("LLM_FANOUT_DEPTH", "0")
+        try:
+            depth = int(raw_depth)
+        except (TypeError, ValueError) as error:
+            raise ProcessValidationError("LLM_FANOUT_DEPTH must be a non-negative integer") from error
+        if depth < 0 or str(depth) != raw_depth or depth >= max_depth:
+            raise ProcessValidationError("fanout depth reaches configured limit or is invalid")
+        child.update({"AGY_CLI_DISABLE_AUTO_UPDATE": "true", "KHENRIX_NESTED_AGENT": "1",
+                      "LLM_FANOUT_DEPTH": str(depth + 1)})
+        return child
     # A pinned agy binary must not replace itself between fanout rounds.
     child: dict[str, str] = {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"}
     for name in _SAFE_ENVIRONMENT_NAMES:
@@ -364,9 +387,7 @@ def exact_session_lock(executor_id: str, session_id: str, *,
 
 def run_command(command: ProcessCommand, *,
                 base_environment: Mapping[str, str] | None = None,
-                on_started: Callable[[int], None] | None = None,
-                strict_gate_historical_root: Path | None = None,
-                strict_gate_original_sources: Mapping[str, object] | None = None) -> ProcessResult:
+                on_started: Callable[[int], None] | None = None) -> ProcessResult:
     """Run one argv command with bounded slot admission and process-group cleanup."""
     if not isinstance(command, ProcessCommand):
         raise ProcessValidationError("command must be a ProcessCommand")
@@ -374,95 +395,16 @@ def run_command(command: ProcessCommand, *,
         raise ProcessValidationError("start observer must be callable")
     if os.name != "posix":  # pragma: no cover - the contract requires a killable process group.
         raise ProcessValidationError("fanout process execution requires POSIX sessions")
-    if strict_gate_original_sources is not None and strict_gate_historical_root is None:
-        raise ProcessValidationError("original source inputs require the fixed strict gate historical subject")
-    native = command.native_boundary is not None
-    if native and base_environment is not None:
-        raise ProcessValidationError("native seat environment is fixed at boundary issuance")
-    environment = None if native else build_child_environment(
+    environment = build_child_environment(
         base_environment, overrides=command.environment, max_depth=command.max_depth,
+        trusted_native=command.trusted_native,
     )
-    if strict_gate_historical_root is not None:
-        if (tuple(command.argv) != ("mise", "exec", "--", "make", "precommit")
-                or command.stdin or command.environment
-                or any(value is not None for value in (command.native_original,
-                    command.native_boundary, command.native_request, command.native_controller,
-                    command.native_verification))):
-            raise ProcessValidationError("historical subject selector requires the fixed strict gate")
-        root = Path(strict_gate_historical_root)
-        if not root.is_absolute() or root.is_symlink() or not root.is_dir():
-            raise ProcessValidationError("strict gate historical root must be a real private directory")
-        info = root.lstat()
-        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-            raise ProcessValidationError("strict gate historical root must be a real private directory")
-        _validate_environment_value("KHENRIX_HISTORICAL_BASELINE_ROOT", str(root))
-        assert environment is not None
-        environment["KHENRIX_HISTORICAL_BASELINE_ROOT"] = str(root)
-        if strict_gate_original_sources is not None:
-            try:
-                from scripts.fanout_release_evaluations import _strict_original_sources
-                selected = strict_gate_original_sources
-                actual = _strict_original_sources(root, archive=Path(selected["archive"]["root"]),
-                    original_checks=Path(selected["checks"]["path"]), producer_root=Path(command.cwd))
-                if actual != selected:
-                    raise ValueError("input identities")
-                environment["FANOUT_QUALITY_ARCHIVE_ROOT"] = actual["archive"]["root"]
-                environment["FANOUT_QUALITY_ORIGINAL_CHECKS"] = actual["checks"]["path"]
-            except Exception as error:
-                raise ProcessValidationError("strict gate original source input differs") from error
     return _supervise_command(command, environment, on_started=on_started)
 
 
-def run_prompt_only_command(command: ProcessCommand, *, provider: str,
-                            environment: Mapping[str, str], real_home: Path) -> ProcessResult:
-    """Supervise only the eval bridge's exact isolated no-tools CLI grammar."""
-    if not isinstance(command, ProcessCommand) or os.name != "posix":
-        raise ProcessValidationError("prompt-only execution requires a POSIX ProcessCommand")
-    from .eval_provider import validate_launch
-    child = validate_launch(command, provider, dict(environment), real_home)
-    return _supervise_command(command, child,
-                              prompt_only_context=(provider, dict(environment), real_home))
-
-
-def _supervise_command(command: ProcessCommand, environment: dict[str, str] | None, *,
-                       on_started: Callable[[int], None] | None = None,
-                       prompt_only_context: tuple[str, dict[str, str], Path] | None = None) -> ProcessResult:
-    native = command.native_boundary is not None
+def _supervise_command(command: ProcessCommand, environment: dict[str, str], *,
+                       on_started: Callable[[int], None] | None = None) -> ProcessResult:
     with executor_slot(root=command.slot_root, cap=command.slot_cap, timeout=command.slot_timeout), _exit_observer() as exited:
-        if native:
-            from .native_boundary import validate_native_boundary
-            original = command.native_original
-            if original is None:
-                raise ProcessValidationError("native seat command lacks its exact original")
-            expected = ("/usr/bin/sandbox-exec", "-f",
-                        str(command.native_boundary.profile_path),
-                        *command.native_boundary.resolved_argv)
-            expected_environment = {
-                "HOME": str(command.native_boundary.state_root / "home"),
-                "TMPDIR": str(command.native_boundary.state_root / "tmp"),
-            }
-            if (tuple(command.argv) != expected
-                    or dict(command.environment) != expected_environment
-                    or command.stdin != original.stdin or command.cwd != original.cwd
-                    or command.timeout != original.timeout
-                    or command.slot_cap != original.slot_cap
-                    or command.slot_timeout != original.slot_timeout
-                    or command.slot_root != original.slot_root
-                    or command.max_depth != original.max_depth
-                    or command.term_grace != original.term_grace
-                    or command.reap_timeout != original.reap_timeout
-                    or command.max_output_bytes != original.max_output_bytes):
-                raise ProcessValidationError("native seat command wrapper changed")
-            validate_native_boundary(
-                command.native_boundary, command.native_request, original,
-                command.native_controller, command.native_verification,
-            )
-            environment = dict(command.native_boundary.frozen_environment)
-        if prompt_only_context is not None:
-            from .eval_provider import validate_launch
-            provider, prompt_environment, real_home = prompt_only_context
-            environment = validate_launch(command, provider, prompt_environment, real_home)
-        assert environment is not None
         try:
             process = subprocess.Popen(
                 command.argv,

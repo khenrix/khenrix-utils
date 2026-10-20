@@ -24,7 +24,7 @@ MARK="/tmp/claude-wiki-autosave-$SID"
 
 # Substantive session = enough real user turns (tool_results also log as
 # type:user in the transcript, so exclude them — this filters headless
-# one-shot runs like llm-council fanouts) and enough content overall.
+# one-shot native fanout runs) and enough content overall.
 TURNS=$(grep '"type":"user"' "$TP" 2>/dev/null | grep -vc tool_result || true)
 SIZE=$(stat -c %s "$TP" 2>/dev/null || echo 0)
 [ "${TURNS:-0}" -ge 6 ] && [ "${SIZE:-0}" -ge 80000 ] || exit 0

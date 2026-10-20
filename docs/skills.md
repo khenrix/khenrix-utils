@@ -13,7 +13,7 @@ native-only skills.
 | `khenrix-quality` | Easier-to-follow replies, minimal AI-prose cleanup, and code-quality work. Modes: `adhd`, `prose-edit`, `prose-detect`, `code`, and `code-workflow`. |
 | `khenrix-writing` | Humanizing prose, matching a voice sample, or a deeper rewrite. Mode: `humanize`. |
 | `llm-fanout-plan` | Turn an approved plan, direct question, or reviewed task bundle into a validated skill-aware fanout DAG. |
-| `llm-fanout-execute` | Execute an admitted fanout plan through isolated CLI seats, shared memory, reconciliation, and owner-reviewed handover. |
+| `llm-fanout-execute` | Execute an admitted plan through trusted same-user native sessions, shared memory, reconciliation, and owner-reviewed handover. Separate task workspaces do not provide OS confinement. |
 | `using-superpowers` | Load the relevant development-process skill before acting in a root session. |
 | `brainstorming` | Turn an open-ended idea into an agreed design before implementation. |
 | `writing-plans` | Turn an agreed design into a concrete implementation plan. |
@@ -67,9 +67,9 @@ inside that owner. `brainstorming` is for open-ended design and does not reopen 
 accepted plan. Upstream names such as `superpowers:systematic-debugging` mean the
 plain native skill `systematic-debugging` in this installation.
 
-Council and Forge are historical source/evidence only. Their two skills and two
-libraries are declared under `[historical_only]`, excluded from current delivery
-and receipt membership, and retained with their compatibility/security suites.
+Council/Forge skills and libraries are removed from current source and delivery.
+Historical source is recoverable from retained Git history, with private measured
+evidence held separately; neither qualifies the native implementation.
 
 The brainstorming visual companion is optional. When the user accepts it, launch
 it only through its managed script, which always sets

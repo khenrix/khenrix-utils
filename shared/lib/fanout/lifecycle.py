@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping, Sequence
 
 from .artifacts import canonical_json
-from .container_transfer_support import _rename_no_replace
+from .durable_io import _rename_no_replace
 from .controller import (
     LifecycleController,
     assert_controller,

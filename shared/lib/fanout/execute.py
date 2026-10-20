@@ -11,7 +11,6 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from .artifacts import ArtifactExistsError, ArtifactRef, ArtifactStore, canonical_json
-from .agy_guard import validate_agy_readonly_guard
 from .collaboration import CollaborationCoordinator, RoundPolicy, SeatAssignment, TaskPacket
 from .controller import LifecycleController, assert_controller
 from .errors import (
@@ -44,6 +43,7 @@ from .plan import FanoutPlanV1, FanoutPlanV2, PlanTaskV1, validate_plan
 from .providers import ProviderRegistry, run_provider
 from .repo import (
     RepositoryBaseline,
+    capture_repository_baseline,
     validate_seat_workspace,
     validate_seat_workspace_baseline,
 )
@@ -52,6 +52,7 @@ from .scheduler import ActionBarrier, PlanAmendment, ReconciledResult, Scheduler
 from .scheduler_authority import (
     ActionBarrierV2, BackendRecord, WorkDispatchV2,
     _authority_read, _record_matches_binding, _validate_backend_record,
+    _repository_writer,
 )
 from .verification import (
     AnswerSynthesisVerification,
@@ -490,6 +491,7 @@ class TaskPreparation:
         if (
             provider_policy.executor_ids != self.policy.executor_ids
             or provider_policy.rounds != self.policy.rounds
+            or provider_policy.iteration_limits != self.policy.iteration_limits
             or provider_policy.minimum_success != self.policy.minimum_success
             or provider_policy.timeout != self.policy.timeout
             or provider_policy.retries != self.policy.retries
@@ -518,18 +520,6 @@ class TaskPreparation:
                 except FanoutError as error:
                     raise ExecutionValidationError("task preparation profile timeout is invalid") from error
                 bindings[executor_id] = profile.digest, timeout
-                if executor_id == "agy" and self.packet.execution_class == "read-only":
-                    seat = next(item for item in seats if item.executor_id == executor_id)
-                    if seat.agy_guard is not None:
-                        try:
-                            assert seat.workspace_verification is not None
-                            validate_agy_readonly_guard(
-                                seat.agy_guard, seat.workspace_verification.workspace.root, profile,
-                            )
-                        except (AssertionError, ProviderRequestError) as error:
-                            raise ExecutionValidationError(
-                                "task preparation agy guard changed association"
-                            ) from error
         document = {
             "context_sha256": self.packet.context_sha256,
             "inputs_digest": self.inputs.digest,
@@ -537,6 +527,7 @@ class TaskPreparation:
             "policy": {
                 "executor_ids": list(self.policy.executor_ids),
                 "rounds": self.policy.rounds,
+                "iteration_limits": dict(self.policy.iteration_limits),
                 "minimum_success": self.policy.minimum_success,
                 "timeout": self.policy.timeout,
                 "retries": self.policy.retries,
@@ -560,11 +551,6 @@ class TaskPreparation:
                         None
                         if seat.workspace_verification is None
                         else seat.workspace_verification.evidence_digest
-                    ),
-                    "agy_guard_sha256": (
-                        seat.agy_guard_receipt_sha256
-                        if seat.agy_guard_receipt_sha256 is not None else
-                        None if seat.agy_guard is None else seat.agy_guard.receipt_sha256
                     ),
                 }
                 for seat in seats
@@ -606,7 +592,7 @@ class ExecutionTaskState:
         if bool(self.preparation_sha256) != bool(self.packet_context_sha256):
             raise ExecutionValidationError("execution task context is incomplete")
         barriers = tuple(self.barriers)
-        if len(barriers) > 3:
+        if len(barriers) > 10:
             raise ExecutionValidationError("execution barrier collection exceeds the round limit")
         for barrier in barriers:
             _artifact(barrier)
@@ -769,7 +755,7 @@ def _execution_task_from_dict(value: object) -> ExecutionTaskState:
     if not isinstance(value, dict) or set(value) != fields:
         raise ExecutionValidationError("execution task state fields are invalid")
     barriers = value["barriers"]
-    if not isinstance(barriers, list) or len(barriers) > 3:
+    if not isinstance(barriers, list) or len(barriers) > 10:
         raise ExecutionValidationError("execution barrier collection is invalid")
     refs = []
     for artifact in barriers:
@@ -829,7 +815,7 @@ class ExecutionTaskStatus:
         if (
             isinstance(self.completed_rounds, bool)
             or not isinstance(self.completed_rounds, int)
-            or not 0 <= self.completed_rounds <= 3
+            or not 0 <= self.completed_rounds <= 10
         ):
             raise ExecutionValidationError("status completed round count is invalid")
 
@@ -1111,7 +1097,7 @@ class ExecutionService:
         for target in scheduler.plan.targets:
             target_tasks = tuple(
                 task for task in tasks
-                if task.target_id == target.id and task.execution_class != "orchestrator-action"
+                if task.target_id == target.id and (task.execution_class != "orchestrator-action" or task.owned_paths)
             )
             phases = tuple(scheduler.task_phase(task.id) for task in target_tasks)
             handover_blocked = bool(
@@ -1119,16 +1105,16 @@ class ExecutionService:
                 and any(task.id in scheduler._journal.state.branch_blocked for task in target_tasks)
             )
             delivered = not handover_blocked and (any(
-                task.execution_class == "repo-write"
+                _repository_writer(task)
                 and delivered_writer(task)
                 for task in target_tasks
             ) or (
                 bool(target_tasks)
-                and all(task.execution_class != "repo-write" for task in target_tasks)
+                and all(not _repository_writer(task) for task in target_tasks)
                 and all(phase == "completed" for phase in phases)
             ))
             candidate = any(
-                task.execution_class == "repo-write" and scheduler.result_for(task.id) is not None
+                _repository_writer(task) and scheduler.result_for(task.id) is not None
                 for task in target_tasks
             )
             states[target.id] = (
@@ -1153,7 +1139,10 @@ class ExecutionService:
         return ExecutionStatus(
             scheduler.inputs.run_id, scheduler.plan_revision, scheduler.revision,
             0, 0,
-            tuple(ExecutionTaskStatus(task.id, scheduler.task_phase(task.id), 0)
+            tuple(ExecutionTaskStatus(task.id,
+                      "blocked-memory" if scheduler._journal is not None
+                      and scheduler._journal.state.task_phases.get(task.id) == "blocked-memory"
+                      else scheduler.task_phase(task.id), 0)
                   for task in tasks),
             target_states=states, overall_state=overall,
         )
@@ -1200,7 +1189,8 @@ class ExecutionService:
         tasks = tuple(
             ExecutionTaskStatus(
                 task.id,
-                self.scheduler.task_phase(task.id),
+                "blocked-memory" if self.journal.state.task_phases.get(task.id) == "blocked-memory"
+                else self.scheduler.task_phase(task.id),
                 len(states[task.id].barriers) if task.id in states else 0,
             )
             for task in plan.tasks if task.kind == "work"
@@ -1253,15 +1243,14 @@ class ExecutionService:
             raise ExecutionPendingError("repository synthesis verification requires a final pending barrier")
         state = self._execution_state(task_id)
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("repository synthesis verification requires a final provider barrier")
         baseline = self._require_baseline(task)
         self._validate_task_candidate_scope(task, candidate, baseline)
         sources = self._frozen_repo_candidates(task, baseline, state)
         available = Counter(item.candidate.digest for item in sources)
         requested = Counter(candidate.source_candidate_digests)
-        if (len(candidate.source_candidate_digests) < 2
-                or any(count > available[digest] for digest, count in requested.items())):
+        if requested != available:
             raise ExecutionPendingError("candidate lacks exact final-seat synthesis provenance")
         binding = CandidateReconciliationBinding(
             self.inputs.run_id, task.id, state.decision_plan_sha256,
@@ -1290,7 +1279,7 @@ class ExecutionService:
             raise ExecutionPendingError("checked selection requires an ordinary pending read-only task")
         state = self._execution_state(task_id)
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("checked selection requires a final provider barrier")
         barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
         selected = next(
@@ -1326,7 +1315,7 @@ class ExecutionService:
             raise ExecutionPendingError("answer synthesis requires a pending read-only task")
         state = self._execution_state(task_id)
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("answer synthesis requires a final provider barrier")
         barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
         available = {
@@ -1337,10 +1326,10 @@ class ExecutionService:
             requested = tuple(source_seat_ids)
         except TypeError as error:
             raise ExecutionPendingError("answer synthesis sources are invalid") from error
-        if (len(requested) < 2 or any(not isinstance(seat_id, str) for seat_id in requested)
-                or len(set(requested)) != len(requested) or any(
-            seat_id not in available for seat_id in requested
-        )):
+        expected = tuple(seat.seat_id for seat in self.preparations[task.id].seats)
+        if (any(not isinstance(seat_id, str) for seat_id in requested)
+                or len(set(requested)) != len(requested)
+                or set(requested) != set(expected) or set(available) != set(expected)):
             raise ExecutionPendingError("answer synthesis sources differ from final seats")
         return verify_answer_synthesis(
             self.artifacts, run_id=self.inputs.run_id, task_id=task.id,
@@ -1350,6 +1339,7 @@ class ExecutionService:
             synthesizer_id=synthesizer_id, answer=answer,
             checks=task.checks, controller=self._require_controller(),
             environment=environment, baseline=self._baseline_for_task(task),
+            expected_seat_ids=expected,
         )
 
     def submit(
@@ -2028,10 +2018,86 @@ class ExecutionService:
         except FanoutError as error:
             raise ExecutionConflictError("amendment registry descriptor is invalid") from error
 
+    def verify_owner_candidate(
+        self, task_id: str, candidate: CandidateBundle, *, owner: OwnerCapability,
+        environment: Mapping[str, str] | None = None,
+    ) -> CandidateVerification:
+        """Preview an owner delta against every reconciled proposal in a private workspace."""
+        self._authorize_command(owner)
+        task = self._task(task_id)
+        if (task.execution_class != "orchestrator-action" or not task.owned_paths or not task.checks
+                or self.scheduler.task_phase(task_id) != "blocked-action"):
+            raise ExecutionPendingError("owner candidate requires a checked pending write action")
+        baseline = self._require_baseline(task)
+        if capture_repository_baseline(baseline.repository).digest != baseline.digest:
+            raise ExecutionPendingError("owner target baseline drifted before preview")
+        validate_candidate_task_scope(candidate, task.owned_paths, baseline=baseline)
+        if candidate.source_candidate_digests:
+            raise ExecutionPendingError("owner proposals are read answers, not seat candidates")
+        binding = self._owner_candidate_binding(task, persist=True)
+        return verify_candidate(
+            baseline, candidate, task.checks, controller=self._require_controller(),
+            environment=environment, reconciliation=binding,
+        )
+
+    def _owner_candidate_binding(self, task: PlanTaskV1, *, persist: bool = False) -> CandidateReconciliationBinding:
+        dependencies = []
+        has_proposal = False
+        for task_id in task.depends_on:
+            source = self._task(task_id)
+            result = self.scheduler.result_for(task_id)
+            if self.scheduler.task_phase(task_id) != "completed" or not isinstance(result, ReconciledResult):
+                raise ExecutionPendingError("owner application requires completed proposal dependencies")
+            if source.execution_class == "read-only":
+                receipt = load_answer_synthesis(
+                    self._require_controller(), self.artifacts, run_id=self.inputs.run_id,
+                    task_id=task_id, answer_ref=result.artifact,
+                )
+                source_state = self._execution_state(task_id)
+                self._validate_answer_binding(
+                    source, receipt, result.plan_revision, source_state.decision_plan_sha256, source_state,
+                )
+                if self.inputs.targets is None or source.target_id == task.target_id:
+                    has_proposal = True
+            elif source.execution_class != "orchestrator-action":
+                raise ExecutionPendingError("owner application requires read-only proposals")
+            dependencies.append(dataclasses.asdict(result))
+        if not has_proposal:
+            raise ExecutionPendingError("owner application lacks a read-only proposal for its target")
+        state = self._execution_state(task.id)
+        payload = canonical_json({
+            "schema_version": "fanout-owner-proposal-inputs-v1", "run_id": self.inputs.run_id,
+            "task_id": task.id, "plan_sha256": state.decision_plan_sha256,
+            "plan_revision": state.decision_plan_revision, "inputs_digest": state.decision_inputs_digest,
+            "target_id": getattr(task, "target_id", None),
+            "baseline_sha256": self._require_baseline(task).digest,
+            "task_sha256": state.task_sha256, "dependencies": dependencies,
+        })
+        digest = _digest(payload)
+        ref = ArtifactRef(f"results/owner-inputs/{digest}.json", digest, len(payload))
+        if persist:
+            self._write_exact(ref.path, payload)
+        elif self.artifacts.read_bytes(ref) != payload:
+            raise ExecutionPendingError("owner proposal inputs changed")
+        return CandidateReconciliationBinding(
+            self.inputs.run_id, task.id, state.decision_plan_sha256, state.decision_plan_revision, ref,
+        )
+
+    def _validate_owner_candidate(self, task: PlanTaskV1, verified: CandidateVerification) -> None:
+        if not isinstance(verified, CandidateVerification):
+            raise ExecutionPendingError("writing owner action requires a fresh candidate verification")
+        validate_candidate_verification(self._require_controller(), verified)
+        baseline = self._require_baseline(task)
+        if (not verified.valid or verified.baseline_digest != baseline.digest or verified.checks != task.checks
+                or verified.candidate.source_candidate_digests
+                or verified.reconciliation != self._owner_candidate_binding(task)):
+            raise ExecutionPendingError("owner candidate lacks exact checked proposal provenance")
+        validate_candidate_task_scope(verified.candidate, task.owned_paths, baseline=baseline)
+
     def action_complete(
         self,
         task_id: str,
-        artifact: ArtifactRef,
+        artifact: ArtifactRef | CandidateVerification,
         *,
         owner: OwnerCapability,
     ) -> ReconciledResult:
@@ -2040,12 +2106,26 @@ class ExecutionService:
         task = self._task(task_id)
         if task.execution_class != "orchestrator-action":
             raise ExecutionValidationError("action-complete requires an orchestrator-action task")
+        if task.owned_paths:
+            self._validate_owner_candidate(task, artifact)
+            artifact = self._write_exact(
+                candidate_result_path(task.id, artifact.candidate.digest, artifact.evidence_digest),
+                artifact.candidate.manifest_bytes,
+            )
         self.artifacts.read_bytes(_artifact(artifact))
         phase = self._journal_phase(task_id)
         if phase == "blocked-action":
             self.journal.append("action-complete", task_id=task_id, owner=owner)
-        elif phase not in {"action-complete", "completed"}:
+        elif phase not in ({"action-complete", "completed"} | (
+                {"reconciliation-pending", "reconciliation-verifying"} if task.owned_paths else set())):
             raise ExecutionConflictError("run journal is not blocked on the action")
+        if task.owned_paths:
+            if self._journal_phase(task_id) == "action-complete":
+                self.journal.append("reconciliation-pending", task_id=task_id, owner=owner)
+            if self._journal_phase(task_id) == "reconciliation-pending":
+                self.journal.append("reconciliation-verifying", task_id=task_id, owner=owner)
+            if self._journal_phase(task_id) == "reconciliation-verifying":
+                self.journal.append("completed", task_id=task_id, owner=owner)
         scheduler_phase = self.scheduler.task_phase(task_id)
         if scheduler_phase == "blocked-action":
             receipt = self.scheduler.result_receipt(task_id, artifact)
@@ -2073,7 +2153,7 @@ class ExecutionService:
         if (
             self.scheduler.task_phase(task_id)
             not in {"reconciliation-pending", "completed"}
-            or len(self._execution_state(task_id).barriers) != policy.rounds
+            or not self._provider_complete(task, self._execution_state(task_id))
         ):
             raise ExecutionPendingError("provider rounds are not durably complete")
         return self._frozen_repo_candidates(task, baseline)
@@ -2284,9 +2364,7 @@ class ExecutionService:
     @property
     def _projected_turns(self) -> int:
         return sum(
-            len(preparation.seats)
-            * preparation.policy.rounds
-            * (preparation.policy.retries + 1)
+            preparation.policy.projected_turns
             for preparation in self.preparations.values()
         )
 
@@ -2303,22 +2381,17 @@ class ExecutionService:
             self.plan.schema_version != "v2"
             or self.inputs.targets is None
             or not isinstance(self.coordinator, CollaborationCoordinator)
-            or (self.coordinator.provider_runner is run_provider
-                and not self.coordinator._container_execution)
         ):
             raise ExecutionPreflightError(
-                "v2 execution requires a validated native seat boundary"
+                "v2 execution requires the exact target-bound coordinator"
             )
-        # Native repo-write remains closed; container profile admission below
-        # reopens the owner certificate before any provider turn.
         if any(task.execution_class == "repo-write" for task in self._work_tasks):
             coordinator_registry = getattr(self.coordinator, "registry", None)
             transport = getattr(self.coordinator, "provider_runner", None)
             if (isinstance(coordinator_registry, ProviderRegistry)
-                    and (transport is None or transport is run_provider)
-                    and not (v2 and self.coordinator._container_execution)):
+                    and (transport is None or transport is run_provider)):
                 raise ExecutionPreflightError(
-                    "repo-write execution requires a validated native seat boundary"
+                    "repo-write workers are unsupported; use read proposals and an owner action"
                 )
         self._authenticate_composition(
             owner,
@@ -3158,7 +3231,7 @@ class ExecutionService:
                     ):
                         raise ExecutionConflictError("execution task preparation changed")
             policy = task.provider_policy or plan.defaults
-            if len(state.barriers) > (0 if task.execution_class == "orchestrator-action" else policy.rounds):
+            if len(state.barriers) > (0 if task.execution_class == "orchestrator-action" else policy.max_iterations):
                 raise ExecutionConflictError("execution snapshot has too many barriers")
             for ref in state.barriers:
                 try:
@@ -3207,7 +3280,7 @@ class ExecutionService:
             packet = dataclasses.replace(preparation.packet, dependency_artifacts=dependencies)
         state = self._execution_state(task.id)
         source: object | None = None
-        for round_number in range(1, preparation.policy.rounds + 1):
+        for round_number in range(1, preparation.policy.max_iterations + 1):
             if len(state.barriers) < round_number:
                 discover = getattr(self.coordinator, "discover_barrier", None)
                 discovered = None if not callable(discover) else discover(
@@ -3227,10 +3300,7 @@ class ExecutionService:
             if len(state.barriers) >= round_number:
                 source = self._restore_barrier(state.barriers[round_number - 1], packet)
                 if getattr(source, "status", None) == "blocked-memory":
-                    survivors = tuple(
-                        seat for seat in preparation.seats
-                        if round_number == 1 or seat.seat_id in source.expected_seat_ids
-                    )
+                    survivors = preparation.seats
                     if isinstance(self.scheduler.plan, FanoutPlanV2):
                         self.scheduler.assert_dispatchable(task.id)
                     recovered = self.coordinator.execute_round(
@@ -3257,9 +3327,6 @@ class ExecutionService:
                     source = recovered
             else:
                 survivors = preparation.seats
-                if source is not None:
-                    valid_ids = {item.seat_id for item in source.valid_terminals}
-                    survivors = tuple(seat for seat in preparation.seats if seat.seat_id in valid_ids)
                 if isinstance(self.scheduler.plan, FanoutPlanV2):
                     self.scheduler.assert_dispatchable(task.id)
                 source = self.coordinator.execute_round(
@@ -3286,10 +3353,32 @@ class ExecutionService:
             if status != "round-complete":
                 raise ExecutionConflictError("coordinator returned an invalid barrier status")
             previous = source
+            if (getattr(source, "barrier_ref", None) == state.barriers[-1]
+                    and self._provider_complete(task, state)):
+                break
+        if not self._provider_complete(task, state):
+            raise ExecutionPendingError("provider frontier has no complete all-seat result")
         if task.execution_class == "repo-write" and not getattr(source, "candidate_sources", ()):
             raise ExecutionPendingError("final repository barrier has no durable source snapshot")
         self.scheduler.begin_reconciliation(task.id, owner=owner)
         self._ensure_reconciliation_journal(task.id, owner)
+
+    def _provider_complete(self, task: PlanTaskV1, state: ExecutionTaskState) -> bool:
+        if not state.barriers:
+            return False
+        preparation = self.preparations[task.id]
+        barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
+        expected = {seat.seat_id for seat in preparation.seats}
+        terminals = tuple(getattr(barrier, "valid_terminals", ()))
+        if (getattr(barrier, "status", None) != "round-complete"
+                or len(terminals) != len(expected)
+                or {item.seat_id for item in terminals} != expected):
+            return False
+        # Real barriers require the durable frontier proof. Structural legacy
+        # coordinators retain their uniform completion contract.
+        complete = getattr(barrier, "is_complete", None)
+        return (complete is True if complete is not None else
+                len(state.barriers) == preparation.policy.max_iterations)
 
     def _restore_barrier(self, ref: ArtifactRef, packet: TaskPacket) -> object:
         cache_key = (ref, packet.context_sha256)
@@ -3352,39 +3441,16 @@ class ExecutionService:
         task: PlanTaskV1,
         result: ArtifactRef | AnswerSynthesisVerification | AnswerSelectionVerification | CandidateVerification | object,
     ) -> ArtifactRef:
-        if isinstance(result, ArtifactRef):
-            if task.reconciliation_policy == "synthesis-required":
-                raise ExecutionPendingError("task reconciliation requires verified synthesis")
-            if task.checks:
-                raise ExecutionPendingError("single-seat selection cannot prove declared checks")
-            self.artifacts.read_bytes(result)
-            state = self._execution_state(task.id)
-            policy = task.provider_policy or self.plan.defaults
-            if len(state.barriers) != policy.rounds:
-                raise ExecutionPendingError("final provider barrier is not durable")
-            barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
-            answers = {
-                terminal.answer_ref
-                for terminal in barrier.valid_terminals
-                if getattr(terminal, "answer_ref", None) is not None
-            }
-            if result not in answers:
-                raise ExecutionPendingError("selected result is not a verified final-barrier answer")
-            return result
-        if isinstance(result, AnswerSelectionVerification):
-            if task.execution_class != "read-only":
-                raise ExecutionPendingError("answer selection is valid only for read-only reconciliation")
-            try:
-                validate_answer_selection(self._require_controller(), self.artifacts, result)
-            except CandidateValidationError as error:
-                raise ExecutionPendingError("answer selection evidence is unauthenticated") from error
-            self._validate_selection_binding(task, result)
-            return result.answer_ref
+        if isinstance(result, (ArtifactRef, AnswerSelectionVerification)):
+            raise ExecutionPendingError("task reconciliation requires verified all-seat synthesis")
         if isinstance(result, AnswerSynthesisVerification):
             if task.execution_class != "read-only":
                 raise ExecutionPendingError("answer synthesis is valid only for read-only reconciliation")
             try:
-                validate_answer_synthesis(self._require_controller(), self.artifacts, result)
+                validate_answer_synthesis(
+                    self._require_controller(), self.artifacts, result,
+                    expected_seat_ids=tuple(seat.seat_id for seat in self.preparations[task.id].seats),
+                )
             except CandidateValidationError as error:
                 raise ExecutionPendingError("answer synthesis evidence is unauthenticated") from error
             state = self._execution_state(task.id)
@@ -3421,7 +3487,7 @@ class ExecutionService:
         ):
             raise ExecutionPendingError("checked selection lacks exact fresh task verification")
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("checked selection lacks a final provider barrier")
         barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
         if not any(
@@ -3460,7 +3526,7 @@ class ExecutionService:
             raise ExecutionPendingError("candidate synthesis has not passed exact fresh verification")
         state = self._execution_state(task.id) if state is None else state
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("final provider barrier is not durable")
         if result.reconciliation != CandidateReconciliationBinding(
             self.inputs.run_id, task.id, state.decision_plan_sha256,
@@ -3477,8 +3543,7 @@ class ExecutionService:
         requested = Counter(sources)
         if (
             task.reconciliation_policy != "synthesis-required"
-            or len(sources) < 2
-            or any(count > direct_digests[digest] for digest, count in requested.items())
+            or requested != direct_digests
         ):
             raise ExecutionPendingError(
                 "candidate lacks exact final-seat synthesis provenance"
@@ -3507,7 +3572,7 @@ class ExecutionService:
             raise ExecutionPendingError("answer synthesis lacks exact run, plan, or declared check verification")
         state = self._execution_state(task.id) if state is None else state
         policy = task.provider_policy or self.plan.defaults
-        if len(state.barriers) != policy.rounds:
+        if not self._provider_complete(task, state):
             raise ExecutionPendingError("final provider barrier is not durable")
         barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
         answers = {
@@ -3515,7 +3580,11 @@ class ExecutionService:
             for terminal in barrier.valid_terminals
             if terminal.answer_ref is not None
         }
-        if any(answers.get(seat_id) != ref for seat_id, ref in receipt.source_answers):
+        expected = tuple(seat.seat_id for seat in self.preparations[task.id].seats)
+        validate_answer_synthesis(
+            self._require_controller(), self.artifacts, receipt, expected_seat_ids=expected,
+        )
+        if (set(answers) != set(expected) or dict(receipt.source_answers) != answers):
             raise ExecutionPendingError("answer synthesis source is not an exact final-barrier answer")
         if receipt.answer_ref.digest in {ref.digest for ref in answers.values()}:
             raise ExecutionPendingError("answer synthesis is a final seat answer, not a new synthesis")
@@ -3529,9 +3598,9 @@ class ExecutionService:
         scheduler_tasks = {
             task.id for task in self.scheduler.plan.tasks if task.kind == "work"
         }
-        for task in self._work_tasks:
+        for task in (item for item in self.plan.tasks if item.kind == "work"):
             if (task.id not in scheduler_tasks
-                    or task.execution_class not in {"read-only", "repo-write"}
+                    or (task.execution_class == "orchestrator-action" and not task.owned_paths)
                     or self.scheduler.task_phase(task.id) != "completed"):
                 continue
             result = self.scheduler.result_for(task.id)
@@ -3539,7 +3608,14 @@ class ExecutionService:
             if not isinstance(result, ReconciledResult) or state is None:
                 raise ExecutionConflictError("completed task lacks a durable reconciled result")
             try:
-                if task.execution_class == "repo-write":
+                if task.execution_class == "orchestrator-action":
+                    verification = load_candidate_verification(
+                        self._require_controller(), self.artifacts,
+                        task_id=task.id, candidate_ref=result.artifact,
+                        baseline=self._require_baseline(task),
+                    )
+                    self._validate_owner_candidate(task, verification)
+                elif task.execution_class == "repo-write":
                     verification = load_candidate_verification(
                         self._require_controller(), self.artifacts,
                         task_id=task.id, candidate_ref=result.artifact,
@@ -3547,12 +3623,7 @@ class ExecutionService:
                     )
                     self._validate_candidate_binding(task, verification, state)
                 elif result.artifact.path.startswith("results/answer-selections/"):
-                    selection = load_answer_selection(
-                        self._require_controller(), self.artifacts,
-                        run_id=self.inputs.run_id, task_id=task.id,
-                        answer_ref=result.artifact,
-                    )
-                    self._validate_selection_binding(task, selection, state)
+                    raise ExecutionPendingError("completed answer lacks required all-seat synthesis")
                 elif result.artifact.path.startswith("results/answers/"):
                     receipt = load_answer_synthesis(
                         self._require_controller(), self.artifacts,
@@ -3566,17 +3637,7 @@ class ExecutionService:
                         state,
                     )
                 else:
-                    if task.checks or task.reconciliation_policy == "synthesis-required":
-                        raise ExecutionPendingError("completed answer lacks required synthesis receipt")
-                    self.artifacts.read_bytes(result.artifact)
-                    policy = task.provider_policy or self.plan.defaults
-                    if len(state.barriers) != policy.rounds:
-                        raise ExecutionPendingError("completed selection lacks a final provider barrier")
-                    barrier = self._restore_barrier(state.barriers[-1], self._packet_for(task))
-                    if result.artifact not in {
-                        terminal.answer_ref for terminal in barrier.valid_terminals
-                    }:
-                        raise ExecutionPendingError("completed selection differs from final provider answers")
+                    raise ExecutionPendingError("completed answer lacks required synthesis receipt")
             except (CandidateValidationError, ExecutionPendingError, ExecutionValidationError,
                     ArtifactError, KeyError) as error:
                 raise ExecutionConflictError("completed synthesis receipt is invalid") from error
@@ -3606,7 +3667,9 @@ class ExecutionService:
                 candidate.baseline_digest != baseline.digest
                 or candidate.digest != ref.digest
                 or ref.path != source_candidate_artifact_path(
-                    packet.run_id, task.id, packet.attempt, barrier.round,
+                    packet.run_id, task.id, packet.attempt,
+                    next(getattr(item, "round", barrier.round) for item in barrier.valid_terminals
+                         if item.seat_id == seat_id),
                     seat_id,
                 )
             ):
@@ -3703,7 +3766,8 @@ class ExecutionService:
 
     def _require_baseline(self, task: PlanTaskV1) -> RepositoryBaseline:
         baseline = self._baseline_for_task(task)
-        if task.execution_class != "repo-write" or baseline is None:
+        if (baseline is None or not (task.execution_class == "repo-write" or
+                task.execution_class == "orchestrator-action" and task.owned_paths and task.checks)):
             raise ExecutionValidationError("command requires repo-write baseline evidence")
         return baseline
 
@@ -3902,7 +3966,7 @@ class ExecutionService:
             )
             for task in tasks
         )
-        rounds = sum(preparation.policy.rounds for preparation in self.preparations.values())
+        rounds = sum(preparation.policy.max_iterations for preparation in self.preparations.values())
         current = self.backend.read()
         capacity_backend_revision = (
             current.revision if isinstance(current, ExecutionRecord) else 0
@@ -3926,8 +3990,8 @@ class ExecutionService:
             "size": self.artifacts.limits.max_file_bytes,
         })) - 1
         barrier_growth = sum(
-            preparation.policy.rounds * reference_bytes
-            + max(0, preparation.policy.rounds - 1)
+            preparation.policy.max_iterations * reference_bytes
+            + max(0, preparation.policy.max_iterations - 1)
             for preparation in self.preparations.values()
         )
         if len(snapshot_bytes) + barrier_growth > self.limits.max_snapshot_bytes:

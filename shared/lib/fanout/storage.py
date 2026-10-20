@@ -12,9 +12,11 @@ import stat
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Mapping
 
 from .artifacts import ArtifactStore, canonical_json
+from .controller import LifecycleController
+from .repo import RepositoryBaseline
 from .errors import (
     ExecutionConflictError, ExecutionValidationError, RunAuthorizationError,
     RunStateError, SchedulerConflictError, SchedulerStateError,
@@ -693,6 +695,8 @@ def resume_scheduler_from_amendments(
     *, initial_plan: FanoutPlanV1, journal: RunJournal,
     backend: SchedulerBackend, artifacts: ArtifactStore,
     owner: OwnerCapability, anchor_store: LocalAnchorAuthority,
+    lifecycle_controller: LifecycleController | None = None,
+    repository_baselines: Mapping[str, RepositoryBaseline] | None = None,
 ) -> Scheduler:
     """Authenticate all amendment documents before scheduler authority can repair."""
     journal.authorize_owner(owner)
@@ -734,4 +738,5 @@ def resume_scheduler_from_amendments(
     return Scheduler.resume(
         expected_plan, expected_inputs, backend, artifacts,
         owner=owner, anchor_store=anchor_store,
+        lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
     )

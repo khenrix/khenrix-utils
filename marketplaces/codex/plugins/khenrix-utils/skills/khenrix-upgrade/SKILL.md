@@ -32,12 +32,14 @@ get better results.
 - **A model switch is two artifacts, never one action**: a repo-side guidance edit
   (applied with confirmation) plus the exact live-config command in the report
   (recommend-only — never run it yourself).
-- **A model id is not free text — `[models]` in `capabilities.toml` is an ALLOW-LIST
-  and `make verify` fails on anything outside it.** `checks.py`'s model-crosscheck
-  refuses a model that any engine names but the manifest does not, so introducing
-  one means registering it there in the same change, not just editing prose.
+- **Register configured default model IDs.** `model-crosscheck` checks only
+  `settings.defaults.<provider>.model` against that provider's `[models]` list
+  in `capabilities.toml`; Claude's dynamic `best` alias is exempt. Register a
+  new default ID in the same change. This check does not validate engine or
+  fanout-profile model choices or establish live model availability.
 - **Registering it is still not enough: price it, or the cost tooling reports $0.**
-  Every registered Claude ID needs an exact `scripts/pricing.toml` row.
+  Every registered Claude ID needs an exact `scripts/pricing.toml` row with
+  finite, nonnegative `input`, `output`, `cache_read`, and `cache_write` rates.
   Session pricing accepts only exact IDs and date-suffixed variants, so a new
   minor version cannot inherit an older version's rate. `pricing-coverage`
   catches missing rows at `make verify`; bump `last_reviewed` in both files.
@@ -84,9 +86,10 @@ get better results.
    and run `mise run verify` from the **repo root** (the directory with the
    `Makefile` / `capabilities.toml`, not an installed copy). Then
    choose delivery by changed surface:
-   - If `khenrix-quality`, `khenrix-writing`, their provenance, selective-delivery
-     settings, or `house-style.md` changed, run `mise run skills:test` and `mise
-     run skills:upstream-status`. Show `mise run skills:plan`, then apply that exact
+   - If any skill listed in `[skill_delivery].skills`, its bundled runtime or
+     provenance, selective-delivery settings, or `house-style.md` changed, run
+     `mise run skills:test` and `mise run skills:upstream-status`. Show
+     `mise run skills:plan`, then apply that exact
      content-addressed plan with `mise run skills:apply -- --expect <plan-id>`.
      Finish with `mise run skills:doctor` and `mise run skills:maka-smoke`.
    - If any optional plugin, broader reconcile capability, or other rendered skill

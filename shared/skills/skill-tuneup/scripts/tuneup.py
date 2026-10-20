@@ -446,7 +446,9 @@ def review_window_minutes(runtime_root: Path, planner_path: Path) -> float:
         registry.select(provider, "read-only", policy["quality_tier"]).timeout_ceiling
         for provider in policy["executor_ids"]
     )
-    return policy["rounds"] * (policy["retries"] + 1) * timeout / 60
+    limits = policy.get("iteration_limits", {})
+    turns = max(limits.get(provider, policy["rounds"]) for provider in policy["executor_ids"])
+    return turns * timeout / 60
 
 
 def lock_acquire(stale_min: int = LOCK_STALE_MIN) -> tuple[bool, str]:
@@ -565,7 +567,7 @@ SEVERITY_TESTS = {
 STALL_LIMIT = 2  # consecutive non-decreasing cycles => the loop is not converging
 
 
-CYCLE_END = "cycle-end"      # one per CYCLE, written after that cycle's council review
+CYCLE_END = "cycle-end"      # one per cycle, written after its fanout review
 RUN_START = "run-start"      # one per RUN, written at Step 1
 RUN_END = "run-convergence"  # one per RUN — the run's outcome, NOT a cycle boundary
 
@@ -903,8 +905,39 @@ def _self_test() -> int:
         ev = r / "evals" / "alpha"
         ev.mkdir(parents=True)
         ev.joinpath("evals.json").write_text("{}")
+        (r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# Synthetic alpha\n")
+        _chk = _load_checks()
+        _panel = ["claude", "codex", "agy"]
+        _manifest = _chk.instrument_manifest(r)
+        # Synthetic proof lives only in this disposable self-test repository.
+        ev.parent.joinpath("instrument-proof.json").write_text(json.dumps({
+            "schema_version": 1, "instrument_manifest": _manifest,
+            "instrument_hash": _chk.manifest_hash(_manifest),
+            "tests": [{"command": ["synthetic-self-test"],
+                       "counts": {"tests_run": 1, "failed": 0, "skipped": 0},
+                       "evidence_sha256": "a" * 64}],
+            "native_sessions": {provider: {
+                "valid": True, "session_id": "synthetic-" + provider,
+                "role": "evaluator", "cli_version": "synthetic",
+                "judge_config": {"model": "synthetic", "thinking":
+                                 "high" if provider == "agy" else "xhigh"},
+                "raw_capture_sha256": "b" * 64,
+                "read_tool_evidence_sha256": "c" * 64,
+            } for provider in _panel},
+            "private_artifact_manifest_sha256": "d" * 64,
+        }))
+        def _receipt(extra):
+            providers = extra.get("providers", _panel)
+            return {**_chk.capture_evaluation_snapshot(r, "alpha", providers=providers,
+                    judge_config={"model": "synthetic", "thinking": "xhigh"}),
+                    "schema_version": 3, "skill": "alpha", "providers": providers,
+                    "cli_versions": {provider: "synthetic" for provider in providers},
+                    "provenance": "eval", "certified_by": "synthetic-self-test",
+                    "per_provider": {provider: {} for provider in providers},
+                    "raw_refs": [{"path": "workspace/synthetic.json", "sha256": "e" * 64}],
+                    **extra}
         def _probs(rec):
-            ev.joinpath("receipt.json").write_text(json.dumps(rec))
+            ev.joinpath("receipt.json").write_text(json.dumps(_receipt(rec)))
             return " ".join(verify_final_receipt(r, "alpha", ["claude", "codex", "agy"]))
         ok.append(("seeded receipt is rejected",
                    "seeded, not earned" in _probs(
@@ -923,14 +956,8 @@ def _self_test() -> int:
         # announcing "receipt is full-panel" for the very skills it EXEMPTS from the panel
         # check, and reverting to that wording would still leave every gate green. Only
         # main() chooses the wording, so only a CLI-level run can witness it.
-        _chk = _load_checks()
-
         def _say(extra: dict) -> tuple[int, str]:
-            rec = {"schema_version": 2, "skill": "alpha", "providers": ["claude", "codex", "agy"],
-                   "provenance": "eval", "certified_by": "delta-gate",
-                   "per_provider": {"claude": {}},
-                   "source_hash": _chk.source_hash(r, "alpha"),
-                   "eval_set_hash": _chk.eval_set_hash(r, "alpha"), **extra}
+            rec = _receipt(extra)
             ev.joinpath("receipt.json").write_text(json.dumps(rec))
             p = subprocess.run([sys.executable, str(Path(__file__).resolve()),
                                 "verify-final-receipt", "--repo", str(r), "--skill", "alpha"],
@@ -943,6 +970,11 @@ def _self_test() -> int:
         ok.append(("CLI: an EXEMPT receipt is not announced as full-panel",
                    _rc_self == 0 and "panel-exempt" in _out_self
                    and "is full-panel" not in _out_self))
+        ev.parent.joinpath("instrument-proof.json").unlink()
+        _rc_unproven, _out_unproven = _say({})
+        ok.append(("CLI: missing current instrument proof still refuses a matching V3 receipt",
+                   _rc_unproven != 0 and "instrument proof" in _out_unproven
+                   and "final gate proven:" not in _out_unproven))
     # severity-gated convergence: the rule that replaced the fixed cycle cap
     def _hist(counts, tail=0):
         e = [{"finding_id": RUN_START, "decision": "applied"}]
@@ -1443,7 +1475,7 @@ def verify_final_receipt(repo: Path, skill: str, panel: list) -> list:
 
     THE RULES THEMSELVES LIVE IN `checks.validate_receipt(final=True)` — one rulebook
     shared with `receipt_gate`, so this command and `make precommit` can no longer
-    disagree about the same receipt. llm-council and the deterministic-gated skills stay
+    disagree about the same receipt. Deterministic-gated skills stay
     exempt from the panel requirement there: their receipts are earned by a self-test /
     unit suite, so a full panel proves nothing extra about them.
     """
@@ -1456,7 +1488,7 @@ REVIEW_TOTAL_CAP = 512 * 1024
 
 def review_material(repo: Path, cap: int = REVIEW_BYTE_CAP,
                     total_cap: int = REVIEW_TOTAL_CAP) -> str:
-    """Assemble exactly what council review #2 must see: the diff PLUS untracked files.
+    """Assemble exactly what fanout review #2 must see: the diff PLUS untracked files.
 
     This was a shell loop in SKILL.md and shell was the wrong tool — three cycles of
     review found four ways it silently mis-served the reviewer, each verified live:
@@ -1481,7 +1513,7 @@ def review_material(repo: Path, cap: int = REVIEW_BYTE_CAP,
 
     - `diff HEAD`, never bare `git diff`. Bare diff is blind to the INDEX, so a fully
       staged tree returns empty — and an empty result is exactly what tells Step 9 there
-      is nothing to review, silently skipping a mandatory council review.
+      is nothing to review, silently skipping a mandatory fanout review.
     - untracked files are appended explicitly. `git diff` in any form cannot see them, so
       a file created during the run (an `evals.json` scaffolded in Step 8.2 is the live
       case) would never reach the reviewer while `git add -A` still ships it.
@@ -1493,7 +1525,7 @@ def review_material(repo: Path, cap: int = REVIEW_BYTE_CAP,
         the shell version still had: git's `fatal:` reached the terminal there. Silently
         returning "" here makes a broken repo indistinguishable from a clean one, so
         Step 9 skips the mandatory review and `convergence-status` reads the resulting
-        zero-finding cycle as CONVERGED — over a candidate no council ever saw. Realistic
+        zero-finding cycle as CONVERGED — over a candidate no reviewer ever saw. Realistic
         triggers: dubious ownership on a /mnt/c checkout, an unborn HEAD, a mistyped $REPO.
         """
         # bytes always, decoded explicitly: `text=True` decodes with the locale codec and

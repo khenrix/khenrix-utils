@@ -23,13 +23,6 @@ from .controller import (
     read_evidence,
     write_evidence,
 )
-from .container_transfer import (
-    TransferIdentity,
-    TransferRejected,
-    _open_root as _open_export_root,
-    _source_payload as _export_entry_payload,
-    snapshot_manifest,
-)
 from .errors import ArtifactError, CandidateValidationError, CandidateVerificationError, RepositoryError
 from .plan import FanoutPlanV2, PlanCheckV1
 from .process import ProcessCommand, ProcessStatus, run_command
@@ -487,7 +480,8 @@ def _validate_target_candidate_scope(candidate, binding, task, baseline) -> None
                 or baseline.head != binding.base_oid or baseline.repository != binding.root):
             raise CandidateValidationError("original target baseline changed binding")
         _validate_candidate(baseline, candidate)
-    if task.execution_class == "repo-write":
+    if task.execution_class == "repo-write" or (
+            task.execution_class == "orchestrator-action" and task.owned_paths and task.checks):
         validate_candidate_task_scope(candidate, task.owned_paths, baseline=baseline)
 
 
@@ -496,6 +490,7 @@ def verify_target_candidate(
     plan: FanoutPlanV2, inputs: RunInputs, store: ArtifactStore,
     controller: LifecycleController,
     environment: Mapping[str, str] | None = None,
+    verification: "CandidateVerification | None" = None,
 ) -> tuple[TargetEvidenceEnvelope, "CandidateVerification"]:
     """Freshly verify one issued candidate against its exact captured target baseline."""
     if not isinstance(candidate_envelope, TargetEvidenceEnvelope):
@@ -518,12 +513,13 @@ def verify_target_candidate(
         or candidate.baseline_digest != baseline.digest
     ):
         raise CandidateValidationError("verification baseline differs from exact target root, base, or digest")
-    receipt = verify_candidate(
+    receipt = verification if verification is not None else verify_candidate(
         baseline, candidate, task.checks, controller=controller,
         environment=environment,
     )
     validate_candidate_verification(controller, receipt)
-    if not receipt.valid:
+    if (not receipt.valid or receipt.candidate != candidate
+            or receipt.baseline_digest != baseline.digest or receipt.checks != task.checks):
         raise CandidateVerificationError("target candidate did not pass fresh declared checks")
     try:
         result_ref = store.write_bytes(
@@ -902,13 +898,12 @@ class AnswerSynthesisVerification:
             raise CandidateValidationError("answer plan revision is invalid")
         _answer_artifact_ref(self.answer_ref)
         sources = tuple(self.source_answers)
-        if len(sources) < 2 or tuple(sorted(sources, key=lambda item: item[0])) != sources:
+        if not sources or tuple(sorted(sources, key=lambda item: item[0])) != sources:
             raise CandidateValidationError("answer synthesis needs ordered distinct sources")
         for seat_id, ref in sources:
             _answer_identity(seat_id, "source seat")
             _answer_artifact_ref(ref)
         if (len({seat for seat, _ in sources}) != len(sources)
-                or len({ref.digest for _, ref in sources}) != len(sources)
                 or self.answer_ref.digest in {ref.digest for _, ref in sources}):
             raise CandidateValidationError("answer synthesis needs distinct source and result digests")
         checks = tuple(self.checks)
@@ -1087,6 +1082,7 @@ def verify_answer_synthesis(
     controller: LifecycleController,
     environment: Mapping[str, str] | None = None,
     baseline: RepositoryBaseline | None = None,
+    expected_seat_ids: Sequence[str] | None = None,
 ) -> AnswerSynthesisVerification:
     """Check a new read-only answer in isolation and persist its provenance."""
     if not isinstance(artifacts, ArtifactStore) or not isinstance(sources, Mapping):
@@ -1106,15 +1102,14 @@ def verify_answer_synthesis(
     if not decoded.strip() or "\x00" in decoded:
         raise CandidateValidationError("synthesized answer must contain nonempty text")
     source_answers = tuple(sorted(sources.items()))
-    if len(source_answers) < 2:
-        raise CandidateValidationError("answer synthesis needs at least two distinct sources")
+    _require_final_answer_seats(source_answers, expected_seat_ids)
     for seat_id, ref in source_answers:
         _answer_identity(seat_id, "source seat")
         _answer_artifact_ref(ref)
         artifacts.read_bytes(ref)
     source_digests = {ref.digest for _, ref in source_answers}
     answer_digest = hashlib.sha256(answer).hexdigest()
-    if len(source_digests) != len(source_answers) or answer_digest in source_digests:
+    if answer_digest in source_digests:
         raise CandidateValidationError("answer synthesis needs distinct source and result digests")
     immutable_checks = tuple(checks)
     if any(not isinstance(check, PlanCheckV1) for check in immutable_checks):
@@ -1224,10 +1219,13 @@ def validate_answer_synthesis(
     controller: LifecycleController,
     artifacts: ArtifactStore,
     receipt: AnswerSynthesisVerification,
+    *,
+    expected_seat_ids: Sequence[str] | None = None,
 ) -> None:
     """Recheck signed synthesis evidence and every source/result artifact byte."""
     if not isinstance(receipt, AnswerSynthesisVerification) or not isinstance(artifacts, ArtifactStore):
         raise CandidateValidationError("answer synthesis receipt is invalid")
+    _require_final_answer_seats(receipt.source_answers, expected_seat_ids)
     try:
         assert_controller(controller)
         if receipt.controller_id != controller.controller_id:
@@ -1254,6 +1252,23 @@ def validate_answer_synthesis(
         raise
     except Exception as error:
         raise CandidateValidationError("answer synthesis evidence or artifacts are unavailable") from error
+
+
+def _require_final_answer_seats(
+    sources: tuple[tuple[str, ArtifactRef], ...], expected: Sequence[str] | None,
+) -> None:
+    actual = tuple(seat for seat, _ in sources)
+    if not actual or len(set(actual)) != len(actual):
+        raise CandidateValidationError("answer synthesis needs distinct final source seats")
+    if expected is None:
+        return
+    if isinstance(expected, (str, bytes)) or not isinstance(expected, Sequence):
+        raise CandidateValidationError("expected final seats must be a sequence")
+    seats = tuple(expected)
+    for seat in seats:
+        _answer_identity(seat, "expected final seat")
+    if not seats or len(set(seats)) != len(seats) or set(actual) != set(seats):
+        raise CandidateValidationError("answer synthesis must reference every expected final seat exactly once")
 
 
 def validate_answer_selection(
@@ -1577,84 +1592,6 @@ def create_candidate(baseline: RepositoryBaseline, workspace: SeatWorkspace | Pa
     return candidate
 
 
-def create_candidate_from_export(
-    baseline: RepositoryBaseline,
-    private_export_root: Path,
-    expected_identity: TransferIdentity,
-    expected_manifest_sha256: str,
-) -> CandidateBundle:
-    """Read a complete exported tree into a delta bound to its transfer manifest."""
-    _baseline(baseline)
-    _digest(expected_manifest_sha256, "candidate export manifest digest")
-    try:
-        root = Path(private_export_root)
-        if not root.is_absolute() or ".." in root.parts:
-            raise CandidateValidationError("candidate export root must be an absolute contained path")
-        root_fd = _open_export_root(root)
-    except (TypeError, ValueError, OSError, TransferRejected) as error:
-        raise CandidateValidationError("candidate export root is unsafe") from error
-    try:
-        root_info = os.fstat(root_fd)
-        try:
-            _scan_directory(root_fd, (), {}, top_level=True, budget=_Budget(baseline.limits))
-        except RepositoryError as error:
-            raise CandidateValidationError("candidate export exceeds the immutable baseline byte limit") from error
-        manifest = snapshot_manifest(root, expected_identity,
-                                     max_file_bytes=baseline.limits.max_file_bytes,
-                                     max_total_bytes=baseline.limits.max_total_bytes)
-        if manifest.identity != expected_identity:
-            raise CandidateValidationError("candidate export identity differs")
-        if hashlib.sha256(canonical_json(asdict(manifest))).hexdigest() != expected_manifest_sha256:
-            raise CandidateValidationError("candidate export manifest digest differs")
-        current_root = os.stat(root, follow_symlinks=False)
-        if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
-            raise CandidateValidationError("candidate export root changed during verification")
-
-        baseline_entries = {entry.path: entry for entry in baseline.entries}
-        baseline_directories = _baseline_directory_modes(baseline)
-        exported_paths: set[str] = set()
-        entries: list[CandidateEntry] = []
-        deleted: set[str] = set()
-        total = 0
-        for exported in manifest.entries:
-            if (exported.length > baseline.limits.max_file_bytes
-                    or total + exported.length > baseline.limits.max_total_bytes):
-                raise CandidateValidationError("candidate export exceeds the immutable baseline byte limit")
-            data = b"".join(_export_entry_payload(root_fd, exported))
-            entry = CandidateEntry(exported.path, exported.kind, exported.mode, data)
-            _candidate_budget(baseline, entry, total)
-            total += len(data)
-            exported_paths.add(entry.path)
-            previous = baseline_entries.get(entry.path)
-            if entry.kind == "directory":
-                if previous is not None:
-                    deleted.add(entry.path)
-                if baseline_directories.get(entry.path) != entry.mode:
-                    entries.append(entry)
-            elif previous is None or not _same_entry(previous, entry):
-                entries.append(entry)
-                if previous is not None and previous.kind != entry.kind:
-                    deleted.add(entry.path)
-                if entry.path in baseline_directories:
-                    deleted.add(entry.path)
-        deleted.update(set(baseline_entries) - exported_paths)
-        deleted.update(set(baseline_directories) - exported_paths)
-        if snapshot_manifest(root, expected_identity,
-                             max_file_bytes=baseline.limits.max_file_bytes,
-                             max_total_bytes=baseline.limits.max_total_bytes) != manifest:
-            raise CandidateValidationError("candidate export tree changed during verification")
-        current_root = os.stat(root, follow_symlinks=False)
-        if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
-            raise CandidateValidationError("candidate export root changed during verification")
-        candidate = CandidateBundle(baseline.digest, tuple(entries), tuple(deleted))
-        _validate_candidate(baseline, candidate)
-        return candidate
-    except TransferRejected as error:
-        raise CandidateValidationError("candidate export bytes changed or are unsafe") from error
-    except OSError as error:
-        raise CandidateValidationError("candidate export tree changed during verification") from error
-    finally:
-        os.close(root_fd)
 
 
 def synthesize_candidate(
@@ -1667,8 +1604,8 @@ def synthesize_candidate(
     """Create a new reconciled candidate bound to the exact source-candidate identities."""
     _baseline(baseline)
     source_bundles = tuple(sources)
-    if len(source_bundles) < 2 or any(not isinstance(item, CandidateBundle) for item in source_bundles):
-        raise CandidateValidationError("synthesis requires at least two candidate sources")
+    if not source_bundles or any(not isinstance(item, CandidateBundle) for item in source_bundles):
+        raise CandidateValidationError("synthesis requires candidate sources")
     if any(item.baseline_digest != baseline.digest for item in source_bundles):
         raise CandidateValidationError("synthesis sources use another immutable baseline")
     candidate = CandidateBundle(
@@ -1690,7 +1627,7 @@ def source_candidate_artifact_path(
         _answer_identity(value, label)
     if (isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1
             or isinstance(round_number, bool) or not isinstance(round_number, int)
-            or not 1 <= round_number <= 3):
+            or not 1 <= round_number <= 10):
         raise CandidateValidationError("candidate source round identity is invalid")
     scope = hashlib.sha256(canonical_json([run_id, task_id, attempt, round_number])).hexdigest()[:24]
     seat = hashlib.sha256(seat_id.encode("utf-8")).hexdigest()[:16]

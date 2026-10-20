@@ -26,7 +26,6 @@ assert SPEC and SPEC.loader
 fanout = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = fanout
 SPEC.loader.exec_module(fanout)
-transfer = importlib.import_module(f"{fanout.__name__}.container_transfer")
 
 
 CandidateBundle = fanout.CandidateBundle
@@ -88,32 +87,6 @@ def _repository(tmp_path: Path) -> Path:
 
 def _seat(tmp_path: Path, baseline: object, seat_id: str = "claude") -> object:
     return create_seat_workspace(baseline, tmp_path / "run", seat_id)
-
-
-def _export_tree(tmp_path: Path, baseline: object) -> Path:
-    root = tmp_path / "private-export"
-    root.mkdir()
-    for directory in sorted(baseline.directories, key=lambda item: len(Path(item.path).parts)):
-        (root / directory.path).mkdir()
-    for entry in baseline.entries:
-        path = root / entry.path
-        if entry.kind == "symlink":
-            path.symlink_to(os.fsdecode(entry.data))
-        else:
-            path.write_bytes(entry.data)
-            path.chmod(entry.mode)
-    for directory in sorted(baseline.directories, key=lambda item: -len(Path(item.path).parts)):
-        (root / directory.path).chmod(directory.mode)
-    return root
-
-
-def _export_identity() -> object:
-    return transfer.TransferIdentity("run-1", "task-1", "target-1", "codex", "a" * 64)
-
-
-def _export_manifest_sha256(root: Path, identity: object) -> str:
-    manifest = transfer.snapshot_manifest(root, identity)
-    return hashlib.sha256(canonical_json(asdict(manifest))).hexdigest()
 
 
 def _controller(tmp_path: Path) -> object:
@@ -193,13 +166,11 @@ def test_candidate_links_are_validated_in_the_complete_resulting_tree(tmp_path, 
             synthesize_candidate(baseline, sources=(source, source), entries=entries, deleted_paths=())
 
 
-@pytest.mark.parametrize("ingress", ("workspace", "export"))
-def test_candidate_ingress_refuses_oversized_files_before_any_payload_read(tmp_path, monkeypatch, ingress):
+def test_candidate_ingress_refuses_oversized_files_before_any_payload_read(tmp_path, monkeypatch):
     baseline = capture_repository_baseline(_repository(tmp_path))
     baseline = replace(baseline, limits=fanout.RepoLimits(32, 200))
-    root = _seat(tmp_path, baseline).root if ingress == "workspace" else _export_tree(tmp_path, baseline)
+    root = _seat(tmp_path, baseline).root
     (root / "changed.bin").write_bytes(b"x" * 33)
-    manifest_digest = _export_manifest_sha256(root, _export_identity()) if ingress == "export" else None
     real_read = os.read
     reads = []
     def observe_read(fd, size):
@@ -208,10 +179,7 @@ def test_candidate_ingress_refuses_oversized_files_before_any_payload_read(tmp_p
         return real_read(fd, size)
     monkeypatch.setattr(os, "read", observe_read)
     with pytest.raises(CandidateValidationError, match="limit|quota"):
-        if ingress == "workspace":
-            create_candidate(baseline, root)
-        else:
-            fanout.verification.create_candidate_from_export(baseline, root, _export_identity(), manifest_digest)
+        create_candidate(baseline, root)
     assert reads == []
 
 
@@ -352,7 +320,7 @@ def _quota_baseline(tmp_path):
     return replace(capture_repository_baseline(repo), limits=fanout.RepoLimits(4, 6))
 
 
-@pytest.mark.parametrize("ingress", ("workspace", "export", "manifest", "synthesis"))
+@pytest.mark.parametrize("ingress", ("workspace", "manifest", "synthesis"))
 @pytest.mark.parametrize("change", ("replacement", "delete-add", "overflow"))
 def test_candidate_ingress_counts_each_resulting_path_once_with_unchanged_bytes(tmp_path, ingress, change):
     baseline = _quota_baseline(tmp_path)
@@ -366,15 +334,13 @@ def test_candidate_ingress_counts_each_resulting_path_once_with_unchanged_bytes(
         if ingress == "manifest":
             decoded = CandidateBundle.from_manifest(proposed.manifest_bytes)
             return verify_candidate(baseline, decoded, (_check("pass"),), controller=_controller(tmp_path)).candidate
-        root = _seat(tmp_path, baseline).root if ingress == "workspace" else _export_tree(tmp_path, baseline)
+        root = _seat(tmp_path, baseline).root
         for path in deleted:
             (root / path).unlink()
         for entry in entries:
             (root / entry.path).write_bytes(entry.data)
             (root / entry.path).chmod(entry.mode)
-        if ingress == "workspace":
-            return create_candidate(baseline, root)
-        return fanout.verification.create_candidate_from_export(baseline, root, _export_identity(), _export_manifest_sha256(root, _export_identity()))
+        return create_candidate(baseline, root)
     if change == "overflow":
         with pytest.raises(CandidateValidationError, match="total|limit|quota"):
             admit()
@@ -448,45 +414,13 @@ def test_postcheck_retained_growth_cannot_read_beyond_the_exact_result_budget(tm
     assert reads == []
 
 
-@pytest.mark.parametrize("snapshot", (1, 2))
-@pytest.mark.parametrize("change", ("growth", "addition", "total"))
-def test_export_snapshots_refuse_over_budget_payload_before_read(tmp_path, monkeypatch, snapshot, change):
-    baseline = _quota_baseline(tmp_path)
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    original_snapshot, original_read = transfer.snapshot_manifest, os.read
-    calls, reads = [], []
-    target = root / ("new" if change == "addition" else "old")
-    def mutate(path, selected, **kwargs):
-        calls.append(selected)
-        if len(calls) == snapshot:
-            if change == "total":
-                (root / "aaa").write_bytes(b"abc")
-                (root / "aaa").chmod(0o600)
-            else:
-                target.write_bytes(b"12345")
-                target.chmod(0o600)
-        return original_snapshot(path, selected, **kwargs)
-    def observe(fd, size):
-        info = os.fstat(fd)
-        if len(calls) == snapshot and stat.S_ISREG(info.st_mode) and target.exists() and info.st_ino == target.stat().st_ino:
-            reads.append(size)
-        return original_read(fd, size)
-    monkeypatch.setattr(fanout.verification, "snapshot_manifest", mutate)
-    monkeypatch.setattr(os, "read", observe)
-    with pytest.raises(CandidateValidationError):
-        fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
-    assert len(calls) == snapshot
-    assert reads == []
-
-
 @pytest.mark.parametrize("phase", ("fresh", "handover-stage", "handover-final-check"))
 @pytest.mark.parametrize("drift", ("bytes", "mode", "link", "directory-mode"))
 def test_checks_preserve_retained_baseline_truth_not_only_the_delta(tmp_path, phase, drift):
     repository = _repository(tmp_path)
     (repository / "retained-link").symlink_to("keep.txt")
     (repository / "retained-dir").mkdir()
+    (repository / "retained-dir").chmod(0o700)
     baseline = capture_repository_baseline(repository)
     candidate = CandidateBundle(baseline.digest, (CandidateEntry("changed.bin", "file", 0o644, b"admitted"),), ())
     mutation = {
@@ -1013,239 +947,6 @@ def test_candidate_bundle_captures_full_bytes_modes_raw_links_and_deletions(tmp_
     assert entries["changed.bin"].data == b"after\x00\xff"
 
 
-def test_export_candidate_captures_edits_additions_and_all_baseline_deletions(tmp_path):
-    repository = _repository(tmp_path)
-    baseline = capture_repository_baseline(repository)
-    root = _export_tree(tmp_path, baseline)
-    (root / "changed.bin").write_bytes(b"after\x00\xff")
-    (root / "new.txt").write_bytes(b"new\n")
-    (root / "remove.txt").unlink()
-    identity = _export_identity()
-
-    candidate = fanout.verification.create_candidate_from_export(
-        baseline, root, identity, _export_manifest_sha256(root, identity),
-    )
-
-    assert [(entry.path, entry.data) for entry in candidate.entries] == [
-        ("changed.bin", b"after\x00\xff"), ("new.txt", b"new\n"),
-    ]
-    assert candidate.deleted_paths == ("remove.txt",)
-    assert candidate.baseline_digest == baseline.digest
-
-
-def test_export_candidate_captures_directory_modes_and_symlink_changes(tmp_path):
-    repository = _repository(tmp_path)
-    (repository / "nested").mkdir()
-    (repository / "nested").chmod(0o755)
-    (repository / "nested" / "keep.txt").write_bytes(b"nested\n")
-    (repository / "link").symlink_to("keep.txt")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "-qm", "nested baseline")
-    baseline = capture_repository_baseline(repository)
-    root = _export_tree(tmp_path, baseline)
-    (root / "nested").chmod(0o700)
-    (root / "link").unlink()
-    (root / "link").symlink_to("changed.bin")
-    (root / "nested" / "new-link").symlink_to("../changed.bin")
-    for link in (root / "link", root / "nested" / "new-link"):
-        if stat.S_IMODE(link.lstat().st_mode) == 0o777:
-            continue
-        if os.chmod not in os.supports_follow_symlinks:
-            pytest.skip("filesystem cannot set transferable symlink modes")
-        try:
-            os.chmod(link, 0o777, follow_symlinks=False)
-        except NotImplementedError:
-            pytest.skip("filesystem cannot set transferable symlink modes")
-        except OSError as error:
-            if error.errno in {errno.ENOSYS, errno.ENOTSUP}:
-                pytest.skip("filesystem cannot set transferable symlink modes")
-            raise
-        if stat.S_IMODE(link.lstat().st_mode) != 0o777:
-            pytest.skip("filesystem did not retain transferable symlink mode")
-    identity = _export_identity()
-
-    candidate = fanout.verification.create_candidate_from_export(
-        baseline, root, identity, _export_manifest_sha256(root, identity),
-    )
-
-    assert [(entry.path, entry.kind, entry.mode, entry.data) for entry in candidate.entries] == [
-        ("link", "symlink", 0o777, b"changed.bin"),
-        ("nested", "directory", 0o700, b""),
-        ("nested/new-link", "symlink", 0o777, b"../changed.bin"),
-    ]
-    assert candidate.deleted_paths == ()
-
-
-@pytest.mark.parametrize("changed", ["run_id", "task_id", "target_id", "seat_id", "inputs_digest"])
-def test_export_candidate_rejects_wrong_authenticated_identity(tmp_path, changed):
-    baseline = capture_repository_baseline(_repository(tmp_path))
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    other = replace(identity, **{changed: "b" * 64 if changed == "inputs_digest" else "other"})
-
-    with pytest.raises(CandidateValidationError, match="manifest|identity"):
-        fanout.verification.create_candidate_from_export(baseline, root, other, digest)
-
-
-def test_export_candidate_rejects_changed_content_behind_authenticated_manifest(tmp_path):
-    baseline = capture_repository_baseline(_repository(tmp_path))
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    (root / "changed.bin").write_bytes(b"forged\n")
-
-    with pytest.raises(CandidateValidationError, match="manifest"):
-        fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
-
-
-def test_export_candidate_rejects_sibling_tree_and_symlink_path_substitution(tmp_path):
-    baseline = capture_repository_baseline(_repository(tmp_path))
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    sibling = tmp_path / "sibling"
-    sibling.mkdir()
-    (sibling / "foreign.txt").write_bytes(b"foreign")
-    alias = tmp_path / "path-alias"
-    alias.symlink_to(root, target_is_directory=True)
-
-    for substituted in (sibling, alias):
-        with pytest.raises(CandidateValidationError):
-            fanout.verification.create_candidate_from_export(baseline, substituted, identity, digest)
-
-
-@pytest.mark.parametrize("unsafe, reason", [
-    ("git", "Git metadata"),
-    ("fifo", "kind is not transferable"),
-    ("hardlink", "hardlink is not transferable"),
-])
-def test_export_candidate_rejects_untransferable_tree_entries(tmp_path, unsafe, reason):
-    baseline = capture_repository_baseline(_repository(tmp_path))
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    if unsafe == "git":
-        (root / ".git").mkdir()
-    elif unsafe == "fifo":
-        os.mkfifo(root / "special")
-    else:
-        os.link(root / "changed.bin", root / "second.bin")
-
-    with pytest.raises(CandidateValidationError) as rejected:
-        fanout.verification.create_candidate_from_export(
-            baseline, root, identity, digest,
-        )
-    assert isinstance(rejected.value.__cause__, transfer.TransferRejected)
-    assert reason in str(rejected.value.__cause__)
-
-
-def test_export_candidate_enforces_baseline_byte_limit(tmp_path):
-    repository = _repository(tmp_path)
-    baseline = capture_repository_baseline(
-        repository, limits=fanout.RepoLimits(max_file_bytes=32, max_total_bytes=512),
-    )
-    root = _export_tree(tmp_path, baseline)
-    (root / "new.txt").write_bytes(b"x" * 33)
-    identity = _export_identity()
-
-    with pytest.raises(CandidateValidationError, match="limit"):
-        fanout.verification.create_candidate_from_export(
-            baseline, root, identity, _export_manifest_sha256(root, identity),
-        )
-
-
-@pytest.mark.parametrize("target", ("keep", "peer", "other"))
-def test_export_symlink_payload_interval_refuses_growth_before_readlink(tmp_path, monkeypatch, target):
-    baseline = _quota_baseline(tmp_path)
-    root = _export_tree(tmp_path, baseline)
-    (root / "old").unlink()
-    if target != "keep":
-        (root / target).write_bytes(b"")
-        (root / target).chmod(0o644)
-    link = root / "link"
-
-    def replace_link(value):
-        link.unlink(missing_ok=True)
-        link.symlink_to(value)
-        if stat.S_IMODE(link.lstat().st_mode) != 0o777:
-            if os.chmod not in os.supports_follow_symlinks:
-                pytest.skip("filesystem cannot set transferable symlink modes")
-            try:
-                os.chmod(link, 0o777, follow_symlinks=False)
-            except NotImplementedError:
-                pytest.skip("filesystem cannot set transferable symlink modes")
-            except OSError as error:
-                if error.errno in {errno.ENOSYS, errno.ENOTSUP}:
-                    pytest.skip("filesystem cannot set transferable symlink modes")
-                raise
-            if stat.S_IMODE(link.lstat().st_mode) != 0o777:
-                pytest.skip("filesystem did not retain transferable symlink mode")
-
-    replace_link("keep")
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    original_snapshot, original_readlink = transfer.snapshot_manifest, os.readlink
-    snapshots, initial_reads, payload_reads = [], [], []
-
-    def observe(path, *args, **kwargs):
-        value = original_readlink(path, *args, **kwargs)
-        if path == "link":
-            payload_reads.append(value)
-        return value
-
-    def mutate_after_first_snapshot(path, selected, **kwargs):
-        snapshots.append(selected)
-        assert kwargs == {"max_file_bytes": 4, "max_total_bytes": 6}
-        manifest = original_snapshot(path, selected, **kwargs)
-        if len(snapshots) == 1:
-            initial_reads.extend(payload_reads)
-            payload_reads.clear()
-            if target != "keep":
-                replace_link(target)
-            assert link.lstat().st_size == {"keep": 4, "peer": 4, "other": 5}[target]
-        return manifest
-
-    monkeypatch.setattr(fanout.verification, "snapshot_manifest", mutate_after_first_snapshot)
-    monkeypatch.setattr(transfer.os, "readlink", observe)
-    if target == "keep":
-        candidate = fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
-        assert candidate.entries == (CandidateEntry("link", "symlink", 0o777, b"keep"),)
-        assert candidate.deleted_paths == ("old",)
-        assert len(snapshots) == 2
-        assert payload_reads == ["keep", "keep"]
-    else:
-        with pytest.raises(CandidateValidationError) as caught:
-            fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
-        assert isinstance(caught.value.__cause__, transfer.TransferRejected)
-        assert len(snapshots) == 1
-        if target == "peer":
-            assert "symlink digest" in str(caught.value.__cause__)
-            assert payload_reads == ["peer"]
-        else:
-            assert payload_reads == []
-    assert initial_reads == ["keep", "keep"]
-    assert (baseline.repository / "old").read_bytes() == b"1234"
-    assert (baseline.repository / "keep").read_bytes() == b"xy"
-
-
-def test_export_candidate_rejects_mutation_after_snapshot(tmp_path, monkeypatch):
-    baseline = capture_repository_baseline(_repository(tmp_path))
-    root = _export_tree(tmp_path, baseline)
-    identity = _export_identity()
-    digest = _export_manifest_sha256(root, identity)
-    original = transfer.snapshot_manifest
-
-    def mutate_after_snapshot(path, selected_identity, **kwargs):
-        manifest = original(path, selected_identity, **kwargs)
-        (root / "changed.bin").write_bytes(b"changed during read")
-        return manifest
-
-    monkeypatch.setattr(fanout.verification, "snapshot_manifest", mutate_after_snapshot)
-    with pytest.raises(CandidateValidationError, match="changed|digest|manifest"):
-        fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
-
-
 def test_candidate_capture_rejects_special_files_traversal_and_tampered_manifests(tmp_path):
     """A candidate must not turn a special inode, path escape, or detached bytes into a bundle."""
     repository = _repository(tmp_path)
@@ -1651,19 +1352,75 @@ def test_answer_synthesis_records_two_distinct_sources_and_fresh_declared_checks
         )
 
 
-def test_answer_synthesis_rejects_duplicate_source_digest_and_failed_check(tmp_path):
+def test_answer_synthesis_accepts_identical_bytes_from_distinct_final_seats(tmp_path):
     controller = _controller(tmp_path)
     artifacts = fanout.ArtifactStore(tmp_path / "artifacts")
     first = artifacts.write_bytes("sources/claude.txt", b"same answer\n")
     second = artifacts.write_bytes("sources/codex.txt", b"same answer\n")
-    with pytest.raises(CandidateValidationError, match="distinct"):
+    third = artifacts.write_bytes("sources/agy.txt", b"different answer\n")
+    receipt = fanout.verify_answer_synthesis(
+        artifacts, run_id="run-answer", task_id="question",
+        plan_sha256="a" * 64, plan_revision=1,
+        sources={"claude": first, "codex": second, "agy": third},
+        synthesizer_id="orchestrator-codex", answer=b"combined answer\n",
+        checks=(), controller=controller,
+    )
+    assert receipt.valid
+    restored = fanout.load_answer_synthesis(
+        controller, artifacts, run_id="run-answer", task_id="question",
+        answer_ref=receipt.answer_ref,
+    )
+    assert restored.source_answers == (("agy", third), ("claude", first), ("codex", second))
+
+
+@pytest.mark.parametrize("expected,supplied", [
+    (("claude", "codex", "agy"), ("claude", "codex")),
+    (("claude", "codex", "agy"), ("claude", "codex", "other")),
+    (("claude", "codex", "codex"), ("claude", "codex")),
+    ((), ("claude", "codex")),
+])
+def test_answer_synthesis_requires_every_expected_final_identity(tmp_path, expected, supplied):
+    controller = _controller(tmp_path)
+    artifacts = fanout.ArtifactStore(tmp_path / "artifacts")
+    sources = {seat: artifacts.write_bytes(f"sources/{seat}.txt", seat.encode()) for seat in supplied}
+    with pytest.raises(CandidateValidationError, match="expected.*seat|final.*seat"):
         fanout.verify_answer_synthesis(
             artifacts, run_id="run-answer", task_id="question",
-            plan_sha256="a" * 64, plan_revision=1,
-            sources={"claude": first, "codex": second},
-            synthesizer_id="orchestrator-codex", answer=b"combined answer\n",
+            plan_sha256="a" * 64, plan_revision=1, sources=sources,
+            expected_seat_ids=expected,
+            synthesizer_id="owner", answer=b"combined answer\n",
             checks=(), controller=controller,
         )
+
+
+def test_answer_synthesis_accepts_one_configured_seat_but_requires_fresh_answer(tmp_path):
+    controller = _controller(tmp_path)
+    artifacts = fanout.ArtifactStore(tmp_path / "artifacts")
+    source = artifacts.write_bytes("sources/claude.txt", b"answer\n")
+    receipt = fanout.verify_answer_synthesis(
+        artifacts, run_id="run-answer", task_id="question",
+        plan_sha256="a" * 64, plan_revision=1, sources={"claude": source},
+        expected_seat_ids=("claude",), synthesizer_id="owner", answer=b"reviewed answer\n",
+        checks=(), controller=controller,
+    )
+    fanout.validate_answer_synthesis(controller, artifacts, receipt, expected_seat_ids=("claude",))
+    with pytest.raises(CandidateValidationError, match="expected.*seat|final.*seat"):
+        fanout.validate_answer_synthesis(
+            controller, artifacts, receipt, expected_seat_ids=("claude", "codex"),
+        )
+    with pytest.raises(CandidateValidationError, match="distinct|fresh"):
+        fanout.verify_answer_synthesis(
+            artifacts, run_id="run-answer", task_id="question",
+            plan_sha256="a" * 64, plan_revision=1, sources={"claude": source},
+            expected_seat_ids=("claude",), synthesizer_id="owner", answer=b"answer\n",
+            checks=(), controller=controller,
+        )
+
+
+def test_answer_synthesis_records_failed_declared_check(tmp_path):
+    controller = _controller(tmp_path)
+    artifacts = fanout.ArtifactStore(tmp_path / "artifacts")
+    first = artifacts.write_bytes("sources/claude.txt", b"same answer\n")
 
     different = artifacts.write_bytes("sources/agy.txt", b"another answer\n")
     receipt = fanout.verify_answer_synthesis(

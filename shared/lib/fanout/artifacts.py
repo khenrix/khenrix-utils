@@ -22,7 +22,7 @@ from .errors import (
     ArtifactPathError,
     ArtifactQuotaError,
 )
-from .container_transfer_support import canonical_json
+from .durable_io import canonical_json
 
 
 @dataclass(frozen=True, slots=True)

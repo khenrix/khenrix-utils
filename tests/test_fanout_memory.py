@@ -474,6 +474,42 @@ def test_same_identity_with_a_different_digest_is_equivocation_before_a_second_s
     assert harness.save_calls == 1
 
 
+def test_current_worker_metadata_preserves_exact_checkpoint_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint = _checkpoint("current worker checkpoint")
+    exchange, _store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    harness.mutate = lambda row: {
+        **row,
+        "last_reinforced": "2026-10-18",
+        "occurrence_count": 1,
+        "reinforcement_dates": '["2026-10-18"]',
+        "title_norm_key": "a" * 32,
+    }
+    journal, owner = _journal(tmp_path)
+    try:
+        receipt = exchange.publish(checkpoint, journal=journal, owner=owner)
+        assert exchange.verify_existing(checkpoint, receipt) == receipt
+        assert journal.state.seat_phase("work", "claude", 1, 1) == "checkpoint-verified"
+    finally:
+        journal.close()
+    assert harness.save_calls == 1
+    assert harness.fetch_calls == 2
+
+
+@pytest.mark.parametrize("change", [
+    {"unknown_worker_field": "unreviewed"},
+    {"narrative": "foreign", "occurrence_count": 1},
+    {"project": "foreign", "last_reinforced": "2026-10-18"},
+])
+def test_additive_worker_metadata_never_relaxes_checkpoint_identity(change) -> None:
+    checkpoint = _checkpoint()
+    with pytest.raises(MemoryIntegrityError):
+        MemoryCheckpointExchange._verify_observation(
+            checkpoint, 41, _observation(checkpoint, 41, **change),
+        )
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

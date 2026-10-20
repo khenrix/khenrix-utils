@@ -128,44 +128,6 @@ def test_command_transports_prompt_bytes_only_over_stdin(tmp_path):
     assert prompt.decode() not in repr(result)
 
 
-def test_strict_gate_original_sources_reach_only_the_fixed_child(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT))
-    from scripts import fanout_release_evaluations as release
-    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
-    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
-    sources = release._strict_original_sources(archive, archive=archive, original_checks=checks)
-    actual_supervise = process._supervise_command
-    launches = []
-    def inert_child(command, environment, **kwargs):
-        launches.append(tuple(command.argv))
-        # This executes an inert environment reader, not make precommit or a gate proof.
-        reader = ProcessCommand((sys.executable, "-c",
-            "import os,json;print(json.dumps({k:os.environ[k] for k in "
-            "('FANOUT_QUALITY_ARCHIVE_ROOT','FANOUT_QUALITY_ORIGINAL_CHECKS')}))"),
-            b"", cwd=tmp_path, timeout=10, slot_root=tmp_path / "slots")
-        return actual_supervise(reader, environment, **kwargs)
-    monkeypatch.setattr(process, "_supervise_command", inert_child)
-    command = ProcessCommand(("mise", "exec", "--", "make", "precommit"), b"", cwd=ROOT)
-    result = run_command(command, strict_gate_historical_root=archive,
-                         strict_gate_original_sources=sources)
-    import json
-    assert result.returncode == 0
-    assert json.loads(result.stdout) == {"FANOUT_QUALITY_ARCHIVE_ROOT": str(archive),
-                                        "FANOUT_QUALITY_ORIGINAL_CHECKS": str(checks)}
-    assert launches == [("mise", "exec", "--", "make", "precommit")]
-    assert "FANOUT_QUALITY_ARCHIVE_ROOT" not in build_child_environment()
-    with pytest.raises(ProcessValidationError, match="not allowlisted"):
-        build_child_environment(overrides={"FANOUT_QUALITY_ORIGINAL_CHECKS": str(checks)})
-    for changed, historical in ((ProcessCommand(("true",), b"", cwd=ROOT), archive),
-        (command, None), (ProcessCommand(command.argv, b"data", cwd=ROOT), archive),
-        (ProcessCommand(command.argv, b"", cwd=ROOT, native_boundary=object()), archive)):
-        with pytest.raises(ProcessValidationError, match="fixed strict gate"):
-            run_command(changed, strict_gate_historical_root=historical,
-                        strict_gate_original_sources=sources)
-    with pytest.raises(ProcessValidationError, match="original source"):
-        run_command(command, strict_gate_historical_root=archive,
-                    strict_gate_original_sources={**sources, "checks": {**sources["checks"], "sha256": "a" * 64}})
-    assert len(launches) == 1
 
 
 def test_command_uses_argv_without_a_shell(tmp_path):

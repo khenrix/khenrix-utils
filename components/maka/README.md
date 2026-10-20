@@ -15,7 +15,8 @@ metadata, not a Git release tag or verified attestation signature.
 
 Agentic Setup remains the broader inventory and sync owner for the other shared
 skills and plugins used by Claude, Codex, agy, and Maka. Khenrix Utils owns and
-direct-delivers `khenrix-quality`, `khenrix-writing`, and the 15-skill
+direct-delivers `khenrix-quality`, `khenrix-writing`, both native fanout skills,
+and the 15-skill
 Superpowers bundle. Installing this Maka component does not copy those skills;
 Maka discovers them from the shared native skill root on the machine.
 

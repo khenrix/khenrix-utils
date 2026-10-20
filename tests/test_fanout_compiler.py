@@ -213,7 +213,7 @@ def _draft(source: bytes, tasks: list[dict[str, object]] | None = None) -> bytes
     return json.dumps({
         "schema_version": "fanout-draft-v1", "source_sha256": _sha(source),
         "defaults": {"executor_ids": ["claude", "codex", "agy"], "rounds": 2,
-                     "timeout": 120, "retries": 0, "minimum_success": 2},
+                     "timeout": 120, "retries": 0, "minimum_success": 3},
         "tasks": tasks,
     }, separators=(",", ":"), sort_keys=True).encode("utf-8")
 

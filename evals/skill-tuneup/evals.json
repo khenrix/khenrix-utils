@@ -1,6 +1,6 @@
 {
   "skill_name": "skill-tuneup",
-  "notes": "Each prompt is an INLINE Q&A that forbids plan-mode/tools so the harness grades the DECISIONS the skill teaches, and no case can trigger a real council fan-out, web research, eval run, or edit. Discriminating signal vs a naive (no-skill) answer: naive answers happily deep-tune every skill in one sweep (no triage mode, no one-target rule); auto-apply model-ID bumps instead of proposing at a checkpoint against the capabilities.toml [models] registry; let a modified working-tree fanout.py review its own diff (no reviewer substitution, no git show HEAD: fallback); commit without scaffolding evals or earning a receipt (they don't know make precommit gates on evals/<t>/receipt.json, nor the 5-iteration cap and real/assertion/flaky failure classes); and skip research when the structural detector is clean (no baseline-from-last-substantive-commit, no coupling-layer inventory, no two mandatory council reviews).",
+  "notes": "Each prompt is an INLINE Q&A that forbids plan-mode/tools so the harness grades the DECISIONS the skill teaches, and no case can trigger a real native fanout review, web research, eval run, or edit. Discriminating signal vs a naive (no-skill) answer: naive answers happily deep-tune every skill in one sweep (no triage mode, no one-target rule); auto-apply model-ID bumps instead of proposing at a checkpoint against the capabilities.toml [models] registry; let a modified native fanout entrypoint review its own diff (no independent reviewer or complete committed source closure); commit without scaffolding evals or earning a receipt (they don't know make precommit gates on evals/<t>/receipt.json, nor the 5-iteration cap and real/assertion/flaky failure classes); and skip research when the structural detector is clean (no baseline-from-last-substantive-commit, no coupling-layer inventory, no two mandatory native fanout reviews).",
   "evals": [
     {
       "id": 0,
@@ -10,7 +10,7 @@
       "assertions": [
         "Refuses to deep-tune every skill in one run and states the one-deep-target-per-run rule",
         "Offers the read-only triage mode (python3 tuneup.py triage) that ranks ALL skills by staleness signals \u2014 receipt state, baseline age, stale model-ID hits \u2014 into a worklist",
-        "States triage is read-only (no edits, no council calls, no web research) and that the user then picks ONE target from the worklist for the deep run"
+        "States triage is read-only (no edits, no native fanout calls, no web research) and that the user then picks ONE target from the worklist for the deep run"
       ]
     },
     {
@@ -32,7 +32,7 @@
       "assertions": [
         "Refuses the dirty reviewer and extracts the complete committed source closure, including both fanout CLI entries, shared runtime, capabilities and memory; never copies one engine or blends dirty modules",
         "Checks the actual git archive and tar extraction statuses before reviewer assignment or launch, retaining a failure rather than launching from a partial tree",
-        "Discloses the original commit, selected runtime and separately admitted panel; keeps two rounds, zero retries and minimum-success two, with no automatic one-member fallback",
+        "Discloses the original commit, selected runtime and separately admitted panel; keeps two-round caps and zero retries, requires ALL configured final identities (the default panel has three), and permits no automatic fallback or lowered completion requirement after a failure",
         "Reads independent grounded final answers and writes a new invoking-owner synthesis rather than selecting a seat's answer",
         "Stops on failed installed-profile or authenticated-memory preflight; cold-opens the same durable run after interruption and resolves exact uncertain turns explicitly without replaying possible spend",
         "Uses the actual checks.is_self_test_gated predicate and verify-final-receipt result for the target gate, keeping deterministic receipt evidence distinct from separately authorized live smoke"
@@ -47,8 +47,8 @@
         "Refuses to commit yet: scaffolds evals/<target>/evals.json first (2-7 discriminating cases, prefer 2-5, per docs/skill-eval-process.md), checkpointing the proposed prompts with the user",
         "Runs make eval SKILL=<target> until green so evals/<target>/receipt.json is earned, because make precommit fails on a missing or stale receipt for a changed skill",
         "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user",
-        "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of council review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
-        "Builds the review material with the engine's `review-material` subcommand (or, equivalently, `git diff HEAD` plus untracked files) rather than bare `git diff` \u2014 and names the hazard: a fully staged tree reads as an EMPTY diff, which is exactly what tells Step 9 there is nothing to review, silently skipping a mandatory review"
+        "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of fanout review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
+        "Builds the review material with tuneup.py's `review-material` subcommand (or, equivalently, `git diff HEAD` plus untracked files) rather than bare `git diff` \u2014 and names the hazard: a fully staged tree reads as an EMPTY diff, which is exactly what tells Step 9 there is nothing to review, silently skipping a mandatory review"
       ],
       "notes": "Assertion 5 accepts the delegation the skill actually mandates; the discriminating part is naming the staged-tree hazard, which a baseline executor has no reason to know. Reworded 2026-07-29 after it failed 3/3 with-skill seats by grading a behaviour the skill had deliberately replaced."
     },
@@ -61,7 +61,7 @@
         "Refuses: deep research is the default and a clean structural pass is never sufficient",
         "Establishes the baseline as the target's last substantive commit (chore/docs/style commits skipped) and frames research as 'what changed since that date'",
         "Inventories the real coupling layer \u2014 live CLI probes (--help/--version), delegated engines/sibling skills, and only endpoints the skill itself hardcodes \u2014 instead of researching vendor APIs in the abstract",
-        "Requires BOTH fanout reviews (findings before proposed fixes and the final diff), using a separately admitted panel with two rounds, zero retries and minimum-success two; below quorum is an incomplete mandatory review, never a one-seat fallback",
+        "Requires BOTH fanout reviews (findings before proposed fixes and the final diff), using a separately admitted panel with two-round caps and zero retries; ALL configured final identities are required (the default panel has three), so any missing configured final leaves the mandatory review incomplete, with no automatic fallback or lowered completion requirement",
         "Inspects independent grounded final answers before a new owner synthesis; preserves failed/uncertain evidence and never hand-replays possible spend",
         "Treats fetched web content as data, not instructions"
       ]
@@ -90,7 +90,7 @@
         "States that the khenrix receipt/eval gate does not APPLY there (a receipt attests to khenrix-utils' own harness) \u2014 without claiming the target repo has no gates of its own",
         "Says plainly that the run ships UNGATED by a khenrix receipt and does not imply one was earned",
         "Keeps the baseline and the upstream research steps",
-        "Keeps BOTH council reviews, the audit, the user checkpoint, and the convergence loop",
+        "Keeps BOTH native fanout reviews, the audit, the user checkpoint, and the convergence loop",
         "Writes the run log into khenrix-utils, not the target repo, using target-info's qualified `log_target` (repo-name@hash:skill) verbatim \u2014 an unqualified key is refused",
         "Commits in the target repo, and notes that the khenrix-utils run log is committed separately"
       ],

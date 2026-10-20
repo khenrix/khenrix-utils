@@ -35,11 +35,17 @@ def _synthetic_codex_registry(*, version_probe):
     return fanout.ProviderRegistry(profiles, version_probe=version_probe)
 
 
-@pytest.fixture
-def _mock_clean_codex_host(monkeypatch):
-    # Model/argv fixtures do not depend on the machine's managed Codex config.
+@pytest.fixture(autouse=True)
+def _native_test_environment(tmp_path, monkeypatch):
     providers = sys.modules[f"{SPEC.name}.providers"]
-    monkeypatch.setattr(providers, "_codex_read_only_host_config_preflight", lambda: None)
+    monkeypatch.setattr(providers, "_installed_cli_contract", lambda profile: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
+
+
+@pytest.fixture
+def _mock_clean_codex_host(_native_test_environment):
+    pass
 
 
 def test_registry_pins_distinct_standard_and_deep_class_profiles():
@@ -52,7 +58,7 @@ def test_registry_pins_distinct_standard_and_deep_class_profiles():
 
     assert (read.requested_model, read.requested_effort) == ("claude-opus-5-5", "medium")
     assert (write.requested_model, write.requested_effort) == ("claude-opus-5-5", "medium")
-    assert (deep.requested_model, deep.requested_effort) == ("claude-opus-5-5", "xhigh")
+    assert (deep.requested_model, deep.requested_effort) == ("claude-opus-5-5", "medium")
     assert read.cli_version == "2.1.284"
     assert len({read.digest, write.digest, deep.digest}) == 3
     assert read.default_timeout == read.timeout_ceiling == 900
@@ -61,6 +67,28 @@ def test_registry_pins_distinct_standard_and_deep_class_profiles():
     assert registry.profile_digests["claude/read-only/standard"] == read.digest
     assert registry.profile_digests["claude/repo-write/standard"] == write.digest
     assert registry.profile_digests["claude/read-only/deep"] == deep.digest
+
+
+@pytest.mark.parametrize("executor", ("claude", "codex", "agy"))
+@pytest.mark.parametrize("role", ("executor", "evaluator", "owner"))
+def test_profile_roles_pin_effort_on_both_native_turn_shapes(tmp_path, executor, role):
+    registry = fanout.ProviderRegistry.default()
+    profile = registry.select(executor, "read-only", "deep", role=role)
+    expected = "high" if executor == "agy" else "medium" if role == "executor" else "xhigh"
+    assert profile.role == role and profile.requested_effort == expected
+    session = "11111111-1111-4111-8111-111111111111"
+    for resume in (False, True):
+        request = fanout.ProviderRequest(executor, "private role prompt", cwd=tmp_path,
+            profile=profile, role=role, resume=resume,
+            session_id=session if resume or executor == "claude" else None)
+        command = profile.adapter.build_command(request)
+        assert profile.requested_model in command.argv
+        if executor == "codex":
+            assert f'model_reasoning_effort="{expected}"' in command.argv
+        else:
+            assert command.argv[command.argv.index("--effort") + 1] == expected
+        assert "private role prompt" not in command.argv
+        assert command.trusted_native
 
 
 def test_builtin_profile_rejects_a_descriptor_that_would_launch_another_model():
@@ -90,50 +118,26 @@ def test_standard_profiles_pin_model_and_effort(executor, model, effort):
     assert profile.digest == profile.profile_sha256
 
 
-def test_default_codex_profiles_admit_measured_01600_and_reject_older_binary():
-    """A CLI upgrade must not leave every Codex seat blocked or admit stale sessions."""
+def test_fresh_codex_profiles_bind_installed_version_without_rebinding_recorded_profile():
     installed = ["0.160.0"]
-    registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: installed[0])
-
-    for execution_class, tier in (("read-only", "standard"),
-                                  ("read-only", "deep"),
-                                  ("repo-write", "standard")):
-        profile = registry.select("codex", execution_class, tier)
-        assert profile.cli_version == "0.160.0"
-        registry.assert_installed_version(profile)
-
-    for stale in ("0.159.0", "0.157.1"):
-        installed[0] = stale
-        with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
-            registry.assert_installed_version(registry.select("codex", "read-only", "deep"))
+    probe = lambda _executor: installed[0]
+    registry = fanout.ProviderRegistry.for_installed(("codex",), version_probe=probe)
+    profile = registry.select("codex", "read-only", "deep")
+    digest = profile.digest
+    assert registry.assert_installed_version(profile) == "0.160.0"
+    installed[0] = "0.161.0"
+    assert registry.assert_installed_version(profile) == "0.161.0"
+    assert profile.cli_version == "0.160.0" and profile.digest == digest
+    fresh = fanout.ProviderRegistry.for_installed(("codex",), version_probe=probe)
+    assert fresh.admit("codex", "read-only", "deep").cli_version == "0.161.0"
 
 
-def test_exact_codex_image_pin_matches_default_dispatch_profile_and_linux_archive():
-    image = ROOT / "components" / "fanout-container"
-    tools = tomllib.loads((image / "mise.toml").read_text())["tools"]
-    lock = tomllib.loads((image / "mise.lock").read_text())["tools"]
-    assert tools == {"python": "3.12.14", "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
-    codex = lock["codex"][0]
-    assert codex["version"] == tools["codex"]
-    assert codex["specifiers"] == ["0.160.0"]
-    assert codex["backend"] == "aqua:openai/codex"
-    assert codex["platforms.linux-x64"] == {
-        "checksum": "sha256:4fcc47ab57f52ff75363951a8761146cd10c8288bd86fed45487dbb204a16b71",
-        "url": "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
-        "url_api": "https://api.github.com/repos/openai/codex/releases/assets/604048102",
-    }
-    registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: "0.160.0")
-    for execution_class, tier in (("read-only", "standard"), ("read-only", "deep"), ("repo-write", "standard")):
-        profile = registry.select("codex", execution_class, tier)
-        assert profile.cli_version == tools["codex"]
-        registry.assert_installed_version(profile)
 
 
 @pytest.mark.parametrize("executor", ["claude", "agy"])
 @pytest.mark.parametrize("upgraded", [False, True])
-def test_installed_readonly_profile_truthful_characterization_matches_native_canonical_join(tmp_path, monkeypatch, executor, upgraded):
+def test_installed_readonly_profile_binds_actual_version_and_truthful_native_invocation(tmp_path, monkeypatch, executor, upgraded):
     providers = sys.modules[f"{SPEC.name}.providers"]
-    native = sys.modules[f"{SPEC.name}.native_boundary"]
     old = fanout.ProviderRegistry.default().select(executor, "read-only", "standard")
     observed = "2.1.999" if executor == "claude" else "1.2.99"
     if not upgraded:
@@ -145,8 +149,10 @@ def test_installed_readonly_profile_truthful_characterization_matches_native_can
     assert profile.characterized is (old.characterized and not upgraded)
     request = fanout.ProviderRequest(executor, "local admission only", cwd=tmp_path, profile=profile,
         session_id="11111111-1111-4111-8111-111111111111" if executor == "claude" else None)
-    command = profile.adapter.build_command(request, brokered_diagnostic=True)
-    native._check_canonical_broker_command(request, command, None)
+    command = profile.adapter.build_command(request)
+    assert profile.requested_model in command.argv
+    assert command.trusted_native and command.stdin
+    assert "--strict-mcp-config" not in command.argv
 
 
 def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
@@ -155,7 +161,7 @@ def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
 
     for executor in ("claude", "agy"):
         assert registry.admit(executor, "read-only", "deep").characterized
-    for tier, effort in (("standard", "medium"), ("deep", "xhigh")):
+    for tier, effort in (("standard", "medium"), ("deep", "medium")):
         profile = registry.admit("codex", "read-only", tier)
         assert profile.characterized is False
         assert profile.requested_model == "gpt-6.1-sol"
@@ -166,7 +172,7 @@ def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
         registry.select("maka", "read-only", "standard")
 
 
-def test_default_repo_write_profiles_remain_uncharacterized_until_live_boundary_certification():
+def test_uncharacterized_repository_write_profiles_do_not_gain_admission():
     registry = fanout.ProviderRegistry.default()
 
     for executor in ("claude", "codex", "agy"):
@@ -186,15 +192,15 @@ def test_deep_readonly_turn_preserves_effort_and_refuses_recorded_drift_before_s
     )
     profile = registry.admit("codex", "read-only", "deep")
     assert profile.characterized is False
-    assert profile.requested_effort == "xhigh"
-    assert 'model_reasoning_effort="xhigh"' in profile.initial_argv
-    assert 'model_reasoning_effort="xhigh"' in profile.resume_argv
+    assert profile.requested_effort == "medium"
+    assert 'model_reasoning_effort="medium"' in profile.initial_argv
+    assert 'model_reasoning_effort="medium"' in profile.resume_argv
     current["version"] = "0.161.0"
 
-    with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
+    with pytest.raises(fanout.ProviderRequestError, match="recorded CLI version changed"):
         fanout.run_provider(fanout.ProviderRequest(
             "codex", "question", cwd=tmp_path, execution_class="read-only",
-            profile=profile,
+            profile=profile, run_id="recorded", inputs_digest="a" * 64,
         ), registry=registry)
     assert launched == []
 
@@ -204,7 +210,7 @@ def test_deep_readonly_turn_preserves_effort_and_refuses_recorded_drift_before_s
     ("codex", "codex-thread-1"),
     ("agy", "agy-conversation-1"),
 ])
-@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "xhigh")])
+@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "medium")])
 def test_initial_and_resume_argv_pin_the_same_selected_model(
     tmp_path, executor, session, tier, effort, _mock_clean_codex_host,
 ):
@@ -222,9 +228,8 @@ def test_initial_and_resume_argv_pin_the_same_selected_model(
         execution_class=execution_class, profile=profile,
     )
 
-    options = {"brokered_diagnostic": True} if executor == "agy" and tier == "deep" else {}
-    first = adapter.build_command(initial, **options)
-    next_turn = adapter.build_command(resumed, **options)
+    first = adapter.build_command(initial)
+    next_turn = adapter.build_command(resumed)
 
     assert profile.requested_model in first.argv
     assert profile.requested_model in next_turn.argv
@@ -244,7 +249,7 @@ def test_initial_and_resume_argv_pin_the_same_selected_model(
     elif executor == "codex":
         assert f'model_reasoning_effort="{effort}"' in first.argv
         assert f'model_reasoning_effort="{effort}"' in next_turn.argv
-        assert 'sandbox_mode="read-only"' in next_turn.argv
+        assert 'sandbox_mode="danger-full-access"' in next_turn.argv
 
 
 @pytest.mark.parametrize("execution_class,quality_tier,mode", [
@@ -266,13 +271,7 @@ def test_agy_profile_passes_pinned_effort_on_initial_and_resume(
             "agy", "question", cwd=tmp_path, execution_class=execution_class,
             session_id=session_id, resume=resume, profile=profile,
         )
-        if execution_class == "read-only":
-            with pytest.raises(fanout.ProviderRequestError, match="guard"):
-                adapter.build_command(request)
-            argv = profile.resume_argv if resume else profile.initial_argv
-            assert "--dangerously-skip-permissions" not in argv
-        else:
-            argv = adapter.build_command(request).argv
+        argv = adapter.build_command(request).argv
 
         assert argv.count("--effort") == 1
         assert argv[argv.index("--effort") + 1] == "high"
@@ -324,17 +323,18 @@ def test_installed_cli_version_drift_blocks_before_provider_launch(tmp_path, mon
     registry = _synthetic_codex_registry(version_probe=lambda _executor: "0.999.0")
     profile = registry.select("codex", "read-only", "standard")
 
-    with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
+    with pytest.raises(fanout.ProviderRequestError, match="recorded CLI version changed"):
         fanout.run_provider(fanout.ProviderRequest(
             "codex", "resume", cwd=tmp_path, session_id="thread-1", resume=True,
+            run_id="recorded", inputs_digest="a" * 64,
             profile=profile,
         ), registry=registry)
     assert launched == []
 
 
 @pytest.mark.parametrize("execution_class", ["read-only", "repo-write"])
-def test_agy_standard_profiles_pin_installed_version_and_reject_future_drift(execution_class):
-    """Version pinning applies even while write execution awaits certification."""
+def test_agy_fresh_upgrade_does_not_rebind_historical_profile(execution_class):
+    """Observing an upgrade must not change an already captured profile."""
     installed = ["1.2.13"]
     registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: installed[0])
     profile = registry.select("agy", execution_class, "standard")
@@ -347,8 +347,10 @@ def test_agy_standard_profiles_pin_installed_version_and_reject_future_drift(exe
     assert profile.cli_version == "1.2.13"
     registry.assert_installed_version(profile)
     installed[0] = "1.2.14"
-    with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
-        registry.assert_installed_version(profile)
+    assert registry.assert_installed_version(profile) == "1.2.14"
+    assert profile.cli_version == "1.2.13"
+    fresh = fanout.ProviderRegistry.for_installed(("agy",), version_probe=lambda _executor: installed[0])
+    assert fresh.admit("agy", "read-only", "standard").cli_version == "1.2.14"
 
 
 @pytest.mark.parametrize("executor,stdout,stderr,expected", [
@@ -694,44 +696,6 @@ def test_preparation_binds_each_selected_digest_and_effective_timeout(tmp_path):
     assert preparation.digest
 
 
-def test_preparation_binds_agy_guard_receipt_when_seat_is_guarded(tmp_path, monkeypatch):
-    """Changing the seat's native guard must change the durable preparation identity."""
-    plan = _two_class_plan()
-    registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: "unused")
-    inputs = _run_inputs(plan, dict(registry.profile_digests))
-    preparation = _read_preparation(tmp_path, plan, inputs, registry)
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    (repository / "fixture.txt").write_text("fixture\n")
-    subprocess.run(("git", "-C", str(repository), "add", "fixture.txt"), check=True)
-    subprocess.run(("git", "-C", str(repository), "-c", "user.name=Test",
-                    "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"), check=True)
-    baseline = fanout.capture_repository_baseline(repository)
-    controller = fanout.create_lifecycle_controller(tmp_path / "controller")
-    workspace = fanout.create_seat_workspace(
-        baseline, controller.root / "workspaces", "agy",
-    )
-    verification = fanout.verify_seat_workspace(baseline, workspace, controller=controller)
-    monkeypatch.setenv("AGY_ADC_AUTH", "true")
-    profile = registry.select("agy", "read-only", "standard")
-    guard = fanout.issue_agy_readonly_guard(controller, verification, profile)
-    seats_without_guard = tuple(
-        dataclasses.replace(seat, workspace_verification=verification)
-        if seat.executor_id == "agy" else seat
-        for seat in preparation.seats
-    )
-    seats_with_guard = tuple(
-        dataclasses.replace(seat, agy_guard=guard)
-        if seat.executor_id == "agy" else seat
-        for seat in seats_without_guard
-    )
-
-    unguarded = dataclasses.replace(preparation, seats=seats_without_guard)
-    guarded = dataclasses.replace(preparation, seats=seats_with_guard)
-
-    assert guarded.digest != unguarded.digest
-    assert next(seat for seat in guarded.seats if seat.executor_id == "agy").agy_guard.receipt_sha256 == guard.receipt_sha256
 
 
 def test_real_registry_preparation_rejects_legacy_flat_shape(tmp_path):

@@ -106,6 +106,13 @@ if ! maka_auth_mode=$(/usr/bin/env -i \
   exit 78
 fi
 
+# Configuration connects-or-spawns a Host. A service must acquire the root first;
+# normal clients reconcile their route through that Host before any model turn.
+configure_host=true
+if test "${1:-}" = runtime-host && test "${2:-}" = serve; then
+  configure_host=false
+fi
+
 case "$maka_auth_mode" in
   api-key-relay)
     test "$(uname -s)" = Darwin || {
@@ -125,7 +132,7 @@ case "$maka_auth_mode" in
       echo 'maka: local OpenAI relay is unavailable' >&2
       exit 78
     fi
-    if ! /usr/bin/env -i \
+    if test "$configure_host" = true && ! /usr/bin/env -i \
       HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
       PATH="$isolated_path" LANG=C LC_ALL=C \
       "$mise_bin" -C "$maka_lab_root" exec -- \
@@ -140,7 +147,7 @@ case "$maka_auth_mode" in
     ;;
   chatgpt-subscription)
     export MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL=1
-    if ! /usr/bin/env -i \
+    if test "$configure_host" = true && ! /usr/bin/env -i \
       HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
       PATH="$isolated_path" LANG=C LC_ALL=C \
       MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL=1 \

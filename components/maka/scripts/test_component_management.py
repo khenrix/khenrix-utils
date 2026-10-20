@@ -23,6 +23,98 @@ import migrate_legacy_state as migration
 import apply_gpt6_compat as compat
 
 
+class WrapperLifecycleTests(unittest.TestCase):
+    def run_wrapper(self, arguments, *, route="api-key-relay", configure_status=17,
+                    ready_status=0, launchctl_status=0):
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory).resolve() / "home with space"
+            layout = component.canonical_layout(home)
+            layout.component.mkdir(parents=True)
+            (layout.component / "mise.toml").write_text("")
+            package = home / "package"
+            package.mkdir()
+            (package / "package.json").write_text("{}")
+            mise = home / ".local/bin/mise"
+            mise.parent.mkdir(parents=True)
+            trace = home / "trace"
+            mise.write_text(f"""#!/bin/sh
+case "$*" in
+  *'maka_auth_mode.py show'*) echo mode >> '{trace}'; echo '{route}' ;;
+  *'maka_auth_mode.py relay-ready'*) echo ready >> '{trace}'; exit {ready_status} ;;
+  *configure_maka_*) echo configure >> '{trace}'; exit {configure_status} ;;
+  *)
+    for name in OPENAI_API_KEY UNRELATED_API_KEY NODE_OPTIONS NODE_PATH MAKA_PACKAGE_ROOT MISE_SESSION_ID XDG_CONFIG_HOME XDG_DATA_HOME; do
+      if printenv "$name" >/dev/null; then exit 96; fi
+    done
+    if test '{route}' = chatgpt-subscription; then
+      test "$MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL" = 1 || exit 97
+    elif printenv MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL >/dev/null; then exit 98
+    fi
+    echo native >> '{trace}'
+    printf '%s\\n' "$@"
+    ;;
+esac
+""")
+            mise.chmod(0o700)
+            launchctl = mise.parent / "launchctl"
+            launchctl.write_text(
+                f"#!/bin/sh\necho kickstart >> '{trace}'\nexit {launchctl_status}\n")
+            launchctl.chmod(0o700)
+            uname = mise.parent / "uname"
+            uname.write_text("#!/bin/sh\necho Darwin\n")
+            uname.chmod(0o700)
+            template = (pathlib.Path(__file__).resolve().parent.parent / "wrapper/maka.in").read_text()
+            self.assertIn("/bin/launchctl", template)  # Never reach the machine's service manager.
+            template = template.replace("/bin/launchctl", f"'{launchctl}'")
+            wrapper = home / "wrapper"
+            wrapper.write_text(component.render_wrapper(
+                template, layout=layout, account_name="fixture-user", mise=mise, package=package))
+            wrapper.chmod(0o700)
+            environment = {name: "fixture-only" for name in (
+                "OPENAI_API_KEY", "UNRELATED_API_KEY", "NODE_OPTIONS", "NODE_PATH",
+                "MAKA_PACKAGE_ROOT", "MISE_SESSION_ID", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                "MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL")}
+            environment["PATH"] = f"{mise.parent}:/usr/bin:/bin"
+            result = subprocess.run([str(wrapper), *arguments], cwd=home, env=environment,
+                capture_output=True, text=True, timeout=10, check=False)
+            return result, trace.read_text().splitlines()
+
+    def test_serve_reaches_native_cli_without_electing_a_configuration_host(self):
+        for route, expected in (
+            ("api-key-relay", ["mode", "ready", "kickstart", "native"]),
+            ("chatgpt-subscription", ["mode", "native"]),
+        ):
+            with self.subTest(route=route):
+                result, trace = self.run_wrapper(["runtime-host", "serve", "--json"], route=route)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(trace, expected)
+                self.assertEqual(result.stdout.splitlines()[-3:], ["runtime-host", "serve", "--json"])
+
+    def test_other_commands_still_require_host_configuration(self):
+        for route in ("api-key-relay", "chatgpt-subscription"):
+            for arguments in (["run", "fixture", "--thinking", "xhigh"],
+                              ["runtime-host", "service", "status"], ["runtime-host", "serve-extra"]):
+                with self.subTest(route=route, arguments=arguments):
+                    result, trace = self.run_wrapper(arguments, route=route)
+                    self.assertEqual(result.returncode, 78)
+                    self.assertEqual(trace[-1], "configure")
+                    self.assertNotIn("native", trace)
+
+    def test_normal_clients_reconcile_before_native_execution(self):
+        result, trace = self.run_wrapper(
+            ["run", "fixture", "--thinking", "xhigh"], configure_status=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(trace, ["mode", "ready", "kickstart", "configure", "native"])
+
+    def test_serve_retains_auth_route_and_relay_readiness_refusals(self):
+        for options in ({"ready_status": 9}, {"launchctl_status": 9}, {"route": "unknown"}):
+            with self.subTest(options=options):
+                result, trace = self.run_wrapper(["runtime-host", "serve", "--json"], **options)
+                self.assertEqual(result.returncode, 78)
+                self.assertNotIn("configure", trace)
+                self.assertNotIn("native", trace)
+
+
 class ComponentInstallerTests(unittest.TestCase):
     def test_activation_requires_explicit_source_companion_retirement(self):
         with tempfile.TemporaryDirectory() as temporary:

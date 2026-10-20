@@ -195,7 +195,7 @@ Maka state uses the reviewed migration in [the Maka guide](maka.md).
 ## 3. Install the shared skills
 
 The canonical skills use a selective direct copy. No Khenrix marketplace or
-plugin install is required. The two Khenrix-authored direct-copy skills live in
+plugin install is required. The four Khenrix-authored direct-copy skills live in
 `shared/skills/`; the 15 vendored Superpowers skills live in `shared/superpowers/`.
 
 ```bash
@@ -255,12 +255,14 @@ mise run defaults:apply
 mise exec -- python3 scripts/doctor.py --only cli-model-defaults
 ```
 
-The portable defaults are Claude provider-neutral `best`, Opus 5.5 `xhigh`
-under `modelSettings`, and `ultracode=false` (use `claude --effort ultracode`
-for a planning session); Codex `gpt-6.1-sol`, execution/subagents `xhigh`,
-planning `ultra`, and preferred `service_tier=default`; and agy
+The portable defaults are Claude provider-neutral `best`, Opus 5.5 `medium`
+under `modelSettings`, and `ultracode=false`; Codex `gpt-6.1-sol`,
+execution/subagents `medium`, planning `xhigh`, and preferred
+`service_tier=default`; and agy
 `Gemini 3.8 Flash (High)`. Apply creates numbered
 `*.khenrix-backup` files and preserves every unrelated field.
+Planning, review and merging explicitly select xhigh for Claude, Codex and Maka;
+Gemini uses high throughout.
 
 The broader `khenrix-setup` flow remains available for declared MCP servers,
 Claude baseline settings, the Stop hook, status line, and aliases. It is separate

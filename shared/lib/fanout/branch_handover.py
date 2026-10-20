@@ -118,6 +118,22 @@ def _git(root: Path, *args: str, input_bytes: bytes | None = None,
     return result.stdout.strip() if strip else result.stdout
 
 
+def _preflight_identity(root: Path) -> None:
+    for role in ("author", "committer"):
+        try:
+            resolved = _git(root, "var", f"GIT_{role.upper()}_IDENT")
+            identity, closing, _timestamp = resolved.rpartition(b"> ")
+            name, opening, email = identity.rpartition(b" <")
+            # Git can return success with an empty email.
+            if not closing or not opening or not name.strip() or not email.strip():
+                raise HandoverError("resolved Git identity lacks a name or email")
+        except HandoverError as error:
+            raise HandoverError(
+                f"Git {role} identity is unavailable; configure repository-local "
+                "user.name and user.email with git config --local before handover"
+            ) from error
+
+
 def _optional_ref(root: Path, ref: str) -> str | None:
     def run(path, *args):
         return _git_process(root, *args)
@@ -622,6 +638,7 @@ def prepare_branch_handover(
         if baseline is not None and baseline != captured:
             raise HandoverError("original target baseline changed")
         baseline = captured if baseline is None else baseline
+        _preflight_identity(binding.root)
         source = scheduler.handover_source_for(task_id)
         intent = BranchHandoverIntentV2(
             inputs.run_id, source.plan_revision, source.plan_sha256,
@@ -895,6 +912,11 @@ def deliver_branch_candidate(
             _settled_scheduler(scheduler, owner)
             return _block(intent, journal, owner, "delivery-failed")
         _settled_scheduler(scheduler, owner)
+        try:
+            _preflight_identity(binding.root)
+        except HandoverError:
+            _block(intent, journal, owner, "delivery-failed")
+            raise
         try:
             captured = _initial_git(intent, binding, prepared.expected_head_ref)
             if baseline is not None and baseline != captured:

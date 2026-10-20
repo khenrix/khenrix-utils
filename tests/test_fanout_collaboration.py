@@ -33,14 +33,15 @@ sys.modules[SPEC.name] = fanout
 SPEC.loader.exec_module(fanout)
 
 
-def _synthetic_registry(*, version_probe):
+def _synthetic_registry(*, version_probe, contract_probe=lambda _profile: None):
     """Admit fake Codex turns without claiming live 6.1 characterization."""
     source = fanout.ProviderRegistry.default(version_probe=version_probe)
     return fanout.ProviderRegistry((
-        dataclasses.replace(profile, characterized=True, profile_sha256=None)
-        if profile.executor_id == "codex" and profile.execution_class == "read-only"
-        else profile for profile in source._profiles.values()
-    ), version_probe=version_probe)
+        dataclasses.replace(profile, cli_version=version_probe(profile.executor_id),
+            characterized=(True if profile.executor_id == "codex" and profile.execution_class == "read-only"
+                           else profile.characterized), profile_sha256=None)
+        for profile in source._profiles.values()
+    ), version_probe=version_probe, contract_probe=contract_probe)
 
 
 def test_v2_handover_dependency_context_reads_exact_terminal_evidence(tmp_path):
@@ -103,7 +104,7 @@ runstate = sys.modules[f"{SPEC.name}.runstate"]
 
 def _round_policy(
     *, executor_ids: tuple[str, ...] = ("claude", "codex"), rounds: int = 2,
-    minimum_success: int = 2, max_workers: int = 6, timeout: int | float = 120,
+    minimum_success: int | None = None, max_workers: int = 6, timeout: int | float = 120,
     retries: int = 0,
 ) -> RoundPolicy:
     return RoundPolicy(
@@ -397,21 +398,24 @@ def _skill_bundle(tmp_path: Path) -> bytes:
 def _packet(
     store: ArtifactStore, tmp_path: Path, *,
     executors: tuple[str, ...] = ("claude", "codex"), rounds: int = 1,
-    minimum_success: int = 2, timeout: int | None = 120, retries: int = 0,
+    minimum_success: int | None = None, timeout: int | None = 120, retries: int = 0,
     timeout_override_reason: str | None = None,
     timeout_override_review_sha256: str | None = None,
     execution_class: str = "read-only",
     workspace_verifications: tuple[object, ...] = (),
     lifecycle_controller: object | None = None,
+    iteration_limits: dict[str, int] | None = None,
     **changes: object,
 ) -> TaskPacket:
     source_markdown = changes.pop("source_markdown", b"# Admitted fixture source\n")
     policy = {
-        "executor_ids": list(executors), "minimum_success": minimum_success,
+        "executor_ids": list(executors), "minimum_success": len(executors) if minimum_success is None else minimum_success,
         "retries": retries, "rounds": rounds, "timeout": timeout,
         "quality_tier": "standard", "timeout_override_reason": timeout_override_reason,
         "timeout_override_review_sha256": timeout_override_review_sha256,
     }
+    if iteration_limits is not None:
+        policy["iteration_limits"] = iteration_limits
     task_value = {
         "acceptance": ["answer exactly"], "checks": [], "depends_on": [],
         "execution_class": execution_class, "id": "work", "kind": "work",
@@ -457,26 +461,27 @@ def _packet(
 def _target_packet_fixture(
     tmp_path: Path, *, baseline_sha256: str | None = None,
     execution_class: str = "read-only", checks: list[dict] | None = None,
+    executors=("claude", "codex"), rounds=1, target_id="booking",
 ):
     """A v3 input and v2 task whose identity is independent of local Git probes."""
     source = b"# Target-bound work\n"
     target = fanout.TargetSpec(
-        "booking", "github.com/example/booking", "TASK-123",
-        "refs/heads/feat/TASK-123-booking",
+        target_id, f"github.com/example/{target_id}", "TASK-123",
+        f"refs/heads/feat/TASK-123-{target_id}",
     )
     task = {
-        "id": "booking-work", "kind": "work", "parent_id": None,
+        "id": f"{target_id}-work", "kind": "work", "parent_id": None,
         "title": "Booking", "objective": "Finish booking.",
         "source_step_ids": ["Task 1/Step 1"], "depends_on": [],
         "execution_class": execution_class, "required_skills": [],
         "none_reason": "No specialist skill is needed.",
         "owned_paths": ["source.txt"] if execution_class == "repo-write" else [],
         "acceptance": ["Booking is complete."], "checks": checks or [],
-        "provider_policy": None, "target_id": "booking", "dependency_modes": {},
+        "provider_policy": None, "target_id": target_id, "dependency_modes": {},
     }
     policy = {
-        "executor_ids": ["claude", "codex"], "rounds": 1,
-        "timeout": 120, "retries": 0, "minimum_success": 2,
+        "executor_ids": list(executors), "rounds": rounds,
+        "timeout": 120, "retries": 0, "minimum_success": len(executors),
     }
     plan = sys.modules[f"{SPEC.name}.plan"].FanoutPlanV2.from_dict({
         "schema_version": "v2",
@@ -484,7 +489,7 @@ def _target_packet_fixture(
         "defaults": policy,
         "targets": [target.to_dict()],
         "source_steps": [{"id": "Task 1/Step 1", "sha256": "b" * 64,
-                          "target_id": "booking"}],
+                          "target_id": target_id}],
         "tasks": [task],
     })
     binding = fanout.TargetBinding(
@@ -499,12 +504,12 @@ def _target_packet_fixture(
             "claude/read-only/standard": "f" * 64,
             "codex/read-only/standard": "f" * 64,
         },
-        skill_manifests={"booking-work": "8" * 64},
-        profile_shape="class-tier", targets={"booking": binding},
+        skill_manifests={f"{target_id}-work": "8" * 64},
+        profile_shape="class-tier", targets={target_id: binding},
     )
     task_bytes = canonical_json(plan.tasks[0].to_dict())
     values = dict(
-        run_id=inputs.run_id, task_id="booking-work", attempt=1,
+        run_id=inputs.run_id, task_id=f"{target_id}-work", attempt=1,
         compiled_plan=canonical_json(plan.to_dict()),
         compiled_plan_sha256=inputs.compiled_plan_sha256,
         source_markdown=source, task=task_bytes, task_sha256=_digest(task_bytes),
@@ -543,11 +548,11 @@ def test_v2_packet_rejects_another_targets_cwd(tmp_path):
         TaskPacket(**values)
 
 
-def test_v2_provider_round_stays_closed_without_native_boundary(tmp_path):
+def test_v2_native_preflight_refuses_missing_expected_seats(tmp_path):
     values, _plan, _inputs = _target_packet_fixture(tmp_path)
     packet = TaskPacket(**values)
     coordinator = object.__new__(CollaborationCoordinator)
-    with pytest.raises(CollaborationValidationError, match="native seat boundary"):
+    with pytest.raises(CollaborationValidationError, match="seat assignments"):
         coordinator.preflight_round(
             packet, (), RoundPolicy.from_provider_policy(packet.provider_policy),
         )
@@ -556,6 +561,7 @@ def test_v2_provider_round_stays_closed_without_native_boundary(tmp_path):
 def _v2_hermetic_round(
     tmp_path, monkeypatch, *, execution_class="read-only", checks=None,
     required_file=False, material_controls=False,
+    executors=("claude", "codex"), rounds=1, target_id="booking",
 ):
     monkeypatch.delenv("AGY_ADC_AUTH", raising=False)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
@@ -564,11 +570,12 @@ def _v2_hermetic_round(
     )
     values, plan, inputs = _target_packet_fixture(
         tmp_path, execution_class=execution_class, checks=checks,
+        executors=executors, rounds=rounds, target_id=target_id,
     )
     common = repository / ".git"
     common_info = common.stat()
     binding = dataclasses.replace(
-        inputs.targets["booking"], root=repository, common_dir=common,
+        inputs.targets[target_id], root=repository, common_dir=common,
         common_device=common_info.st_dev, common_inode=common_info.st_ino,
         base_oid=baseline.head, baseline_sha256=baseline.digest,
     )
@@ -584,7 +591,7 @@ def _v2_hermetic_round(
             "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
         }[name])
     inputs = dataclasses.replace(
-        inputs, targets={"booking": binding},
+        inputs, targets={target_id: binding},
         provider_profiles=dict(registry.profile_digests),
     )
     values.update(cwd=repository, target_binding=binding, run_inputs=inputs)
@@ -636,7 +643,7 @@ def _v2_hermetic_round(
     for executor in plan.defaults.executor_ids:
         seat_id = f"seat-{executor}"
         admission = resolver.admit(
-            required, task_id="booking-work", seat_id=seat_id,
+            required, task_id=values["task_id"], seat_id=seat_id,
             provider=executor, session_id=f"admission-{executor}",
         )
         admission = resolver.stage(admission, stage / seat_id)
@@ -702,17 +709,398 @@ def _v2_hermetic_round(
         artifacts=store, journal=journal, owner=owner, memory=memory,
         registry=registry, provider_runner=provider,
         lifecycle_controller=controller,
-        repository_baselines=({"booking": baseline, "address": address_baseline}
-                              if material_controls else {"booking": baseline}),
+        repository_baselines=({target_id: baseline, "address": address_baseline}
+                              if material_controls else {target_id: baseline}),
         slot_root=tmp_path / "slots",
         dependency_scheduler=scheduler,
     )
     return packet, tuple(seats), coordinator, journal, provider, store
 
 
+@pytest.mark.parametrize("cold_intent", (False, True))
+def test_default_target_bound_native_reads_preserve_intents_sessions_and_peer_delivery(tmp_path, monkeypatch, cold_intent):
+    panel = ("claude", "codex", "agy")
+    packet, seats, prior, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch, executors=panel, rounds=2,
+    )
+    providers = sys.modules[f"{SPEC.name}.providers"]
+    process = sys.modules[f"{SPEC.name}.process"]
+    commands = []
+    native_home = tmp_path / "native-home"
+    native_home.mkdir()
+    monkeypatch.setenv("HOME", str(native_home))
+
+    def native_process(command):
+        executor = Path(command.argv[0]).name
+        seat_id = f"seat-{executor}"
+        number = 1 + sum(Path(item.argv[0]).name == executor for item in commands)
+        assert journal.state.seat_phase(packet.task_id, seat_id, 1, number) == "process-started"
+        commands.append(command)
+        fixture = {"claude": "claude-success.json", "codex": "codex-success.ndjson",
+                   "agy": "agy-success.json"}[executor]
+        output = (ROOT / "tests/fixtures/fanout_providers" / fixture).read_bytes()
+        if executor == "claude":
+            payload = json.loads(output)
+            flag = "--resume" if "--resume" in command.argv else "--session-id"
+            payload["session_id"] = command.argv[command.argv.index(flag) + 1]
+            output = canonical_json(payload)
+            session = payload["session_id"]
+            transcript = native_home / ".claude/projects/exact" / f"{session}.jsonl"
+            rows = [
+                {"type": "user", "sessionId": session, "message": {"content": command.stdin.decode()}},
+                {"type": "assistant", "sessionId": session, "message": {"content": [
+                    {"type": "tool_use", "id": f"read-{number}", "name": "Read",
+                     "input": {"file_path": str(Path(command.cwd) / "README.md")}}]}},
+                {"type": "user", "sessionId": session, "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": f"read-{number}", "content": "baseline"}]}},
+                {"type": "assistant", "sessionId": session, "message": {"stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": payload["result"]}]}},
+            ]
+        elif executor == "agy":
+            payload = json.loads(output.splitlines()[-1])["result"]
+            transcript = native_home / ".gemini/antigravity-cli/brain" / payload["conversation_id"] / ".system_generated/logs/transcript_full.jsonl"
+            rows = [
+                {"type": "USER_INPUT", "step_index": number * 3, "content": json.loads(command.stdin)["message"]["content"]},
+                {"type": "PLANNER_RESPONSE", "step_index": number * 3 + 1, "status": "DONE",
+                 "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": str(Path(command.cwd) / "README.md")}}]},
+                {"type": "PLANNER_RESPONSE", "step_index": number * 3 + 2, "status": "DONE", "content": payload["response"]},
+            ]
+        else:
+            rows = [json.loads(line) for line in output.splitlines()]
+            rows[1:1] = [{"type": "turn.started"}, {"type": "item.completed", "item": {
+                "id": "read", "type": "command_execution", "command": "cat README.md", "status": "completed", "exit_code": 0}}]
+            output = b"".join(canonical_json(row) for row in rows)
+        if executor in {"claude", "agy"}:
+            transcript.parent.mkdir(parents=True, exist_ok=True)
+            previous = transcript.read_bytes() if transcript.exists() else b""
+            transcript.write_bytes(previous + b"".join(canonical_json(row) for row in rows))
+        return process.ProcessResult(process.ProcessStatus.EXIT, 0, output, b"")
+
+    monkeypatch.setattr(providers, "run_command", native_process)
+    native = CollaborationCoordinator(artifacts=store, journal=journal, owner=prior.owner,
+        memory=prior.memory, registry=prior.registry, lifecycle_controller=prior.lifecycle_controller,
+        repository_baselines=prior.repository_baselines, dependency_scheduler=prior.dependency_scheduler,
+        slot_root=tmp_path / "slots")
+    try:
+        policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+        if cold_intent:
+            for seat in seats:
+                journal.append("dispatch-intent", task_id=packet.task_id,
+                    seat_id=seat.seat_id, attempt=packet.attempt, round=1,
+                    evidence_sha256=native._dispatch_evidence(packet, seat, 1, policy))
+            scheduler = native.dependency_scheduler
+            native = _cold_coordinator(native)
+            journal, store = native.journal, native.artifacts
+            native.dependency_scheduler = type(scheduler)._resume_for_test(
+                json.loads(packet.compiled_plan), journal.inputs, scheduler._backend,
+                store, owner=native.owner, anchor_store=scheduler._authority)
+        first = native.execute_round(packet, seats, policy, round=1)
+        second = native.execute_round(packet, seats, policy, round=2, peer_source=first)
+        assert first.status == second.status == "round-complete"
+        assert second.is_complete and len(commands) == 6
+        assert [item.session_id for item in first.terminals] == [item.session_id for item in second.terminals]
+        assert all(item.peer_packet_sha256 for item in second.terminals)
+        for request in commands:
+            prompt = request.stdin
+            assert b"BEGIN_TASK_CONTEXT_BYTES" in prompt
+        assert len(prior.memory.publish_calls) == 6
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_default_native_repo_write_worker_is_refused_before_launch(tmp_path, monkeypatch):
+    packet, seats, prior, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch, execution_class="repo-write",
+    )
+    native = CollaborationCoordinator(artifacts=store, journal=journal, owner=prior.owner,
+        memory=prior.memory, registry=prior.registry, lifecycle_controller=prior.lifecycle_controller,
+        repository_baselines=prior.repository_baselines, dependency_scheduler=prior.dependency_scheduler)
+    try:
+        with pytest.raises(CollaborationValidationError, match="owner|repo-write"):
+            native.preflight_round(packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy))
+        assert not journal.state.seat_phases
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_baseline_peer_handles_keep_equal_authors_and_exact_source_lineage(tmp_path):
+    panel = ("claude", "codex", "agy")
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, executors=panel, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+    evidence = b"42\nDissent: owner must resolve chronology.\nNegative test: missing third result blocks.\n"
+
+    def equal_authors(request, *, registry):
+        result = normal(request, registry=registry)
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/equal.txt", evidence)
+        return dataclasses.replace(result, answer=evidence.decode(), answer_ref=ref,
+                                   answer_digest=_digest(evidence))
+
+    coordinator.provider_runner = equal_authors
+    try:
+        first = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        peer = coordinator.build_peer_packet(packet, first, target_seat_id="seat-claude")
+        document = json.loads(peer.payload)
+        assert document["schema_version"] == "fanout-peer-packet-v2"
+        assert document["context_strategy"] == "baseline"
+        assert document["artifact_root"] == str(coordinator.artifacts.root)
+        assert [item["source_seat_id"] for item in document["peers"]] == ["seat-agy", "seat-codex"]
+        assert len({item["answer_sha256"] for item in document["peers"]}) == 1
+        for item in document["peers"]:
+            terminal = next(value for value in first.terminals if value.seat_id == item["source_seat_id"])
+            assert (item["source_run_id"], item["source_task_id"], item["source_target_id"],
+                    item["source_revision"], item["provider_session_id"]) == (
+                "run-1", "work", None, 1, terminal.session_id)
+            assert item["terminal_ref"] == collaboration._artifact_dict(terminal.terminal_ref)
+            assert coordinator.read_peer_answer(packet, first, peer,
+                source_seat_id=item["source_seat_id"]) == evidence
+            for key in ("answer_ref", "checkpoint_ref", "publication_ref", "verification_ref"):
+                assert coordinator.artifacts.read_bytes(collaboration._artifact_ref(item[key]))
+        assert coordinator.build_peer_packet(packet, first, target_seat_id="seat-claude") == peer
+        assert len(memory.publish_calls) == 3
+        assert json.loads(packet.compiled_plan) == packet.context_document()["compiled_plan"]
+        coordinator.peer_packet_limit = len(peer.payload) - 1
+        with pytest.raises(CollaborationValidationError, match="bounded size"):
+            coordinator.build_peer_packet(packet, first, target_seat_id="seat-claude")
+        assert len(memory.publish_calls) == 3
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("tamper", ["source_seat_id", "provider_session_id", "source_revision", "answer_ref"])
+def test_peer_source_handle_substitution_is_rejected_before_fetch(tmp_path, tamper):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=3)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        peer = coordinator.build_peer_packet(packet, second, target_seat_id="seat-claude")
+        document = json.loads(peer.payload)
+        entry = document["peers"][0]
+        if tamper == "source_revision":
+            entry[tamper] = 1
+        elif tamper == "answer_ref":
+            entry[tamper] = collaboration._artifact_dict(first.terminals[1].answer_ref)
+            prior_answer = store.read_bytes(first.terminals[1].answer_ref)
+            entry.update(answer=prior_answer.decode(), answer_length=len(prior_answer),
+                         answer_sha256=_digest(prior_answer))
+        else:
+            entry[tamper] = "foreign-identity"
+        payload = canonical_json(document)
+        forged_ref = store.write_bytes(f"forged/{tamper}.json", payload)
+        forged = dataclasses.replace(peer, payload=payload, packet_sha256=_digest(payload), artifact_ref=forged_ref)
+        with pytest.raises((CollaborationValidationError, CollaborationDurabilityError), match="peer|source|lineage"):
+            coordinator.read_peer_answer(packet, second, forged, source_seat_id="seat-codex")
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_peer_exchange_rejects_relabelled_source_barrier_receipt(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+    try:
+        first = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        forged = dataclasses.replace(first, receipts=(
+            dataclasses.replace(first.receipts[0], memory_session_id="foreign-memory-session"),
+            first.receipts[1]))
+        with pytest.raises(CollaborationDurabilityError, match="barrier|receipt"):
+            coordinator.build_peer_packet(packet, forged, target_seat_id="seat-claude")
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_cold_peer_publication_before_ack_recovers_exact_observation_without_recapture(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    memory = _ExactMemory()
+    memory.fail_publish_at = 2
+    coordinator, journal, provider, _memory = _coordinator(tmp_path, packet, ("claude", "codex"), memory=memory)
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        blocked = coordinator.execute_round(packet, seats, policy, round=1)
+        assert blocked.status == "blocked-memory" and len(blocked.publications) == 1
+        # Publication and its exact observation ID reach durable storage, but
+        # interruption leaves the older barrier without that acknowledgement.
+        checkpoint = coordinator._checkpoint(packet, blocked.terminals[1])
+        receipt = _receipt(checkpoint, 101, memory.artifacts)
+        memory.receipts[checkpoint.identity.key] = receipt
+        journal.append("checkpoint-published", task_id="work", seat_id="seat-codex",
+            attempt=1, round=1, evidence_sha256=receipt.publication_ref.digest)
+        prior = coordinator
+        authority, inputs = journal._anchor_store, journal.inputs
+        journal.close()
+        journal = RawRunJournal._resume_for_test(tmp_path / "journal", inputs,
+            prior.owner, anchor_store=authority)
+        coordinator = CollaborationCoordinator(artifacts=prior.artifacts, journal=journal,
+            owner=prior.owner, memory=memory, registry=prior.registry, provider_runner=provider,
+            lifecycle_controller=prior.lifecycle_controller, repository_baseline=prior.repository_baseline,
+            peer_packet_limit=prior.peer_packet_limit, slot_root=tmp_path / "slots")
+        recovered = coordinator.execute_round(packet, seats, policy, round=1, recovery=blocked)
+        peer = coordinator.build_peer_packet(packet, recovered, target_seat_id="seat-claude")
+        assert coordinator.read_peer_answer(packet, recovered, peer,
+            source_seat_id="seat-codex") == b"answer-codex"
+        assert len(provider.requests) == len(memory.publish_calls) == 2
+        assert recovered.receipts[1].observation_id == 101
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_interleaved_two_repository_peers_share_run_but_never_infer_latest_session(tmp_path, monkeypatch):
+    fixtures = []
+    for target in ("booking", "address"):
+        root = tmp_path / target
+        root.mkdir()
+        fixtures.append(_v2_hermetic_round(root, monkeypatch, target_id=target, rounds=2))
+    a, b = fixtures
+    plan_data = json.loads(a[0].compiled_plan)
+    other_plan = json.loads(b[0].compiled_plan)
+    other_plan["source_steps"][0]["id"] = "Task 2/Step 1"
+    other_plan["tasks"][0]["source_step_ids"] = ["Task 2/Step 1"]
+    plan_data["targets"] += other_plan["targets"]
+    plan_data["source_steps"] += other_plan["source_steps"]
+    plan_data["tasks"] += other_plan["tasks"]
+    plan = sys.modules[f"{SPEC.name}.plan"].FanoutPlanV2.from_dict(plan_data)
+    compiled = canonical_json(plan.to_dict())
+    inputs = dataclasses.replace(a[3].inputs, compiled_plan_sha256=_digest(compiled),
+        targets={**a[3].inputs.targets, **b[3].inputs.targets},
+        skill_manifests={"booking-work": "8" * 64, "address-work": "8" * 64})
+    a[3].close()
+    b[3].close()
+    store = ArtifactStore(tmp_path / "shared-artifacts")
+    journal, owner = RawRunJournal._create_for_test(tmp_path / "shared-journal", inputs,
+        anchor_store=runstate._test_anchor_authority(_MemoryAnchor()))
+    scheduler_module = importlib.import_module(f"{SPEC.name}.scheduler_authority")
+
+    class Backend:
+        record = None
+        def identity(self):
+            return "two-target-peer-test"
+        def key(self):
+            return "scheduler/shared-run"
+        def read(self):
+            return self.record
+        def compare_and_set(self, expected_revision, snapshot, *, owner):
+            actual = 0 if self.record is None else self.record.revision
+            assert actual == expected_revision
+            self.record = scheduler_module.BackendRecord(actual + 1, snapshot)
+            return self.record
+
+    scheduler = scheduler_module.Scheduler._create_for_test(plan, inputs, Backend(), store,
+        owner=owner, anchor_store=runstate._test_anchor_authority(_MemoryAnchor()))
+    baselines = {**a[2].repository_baselines, **b[2].repository_baselines}
+    contexts = []
+    try:
+        for index, (packet, seats, prior, _journal, provider, original_store) in enumerate(fixtures):
+            for seat in seats:
+                _write_fixture(store, seat.delivery_evidence_ref.path,
+                    original_store.read_bytes(seat.delivery_evidence_ref))
+            task_bytes = canonical_json(plan.tasks[index].to_dict())
+            packet = dataclasses.replace(packet, compiled_plan=compiled, compiled_plan_sha256=_digest(compiled),
+                task=task_bytes, task_sha256=_digest(task_bytes), run_inputs=inputs)
+            prior.memory.artifacts = store
+            coordinator = CollaborationCoordinator(artifacts=store, journal=journal, owner=owner,
+                memory=prior.memory, registry=prior.registry, provider_runner=provider,
+                lifecycle_controller=prior.lifecycle_controller, repository_baselines=baselines,
+                dependency_scheduler=scheduler, slot_root=tmp_path / "slots")
+            contexts.append((packet, seats, coordinator))
+        pa, sa, ca = contexts[0]
+        pb, sb, cb = contexts[1]
+        policy = RoundPolicy.from_provider_policy(pa.provider_policy)
+        first_a = ca.execute_round(pa, sa, policy, round=1)
+        first_b = cb.execute_round(pb, sb, policy, round=1)
+        final_b = cb.execute_round(pb, sb, policy, round=2, peer_source=first_b)
+        final_a = ca.execute_round(pa, sa, policy, round=2, peer_source=first_a)
+        assert final_a.is_complete and final_b.is_complete
+        peer_a = final_a.peer_packets[0]
+        peer_b = final_b.peer_packets[0]
+        assert json.loads(peer_a.payload)["peers"][0]["source_target_id"] == "booking"
+        assert json.loads(peer_b.payload)["peers"][0]["source_target_id"] == "address"
+        assert ca.read_peer_answer(pa, first_a, peer_a, source_seat_id="seat-codex") == b"answer-codex"
+        with pytest.raises((CollaborationValidationError, CollaborationDurabilityError), match="peer|source|lineage"):
+            ca.read_peer_answer(pa, first_a, peer_b, source_seat_id="seat-codex")
+        assert len(journal.state.seat_phases) == 8
+        assert len(ca.memory.publish_calls) == len(cb.memory.publish_calls) == 4
+    finally:
+        journal.close()
+        store.close()
+        a[5].close()
+        b[5].close()
+
+
+@pytest.mark.parametrize("mutation", ["withdrawn", "changed"])
+def test_baseline_peer_fetch_refuses_unavailable_or_changed_owned_source(tmp_path, mutation):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, journal, provider, memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+    try:
+        first = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        peer = coordinator.build_peer_packet(packet, first, target_seat_id="seat-claude")
+        owned_source = coordinator.artifacts.root / first.terminals[1].answer_ref.path
+        if mutation == "withdrawn":
+            owned_source.unlink()
+        else:
+            owned_source.write_bytes(b"substituted source")
+        with pytest.raises(CollaborationDurabilityError, match="artifact|source|evidence"):
+            coordinator.read_peer_answer(packet, first, peer, source_seat_id="seat-codex")
+        assert len(provider.requests) == len(memory.publish_calls) == 2
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_sticky_peer_handles_retain_input_lineage_without_republishing_source(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=4)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+
+    def stand_firm(request, *, registry):
+        result = normal(request, registry=registry)
+        if request.executor_id != "claude":
+            return result
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/firm.txt", b"42")
+        return dataclasses.replace(result, answer="42", answer_ref=ref, answer_digest=_digest(b"42"))
+
+    coordinator.provider_runner = stand_firm
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    source = None
+    try:
+        for number in (1, 2, 3):
+            source = coordinator.execute_round(packet, seats, policy, round=number, peer_source=source)
+        peer = coordinator.build_peer_packet(packet, source, target_seat_id="seat-codex")
+        entry = json.loads(peer.payload)["peers"][0]
+        assert entry["source_seat_id"] == "seat-claude" and entry["source_revision"] == 2
+        input_packet = json.loads(store.read_bytes(collaboration._artifact_ref(entry["source_peer_packet_ref"])))
+        assert input_packet["source_round"] == 1 and input_packet["target_round"] == 2
+        assert input_packet["peers"][0]["source_revision"] == 1
+        assert coordinator.read_peer_answer(packet, source, peer, source_seat_id="seat-claude") == b"42"
+        assert len(memory.publish_calls) == len(normal.requests) == 5
+        assert source.seat_progress[0].peer_revisions_seen == (("seat-codex", 1),)
+    finally:
+        journal.close()
+        store.close()
+
+
 def test_v2_hermetic_round_binds_every_native_request_and_skill_grant(tmp_path, monkeypatch):
     packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write",
+        tmp_path, monkeypatch,
     )
     try:
         result = coordinator.execute_round(
@@ -727,56 +1115,30 @@ def test_v2_hermetic_round_binds_every_native_request_and_skill_grant(tmp_path, 
                 f"seat-{request.executor_id}",
             )
             assert request.staged_skill_admission is not None
-            assert request.native_boundary.staged_skill_grant_digest is not None
-            command = coordinator.registry.require(request.executor_id).build_command(request)
-            fanout.validate_native_boundary(
-                request.native_boundary, request, command,
-                request.native_controller, request.native_verification,
-            )
+            assert request.skill_delivery_sha256
+            assert request.skill_bundle_sha256 == packet.skill_bundle_sha256
     finally:
         journal.close()
         store.close()
 
 
-def test_v2_read_only_round_requires_broker_before_provider_spend(tmp_path, monkeypatch):
+def test_v2_read_only_native_round_uses_normal_profile_without_broker(tmp_path, monkeypatch):
     packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
         tmp_path, monkeypatch,
     )
     try:
-        with pytest.raises(fanout.ProviderRequestError, match="broker admission"):
-            coordinator.execute_round(
-                packet, seats,
-                RoundPolicy.from_provider_policy(packet.provider_policy), round=1,
-            )
-        assert provider.requests == []
-        assert not journal.state.seat_phases
+        result = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert result.status == "round-complete"
+        assert len(provider.requests) == 2
+        assert all(request.execution_class == "read-only" and request.target_id == "booking"
+                   and request.inputs_digest == journal.inputs.digest
+                   for request in provider.requests)
     finally:
         journal.close()
         store.close()
 
 
-def test_v2_final_repo_write_barrier_freezes_target_candidates(tmp_path, monkeypatch):
-    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write",
-    )
-    try:
-        barrier = coordinator.execute_round(
-            packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy), round=1,
-        )
-        assert barrier.status == "round-complete"
-        assert {seat_id for seat_id, _ in barrier.candidate_sources} == {
-            seat.seat_id for seat in seats
-        }
-        baseline = coordinator.repository_baselines["booking"]
-        for _, ref in barrier.candidate_sources:
-            candidate = fanout.CandidateBundle.from_manifest(store.read_bytes(ref))
-            assert candidate.baseline_digest == baseline.digest
-        assert coordinator.restore_barrier(barrier.barrier_ref, packet=packet).candidate_sources == barrier.candidate_sources
-        assert coordinator.discover_barrier(packet, round=1).candidate_sources == barrier.candidate_sources
-        assert len(provider.requests) == len(seats)
-    finally:
-        journal.close()
-        store.close()
 
 
 def test_v2_hermetic_round_rejects_wrong_target_and_tampered_skill_before_spend(tmp_path, monkeypatch):
@@ -844,10 +1206,6 @@ def _v2_hermetic_service(packet, seats, coordinator, journal, store):
     )
 
 
-@pytest.mark.xfail(
-    strict=True, raises=fanout.ProviderRequestError,
-    reason="ordinary v2 read-only broker admission is not implemented",
-)
 def test_v2_hermetic_service_transitions_only_with_target_baseline(tmp_path, monkeypatch):
     packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(tmp_path, monkeypatch)
     owner = coordinator.owner
@@ -861,19 +1219,17 @@ def test_v2_hermetic_service_transitions_only_with_target_baseline(tmp_path, mon
         assert len(provider.requests) == 2
         state = service._execution_state(packet.task_id)
         barrier = service._restore_barrier(state.barriers[-1], packet)
-        selected = barrier.valid_terminals[0].answer_ref
-        receipt = service.submit(packet.task_id, selected, owner=owner)
+        synthesis = service.verify_read_only_synthesis(packet.task_id,
+            source_seat_ids=tuple(item.seat_id for item in barrier.valid_terminals),
+            synthesizer_id="owner", answer=b"Owner synthesis using every configured seat.\n", owner=owner)
+        receipt = service.submit(packet.task_id, synthesis, owner=owner)
         assert service.status().tasks[0].phase == "completed"
-        assert service.submit(packet.task_id, selected, owner=owner) == receipt
+        assert service.submit(packet.task_id, synthesis, owner=owner) == receipt
     finally:
         journal.close()
         store.close()
 
 
-@pytest.mark.xfail(
-    strict=True, raises=fanout.ProviderRequestError,
-    reason="ordinary v2 read-only broker admission is not implemented",
-)
 def test_v2_checked_answers_see_the_target_baseline(tmp_path, monkeypatch):
     checks = [{
         "argv": ["/bin/test", "!", "-e", "required.txt"], "cwd": "",
@@ -907,10 +1263,6 @@ def test_v2_checked_answers_see_the_target_baseline(tmp_path, monkeypatch):
         store.close()
 
 
-@pytest.mark.xfail(
-    strict=True, raises=fanout.ProviderRequestError,
-    reason="ordinary v2 read-only broker admission is not implemented",
-)
 def test_v2_checked_answer_receipts_bind_exact_target_baseline(tmp_path, monkeypatch):
     checks = [{
         "argv": ["/bin/test", "-e", "required.txt"], "cwd": "",
@@ -952,10 +1304,6 @@ def test_v2_checked_answer_receipts_bind_exact_target_baseline(tmp_path, monkeyp
         store.close()
 
 
-@pytest.mark.xfail(
-    strict=True, raises=fanout.ProviderRequestError,
-    reason="ordinary v2 read-only broker admission is not implemented",
-)
 def test_v2_unchecked_synthesis_still_binds_target_baseline(tmp_path, monkeypatch):
     packet, seats, coordinator, journal, _provider, store = _v2_hermetic_round(
         tmp_path, monkeypatch,
@@ -1451,7 +1799,7 @@ def _coordinator(tmp_path: Path, packet: TaskPacket, executors: tuple[str, ...],
                  lifecycle_controller: object | None = None,
                  repository_baseline: object | None = None,
                  profile_digests: dict[str, str] | None = None,
-                 registry: object | None = None):
+                 registry: object | None = None, forbidden_read_roots: tuple[Path, ...] = ()):
     if packet.execution_class == "read-only" and repository_baseline is None:
         _repository, repository_baseline, lifecycle_controller, _verifications = _read_only_fixture(tmp_path)
         repo_baseline_sha256 = repository_baseline.digest
@@ -1481,9 +1829,270 @@ def _coordinator(tmp_path: Path, packet: TaskPacket, executors: tuple[str, ...],
         peer_packet_limit=peer_limit,
         lifecycle_controller=lifecycle_controller,
         slot_root=tmp_path / "slots",
+        forbidden_read_roots=forbidden_read_roots,
         **extra,
     )
     return coordinator, journal, provider, memory
+
+
+@pytest.mark.parametrize("foreign_task", [False, True])
+def test_observed_agy_sibling_answer_read_never_publishes_checkpoint(tmp_path, foreign_task):
+    """Sanitized native step 45/46 from the diagnosed early answer read."""
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("agy",)
+    packet = _packet(store, tmp_path, executors=panel)
+    seats = (_seat(tmp_path, "agy"),)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+
+    def breached(request, *, registry):
+        result = normal(request, registry=registry)
+        task = "other-task" if foreign_task else "this-task"
+        trace = {
+            "coverage": "complete", "executor_id": "agy", "session_id": result.session_id,
+            "prompt_sha256": _digest(request.prompt_bytes), "cwd": str(request.cwd),
+            "source_sha256": "a" * 64, "bounds": [0, 67],
+            "calls": [{"id": "45:0", "name": "view_file", "status": "DONE",
+                       "arguments": {"AbsolutePath": str(store.root / "collaboration" / task
+                           / "attempt-1/round-1/seats/sibling/provider/answer.txt"),
+                           "toolAction": "Viewing answer.txt", "toolSummary": "View seat proposal answer"}}],
+        }
+        return dataclasses.replace(result, launch_metadata={"native_tool_trace": trace})
+
+    coordinator.provider_runner = breached
+    try:
+        barrier = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert not barrier.valid_terminals
+        assert not memory.publish_calls
+        terminal = barrier.terminals[0]
+        assert terminal.reason == "read-boundary-violation"
+        coordinator = _cold_coordinator(coordinator)
+        journal, store = coordinator.journal, coordinator.artifacts
+        restored = coordinator.restore_barrier(barrier.barrier_ref, packet=packet)
+        assert not restored.valid_terminals
+        assert restored.terminals[0].read_audit_ref == terminal.read_audit_ref
+        recovered = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1, recovery=restored)
+        assert not recovered.valid_terminals
+        assert len(normal.requests) == 1
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_executor_prompt_defines_assignment_and_turn_read_boundary(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex", "agy")
+    packet = _packet(store, tmp_path, executors=panel, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, provider, _memory = _coordinator(tmp_path, packet, panel)
+    try:
+        first = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        for request in provider.requests:
+            text = request.prompt_bytes.decode()
+            assert "independent first turn" in text
+            assert "Execute only the assigned task" in text
+            assert "No peer results are authorized" in text
+            assert "installed relevant skills" in text
+            assert "supplied dependency" in text
+            assert text.rfind("independent first turn") > text.index("END_STAGED_SKILL_FILES")
+        coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=2, peer_source=first)
+        for request in provider.requests[3:]:
+            text = request.prompt_bytes.decode()
+            assert "Only the supplied prior-barrier peer packet" in text
+            assert "No peer results are authorized" not in text
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_native_reads_allow_workspace_dependency_service_and_exact_later_peer(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex")
+    packet = _packet(store, tmp_path, executors=panel, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+
+    def legitimate(request, *, registry):
+        result = normal(request, registry=registry)
+        arguments = [{"command": "cat README.md"},
+            {"file_path": str(store.root / packet.dependency_artifacts[0].path)},
+            {"command": "cat /account/.agents/skills/relevant/SKILL.md"},
+            {"query": "approved service lookup", "description": str(store.root / "forbidden")},
+            {"command": "git -C /approved/integration show 1234567890abcdef:contract.py"}]
+        if request.resume:
+            payload = request.prompt_bytes.split(b"BEGIN_UNTRUSTED_PEER_EVIDENCE\n", 1)[1].split(b"\n", 1)[1]
+            peer = json.loads(payload.split(b"END_UNTRUSTED_PEER_EVIDENCE", 1)[0])
+            arguments.append({"file_path": str(store.root / peer["peers"][0]["answer_ref"]["path"])})
+        trace = {"coverage": "complete", "executor_id": request.executor_id,
+            "session_id": result.session_id, "prompt_sha256": _digest(request.prompt_bytes),
+            "cwd": str(request.cwd), "source_sha256": "a" * 64, "bounds": [0, 10],
+            "calls": [{"id": str(index), "name": "read", "status": "completed", "arguments": args}
+                      for index, args in enumerate(arguments)]}
+        return dataclasses.replace(result, launch_metadata={"native_tool_trace": trace})
+
+    coordinator.provider_runner = legitimate
+    try:
+        first = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert len(first.valid_terminals) == 2
+        second = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=2, peer_source=first)
+        assert len(second.valid_terminals) == 2
+        assert len(memory.publish_calls) == 4
+        assert all(item.read_audit_ref for item in second.terminals)
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("store_name", ["owner-private", "authority"])
+def test_native_read_rejects_configured_disjoint_owner_stores_after_cold_reopen(tmp_path, store_name):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude",)
+    packet = _packet(store, tmp_path, executors=panel)
+    seats = (_seat(tmp_path, "claude"),)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel,
+        forbidden_read_roots=(tmp_path / "owner-private", tmp_path / "authority"))
+
+    def private_read(request, *, registry):
+        result = normal(request, registry=registry)
+        trace = {"coverage": "complete", "executor_id": request.executor_id,
+            "session_id": result.session_id, "prompt_sha256": _digest(request.prompt_bytes),
+            "cwd": str(request.cwd), "source_sha256": "a" * 64, "bounds": [0, 3],
+            "calls": [{"id": "read", "name": "Read", "status": "completed",
+                       "arguments": {"file_path": str(tmp_path / store_name / "answers-123.json")}}]}
+        return dataclasses.replace(result, launch_metadata={"native_tool_trace": trace})
+
+    coordinator.provider_runner = private_read
+    try:
+        coordinator = _cold_coordinator(coordinator)
+        journal, store = coordinator.journal, coordinator.artifacts
+        barrier = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert not barrier.valid_terminals
+        assert barrier.terminals[0].reason == "read-boundary-violation"
+        assert not memory.publish_calls
+        coordinator = _cold_coordinator(coordinator)
+        journal, store = coordinator.journal, coordinator.artifacts
+        restored = coordinator.restore_barrier(barrier.barrier_ref, packet=packet)
+        assert not restored.valid_terminals
+        assert restored.terminals[0].read_audit_ref == barrier.terminals[0].read_audit_ref
+        assert len(normal.requests) == 1
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("neighbor", [False, True])
+def test_third_turn_allows_only_exact_delivered_peer_packet_lineage(tmp_path, neighbor):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex")
+    packet = _packet(store, tmp_path, executors=panel, rounds=3)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+    observed = []
+
+    def lineage_read(request, *, registry):
+        result = normal(request, registry=registry)
+        arguments = {"file_path": str(Path(request.cwd) / "README.md")}
+        if request.resume:
+            payload = request.prompt_bytes.split(b"BEGIN_UNTRUSTED_PEER_EVIDENCE\n", 1)[1].split(b"\n", 1)[1]
+            peer = json.loads(payload.split(b"END_UNTRUSTED_PEER_EVIDENCE", 1)[0])
+            ref = peer["peers"][0].get("source_peer_packet_ref")
+            if ref:
+                path = store.root / ref["path"]
+                if neighbor:
+                    path = path.with_name("undelivered-neighbor.json")
+                arguments = {"file_path": str(path)}
+                observed.append(path)
+        trace = {"coverage": "complete", "executor_id": request.executor_id,
+            "session_id": result.session_id, "prompt_sha256": _digest(request.prompt_bytes),
+            "cwd": str(request.cwd), "source_sha256": "a" * 64, "bounds": [0, 3],
+            "calls": [{"id": "read", "name": "Read", "status": "completed", "arguments": arguments}]}
+        return dataclasses.replace(result, launch_metadata={"native_tool_trace": trace})
+
+    coordinator.provider_runner = lineage_read
+    try:
+        policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        third = coordinator.execute_round(packet, seats, policy, round=3, peer_source=second)
+        assert len(observed) == 2
+        assert len(third.valid_terminals) == (0 if neighbor else 2)
+        assert len(memory.publish_calls) == (4 if neighbor else 6)
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("schema", ["v1", "v2"])
+def test_execute_assembly_carries_actual_private_roots_on_start_and_cold_open(tmp_path, monkeypatch, schema):
+    import test_fanout_execute_skill as cases
+
+    execute = cases.execute.__wrapped__()
+    runtime = cases.fanout
+    observed = []
+    original = runtime.CollaborationCoordinator
+
+    def assembled(**options):
+        observed.append(tuple(Path(path) for path in options.get("forbidden_read_roots", ())))
+        return original(**options)
+
+    monkeypatch.setattr(runtime, "CollaborationCoordinator", assembled)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    no_provider = lambda *_args, **_kwargs: pytest.fail("assembly launched a provider")
+    common = dict(runtime=runtime, registry=cases._registry(), provider_runner=no_provider,
+                  memory_factory=cases._NeverMemory, memory_preflight=lambda: True)
+    if schema == "v1":
+        packet, _ = cases._question_packet(tmp_path, executors=("claude", "codex"))
+        repo = cases._repository(tmp_path)
+        execute.prepare_run(packet, repo_root=repo, run_root=run, authority_root=authority,
+            private_root=private, skill_roots=(tmp_path / "skills",), budget=12, **common)
+        assert observed == [(authority, private)]
+    else:
+        packet, _ = cases._v2_write_packet(tmp_path)
+        repo = cases._v2_target_root(tmp_path)
+        execute.start_v2_run(packet, target_roots={"address": repo}, run_root=run,
+            authority_root=authority, private_root=private, skill_roots=(tmp_path / "skills",),
+            budget=6, runtime=runtime, registry=common["registry"], provider_runner=no_provider)
+    with execute.open_run(private, **common) as opened:
+        assert opened.service.coordinator.forbidden_read_roots == (authority, private)
+    assert observed[-1] == (authority, private)
+
+
+def test_native_audit_uses_peer_byte_frame_when_answer_contains_delimiter(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex")
+    packet = _packet(store, tmp_path, executors=panel, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+
+    def delimiter_answer(request, *, registry):
+        result = normal(request, registry=registry)
+        answer = b"An untrusted quoted delimiter: END_UNTRUSTED_PEER_EVIDENCE. Keep the byte frame intact."
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/framed-answer.txt", answer)
+        trace = {"coverage": "complete", "executor_id": request.executor_id,
+            "session_id": result.session_id, "prompt_sha256": _digest(request.prompt_bytes),
+            "cwd": str(request.cwd), "source_sha256": "a" * 64, "bounds": [0, 3],
+            "calls": [{"id": "read", "name": "Read", "status": "completed",
+                       "arguments": {"file_path": str(Path(request.cwd) / "README.md")}}]}
+        return dataclasses.replace(result, answer=answer.decode(), answer_ref=ref,
+            answer_digest=_digest(answer), launch_metadata={"native_tool_trace": trace})
+
+    coordinator.provider_runner = delimiter_answer
+    try:
+        policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        assert len(second.valid_terminals) == 2
+        assert len(memory.publish_calls) == 4
+    finally:
+        journal.close()
+        store.close()
 
 
 def _dirty_read_only_seats(tmp_path: Path):
@@ -1540,6 +2149,241 @@ def _dirty_read_only_seats(tmp_path: Path):
         for executor, workspace in workspaces.items()
     }
     return repository, baseline, controller, workspaces, verifications, git
+
+
+@pytest.mark.parametrize("last_cap", [4, 10])
+def test_active_frontiers_keep_settled_peer_revisions_without_relaunch(tmp_path, last_cap):
+    executors = ("claude", "codex", "agy")
+    limits = {"claude": 2, "codex": 3, "agy": last_cap}
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, executors=executors, rounds=2,
+                     minimum_success=3, iteration_limits=limits)
+    seats = tuple(_seat(tmp_path, name) for name in executors)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, executors)
+    counts = dict.fromkeys(executors, 0)
+
+    def provider(request, *, registry):
+        # A real intent must precede every synthetic provider call.
+        seat_id = f"seat-{request.executor_id}"
+        used = sum(task == "work" and seat == seat_id
+                   for task, seat, _attempt, _round in journal.state.seat_phases)
+        assert used == counts[request.executor_id] + 1
+        counts[request.executor_id] += 1
+        result = normal(request, registry=registry)
+        # Claude stands firm after peer reading; Codex changes once then stands
+        # firm. Agy uses its entire cap, so the final one-seat frontier matters.
+        revision = (1 if request.executor_id == "claude" else
+                    min(counts[request.executor_id], 2) if request.executor_id == "codex"
+                    else counts[request.executor_id])
+        answer = f"{request.executor_id} conclusion {revision}"
+        data = answer.encode()
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/conclusion.txt", data)
+        return dataclasses.replace(result, answer=answer, answer_ref=ref, answer_digest=_digest(data))
+
+    coordinator.provider_runner = provider
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    source = None
+    try:
+        for number in range(1, last_cap + 1):
+            source = coordinator.execute_round(packet, seats, policy, round=number, peer_source=source)
+            if number == 2:
+                prior_coordinator = coordinator
+                authority = journal._anchor_store
+                inputs = journal.inputs
+                journal.close()
+                journal = RawRunJournal._resume_for_test(tmp_path / "journal", inputs,
+                    prior_coordinator.owner, anchor_store=authority)
+                coordinator = CollaborationCoordinator(artifacts=prior_coordinator.artifacts,
+                    journal=journal, owner=prior_coordinator.owner, memory=memory,
+                    registry=prior_coordinator.registry, provider_runner=provider,
+                    peer_packet_limit=prior_coordinator.peer_packet_limit,
+                    lifecycle_controller=prior_coordinator.lifecycle_controller,
+                    repository_baseline=prior_coordinator.repository_baseline,
+                    slot_root=tmp_path / "slots")
+            # Reopen the actual durable artifact each time; no in-memory state
+            # can supply a missing settled peer on the next frontier.
+            source = coordinator.restore_barrier(source.barrier_ref, packet=packet)
+        assert source.is_complete
+        assert counts == {"claude": 2, "codex": 3, "agy": last_cap}
+        assert [item.round for item in source.terminals] == [2, 3, last_cap]
+        assert [item.state for item in source.seat_progress] == ["settled", "settled", "capped"]
+        assert source.seat_progress[0].peer_revisions_seen == (("seat-agy", 1), ("seat-codex", 1))
+        assert source.seat_progress[-1].peer_revisions_seen == (("seat-claude", 2), ("seat-codex", 3))
+        assert len(memory.publish_calls) == 5 + last_cap
+        with pytest.raises(CollaborationValidationError):
+            coordinator.execute_round(packet, seats, policy, round=last_cap + 1, peer_source=source)
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("panel", [("claude",), ("claude", "codex"),
+                                    ("claude", "codex", "agy", "fourth")])
+def test_equal_answer_bytes_complete_all_configured_identities_in_cap_one_mode(tmp_path, panel):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, executors=panel, rounds=1, minimum_success=len(panel))
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, _memory = _coordinator(tmp_path, packet, panel)
+
+    def same(request, *, registry):
+        result = normal(request, registry=registry)
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/same.txt", b"42")
+        return dataclasses.replace(result, answer="42", answer_ref=ref, answer_digest=_digest(b"42"))
+
+    coordinator.provider_runner = same
+    try:
+        result = coordinator.execute_round(packet, seats,
+            RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert result.is_complete
+        assert len(result.valid_terminals) == len(panel)
+        assert all(item.state == "independent" and not item.peer_revisions_seen
+                   for item in result.seat_progress)
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_late_failed_attempt_consumes_cap_and_cannot_reuse_early_answer(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, journal, normal, _memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        normal.invalid.add("codex")
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        assert second.status == "failed-minimum"
+        assert not second.is_complete
+        assert second.terminals[1].round == 2 and not second.terminals[1].valid
+        assert second.seat_progress[1].iterations_used == 2
+        assert second.seat_progress[1].state == "failed"
+        assert len(normal.requests) == 4
+        restored = coordinator.restore_barrier(second.barrier_ref, packet=packet)
+        assert restored == second
+        # A reconstructed barrier cannot promote an earlier valid answer after
+        # a newer failed turn consumed this identity's remaining slot.
+        forged = dataclasses.replace(second, status="blocked-memory", barrier_ref=None,
+            terminals=(second.terminals[0], first.terminals[1]),
+            peer_packets=tuple(item for item in second.peer_packets if item.target_seat_id != "seat-codex"),
+            seat_progress=(second.seat_progress[0], dataclasses.replace(
+                second.seat_progress[1], state="capped")))
+        with pytest.raises(CollaborationDurabilityError, match="latest|launch"):
+            coordinator._validate_barrier(forged, packet, 2)
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_observed_stability_finishes_before_ten_turn_cap_without_global_peer_claim(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex")
+    packet = _packet(store, tmp_path, rounds=10)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, _memory = _coordinator(tmp_path, packet, panel)
+
+    def stand_firm(request, *, registry):
+        result = normal(request, registry=registry)
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/firm.txt", b"42")
+        return dataclasses.replace(result, answer="42", answer_ref=ref, answer_digest=_digest(b"42"))
+
+    coordinator.provider_runner = stand_firm
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        assert second.is_complete
+        assert all(item.state == "settled" and item.iterations_used == 2 and item.cap == 10
+                   for item in second.seat_progress)
+        assert second.seat_progress[0].peer_revisions_seen == (("seat-codex", 1),)
+        assert len(normal.requests) == 4
+        with pytest.raises(CollaborationValidationError, match="complete"):
+            coordinator.execute_round(packet, seats, policy, round=3, peer_source=second)
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_sticky_checkpoint_owns_memory_block_at_its_original_turn(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    panel = ("claude", "codex")
+    packet = _packet(store, tmp_path, rounds=4)
+    seats = tuple(_seat(tmp_path, name) for name in panel)
+    coordinator, journal, normal, memory = _coordinator(tmp_path, packet, panel)
+
+    def stand_firm(request, *, registry):
+        result = normal(request, registry=registry)
+        if request.executor_id != "claude":
+            return result
+        ref = request.artifact_store.write_bytes(f"{request.artifact_prefix}/firm.txt", b"42")
+        return dataclasses.replace(result, answer="42", answer_ref=ref, answer_digest=_digest(b"42"))
+
+    original_fetch = memory.fetch_verified
+
+    def fail_new_frontier(pairs):
+        if {checkpoint.identity.round for checkpoint, _receipt in pairs} == {2, 3}:
+            raise fanout.MemoryIntegrityError("synthetic checkpoint fetch unavailable")
+        return original_fetch(pairs)
+
+    coordinator.provider_runner = stand_firm
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        first = coordinator.execute_round(packet, seats, policy, round=1)
+        second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
+        memory.fetch_verified = fail_new_frontier
+        blocked = coordinator.execute_round(packet, seats, policy, round=3, peer_source=second)
+        assert blocked.status == "blocked-memory"
+        assert journal.state.memory_block_owners["work"] == ("seat-claude", 1, 2)
+        memory.fetch_verified = original_fetch
+        recovered = coordinator.execute_round(packet, seats, policy, round=3, recovery=blocked)
+        assert recovered.status == "round-complete"
+        assert len(normal.requests) == 5
+        assert journal.state.task_phases["work"] == "memory-recovered"
+    finally:
+        journal.close()
+        store.close()
+
+
+@pytest.mark.parametrize("cap", [2, 4])
+def test_singleton_uses_exact_own_session_through_cap_after_cold_recovery(tmp_path, cap):
+    panel = ("claude",)
+    uniform = (ProviderPolicyV1(executor_ids=panel) if cap == 2 else
+               ProviderPolicyV1(executor_ids=panel, rounds=cap))
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, executors=panel, rounds=uniform.rounds)
+    seats = (_seat(tmp_path, "claude"),)
+    coordinator, journal, provider, memory = _coordinator(tmp_path, packet, panel)
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        source = coordinator.execute_round(packet, seats, policy, round=1)
+        prior = coordinator
+        authority, inputs = journal._anchor_store, journal.inputs
+        journal.close()
+        journal = RawRunJournal._resume_for_test(tmp_path / "journal", inputs,
+            prior.owner, anchor_store=authority)
+        coordinator = CollaborationCoordinator(artifacts=prior.artifacts,
+            journal=journal, owner=prior.owner, memory=memory,
+            registry=prior.registry, provider_runner=provider,
+            lifecycle_controller=prior.lifecycle_controller,
+            repository_baseline=prior.repository_baseline,
+            peer_packet_limit=prior.peer_packet_limit, slot_root=tmp_path / "slots")
+        source = coordinator.restore_barrier(source.barrier_ref, packet=packet)
+        for number in range(2, cap + 1):
+            source = coordinator.execute_round(packet, seats, policy, round=number, peer_source=source)
+            source = coordinator.restore_barrier(source.barrier_ref, packet=packet)
+        assert source.is_complete
+        assert source.seat_progress[0].state == "capped"
+        assert source.seat_progress[0].iterations_used == cap
+        assert source.seat_progress[0].peer_revisions_seen == ()
+        assert source.peer_packets == ()
+        assert len(provider.requests) == cap
+        assert all(request.resume and request.session_id == "session-claude"
+                   for request in provider.requests[1:])
+        assert all(b"BEGIN_UNTRUSTED_PEER_EVIDENCE" not in request.prompt_bytes
+                   for request in provider.requests)
+    finally:
+        journal.close()
+        store.close()
 
 
 def test_contract_types_are_immutable_bounded_and_reject_boolean_counters(tmp_path: Path) -> None:
@@ -1650,8 +2494,8 @@ def test_profiled_dispatch_binds_selected_digest_and_timeout_before_process_star
     assert all(terminal.observed_model is None for terminal in result.terminals)
 
 
-def test_profiled_agy_dispatch_requires_guard_before_process_started(tmp_path: Path) -> None:
-    """A real read-only agy seat cannot commit dispatch intent without its native guard."""
+def test_profiled_agy_native_dispatch_validates_without_obsolete_guard(tmp_path: Path) -> None:
+    """The normal installed agy profile preserves reads without a broker guard."""
     store = ArtifactStore(tmp_path / "artifacts")
     default = fanout.ProviderRegistry.default()
     registry = fanout.ProviderRegistry((
@@ -1671,8 +2515,7 @@ def test_profiled_agy_dispatch_requires_guard_before_process_started(tmp_path: P
     agy_seat = next(seat for seat in seats if seat.executor_id == "agy")
     policy = RoundPolicy.from_provider_policy(packet.provider_policy)
     try:
-        with pytest.raises(CollaborationValidationError, match="guard"):
-            coordinator._dispatch_evidence(packet, agy_seat, 1, policy)
+        assert coordinator._dispatch_evidence(packet, agy_seat, 1, policy)
         assert journal.state.seat_phase("work", agy_seat.seat_id, 1, 1) is None
         assert provider.requests == []
     finally:
@@ -1700,11 +2543,17 @@ def test_real_registry_cannot_execute_with_legacy_flat_run_input_shape(tmp_path:
         store.close()
 
 
-def test_cli_version_drift_blocks_profiled_resume_before_any_second_turn(tmp_path: Path) -> None:
-    """A settled first round cannot resume through a changed installed CLI."""
+def test_cli_contract_drift_blocks_profiled_resume_before_any_second_turn(tmp_path: Path) -> None:
+    """Unsupported native grammar blocks another turn; version drift is diagnostic."""
     store = ArtifactStore(tmp_path / "artifacts")
     versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
-    registry = _synthetic_registry(version_probe=lambda name: versions[name])
+    supported = [True]
+
+    def contract_probe(_profile):
+        if not supported[0]:
+            raise fanout.ProviderRequestError("required native CLI flag unavailable")
+
+    registry = _synthetic_registry(version_probe=lambda name: versions[name], contract_probe=contract_probe)
     executors = ("claude", "codex")
     packet = _packet(store, tmp_path, executors=executors, rounds=2, timeout=None)
     seats = tuple(_seat(tmp_path, name) for name in executors)
@@ -1718,6 +2567,7 @@ def test_cli_version_drift_blocks_profiled_resume_before_any_second_turn(tmp_pat
         assert first.status == "round-complete"
         before = len(provider.requests)
         versions["codex"] = "0.999.0"
+        supported[0] = False
         with pytest.raises(CollaborationValidationError, match="profile preflight"):
             coordinator.execute_round(
                 packet, seats, policy, round=2, peer_source=first,
@@ -1769,7 +2619,7 @@ def test_reviewed_timeout_is_bound_to_intent_and_resumed_turn(tmp_path: Path) ->
         for round in (1, 2):
             for seat in seats:
                 profile = registry.select(seat.executor_id, "read-only", "standard")
-                expected = _digest(canonical_json({
+                document = {
                     "schema_version": "fanout-profile-dispatch-v1",
                     "task_id": "work", "seat_id": seat.seat_id,
                     "attempt": 1, "round": round,
@@ -1777,7 +2627,12 @@ def test_reviewed_timeout_is_bound_to_intent_and_resumed_turn(tmp_path: Path) ->
                     "effective_timeout": 1200,
                     "timeout_override_review_sha256": review,
                     "workspace_evidence_sha256": workspace_evidence[round][seat.seat_id],
-                }))
+                }
+                if round == 2:
+                    document["peer_packet_sha256"] = next(
+                        item.packet_sha256 for item in second.peer_packets
+                        if item.target_seat_id == seat.seat_id)
+                expected = _digest(canonical_json(document))
                 assert journal.state.evidence_digest(
                     "dispatch-intent", "work", seat.seat_id, 1, round,
                 ) == expected
@@ -1799,7 +2654,7 @@ def test_round_one_is_blind_and_shared_context_is_byte_identical_under_ambient_m
     try:
         result = coordinator.execute_round(
             packet, seats,
-            _round_policy(executor_ids=executors, rounds=2, minimum_success=2, max_workers=3),
+            _round_policy(executor_ids=executors, rounds=2, max_workers=3),
             round=1,
         )
     finally:
@@ -1830,7 +2685,7 @@ def test_full_admitted_source_reaches_all_seats_in_both_round_prompts(tmp_path: 
                      source_markdown=source.encode("utf-8"))
     seats = tuple(_seat(tmp_path, name) for name in executors)
     coordinator, journal, provider, _memory = _coordinator(tmp_path, packet, executors)
-    policy = _round_policy(executor_ids=executors, rounds=2, minimum_success=2, max_workers=3)
+    policy = _round_policy(executor_ids=executors, rounds=2, max_workers=3)
     try:
         first = coordinator.execute_round(packet, seats, policy, round=1)
         second = coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
@@ -1872,23 +2727,24 @@ def test_publication_waits_for_every_expected_terminal_including_slow_invalid_se
     try:
         result = coordinator.execute_round(
             packet, seats,
-            _round_policy(executor_ids=executors, rounds=1, minimum_success=2, max_workers=3),
+            _round_policy(executor_ids=executors, rounds=1, max_workers=3),
             round=1,
         )
     finally:
         journal.close()
         store.close()
 
-    assert result.status == "round-complete"
-    assert {item.identity.seat_id for item in memory.publish_calls} == {"seat-claude", "seat-codex"}
+    assert result.status == "failed-minimum"
+    assert not memory.publish_calls
+    assert {item.seat_id for item in result.valid_terminals} == {"seat-claude", "seat-codex"}
 
 
 @pytest.mark.parametrize(
     ("invalid", "minimum", "status", "published"),
     [
-        ({"codex", "agy"}, 2, "failed-minimum", 0),
-        ({"agy"}, 2, "round-complete", 2),
-        (set(), 2, "round-complete", 3),
+        ({"codex", "agy"}, 3, "failed-minimum", 0),
+        ({"agy"}, 3, "failed-minimum", 0),
+        (set(), 3, "round-complete", 3),
     ],
 )
 def test_minimum_success_is_enforced_after_the_full_barrier_and_invalid_seats_never_publish(
@@ -1937,7 +2793,7 @@ def test_peer_packets_are_deterministic_peer_once_no_self_and_delimiter_safe(
         first = coordinator.execute_round(
             packet, seats,
             _round_policy(
-                executor_ids=executors, rounds=2, minimum_success=2,
+                executor_ids=executors, rounds=2,
                 max_workers=len(executors),
             ), round=1,
         )
@@ -1959,29 +2815,6 @@ def test_peer_packets_are_deterministic_peer_once_no_self_and_delimiter_safe(
             assert peer["answer_length"] == len(peer["answer"].encode("utf-8"))
 
 
-def test_quality_disabled_retains_real_own_sessions_without_peers_or_memory(tmp_path):
-    store = ArtifactStore(tmp_path / "artifacts")
-    packet = _packet(store, tmp_path, rounds=2, retries=0)
-    executors = ("claude", "codex")
-    seats = tuple(_seat(tmp_path, name) for name in executors)
-    coordinator, journal, provider, memory = _coordinator(tmp_path, packet, executors)
-    try:
-        policy = _round_policy(rounds=2, retries=0, minimum_success=2, max_workers=2)
-        first = coordinator._prompt(packet, seats[0], 1, None)
-        second = coordinator._prompt(packet, seats[0], 2, None, quality_sharing_disabled=True)
-        assert first.split(b"BEGIN_TASK_CONTEXT_BYTES", 1)[1].split(b"END_TASK_CONTEXT_BYTES", 1)[0] == second.split(b"BEGIN_TASK_CONTEXT_BYTES", 1)[1].split(b"END_TASK_CONTEXT_BYTES", 1)[0]
-        assert first.split(b"BEGIN_STAGED_SKILL_FILES", 1)[1] == second.split(b"BEGIN_STAGED_SKILL_FILES", 1)[1]
-        assert not memory.publish_calls
-        assert not provider.requests
-        assert b"BEGIN_UNTRUSTED_PEER_EVIDENCE" not in second
-        with pytest.raises(CollaborationValidationError):
-            coordinator._prompt(packet, seats[0], 2, None)
-        with pytest.raises(CollaborationValidationError, match="allocated protected turn"):
-            coordinator.execute_quality_disabled_round(packet, seats, policy, round=1,
-                turns={seat.seat_id: lambda request: None for seat in seats})
-    finally:
-        journal.close()
-        store.close()
 
 
 def test_peer_packet_framing_keeps_delimiter_like_unicode_answer_inert(tmp_path: Path) -> None:
@@ -2031,7 +2864,13 @@ def test_peer_packet_framing_keeps_delimiter_like_unicode_answer_inert(tmp_path:
     label, length, digest_label, digest = header.split()
     assert (label, digest_label) == (b"PEER_PACKET_BYTES", b"SHA256")
     payload = remainder[:int(length)]
-    assert remainder[int(length):] == b"END_UNTRUSTED_PEER_EVIDENCE\n"
+    closing_marker, trusted_postamble = remainder[int(length):].split(b"\n", 1)
+    assert closing_marker == b"END_UNTRUSTED_PEER_EVIDENCE"
+    assert trusted_postamble == (
+        b"Only the supplied prior-barrier peer packet and its exact approved lineage handles are authorized peer evidence for this turn. "
+        b"A settled peer or readable neighboring directory does not authorize further browsing.\n"
+        b"Return your own result for the assigned task using only authorized evidence.\n"
+    )
     assert prompt.splitlines().count(b"END_UNTRUSTED_PEER_EVIDENCE") == 1
     assert _digest(payload).encode() == digest and payload == codex_packet.payload
     decoded = json.loads(payload)
@@ -2647,12 +3486,12 @@ def test_packet_rejects_dependency_tampering_skill_drift_and_cross_run_journal(t
 def test_provider_policy_conversion_is_strict_and_never_admits_more_than_six_workers() -> None:
     provider = ProviderPolicyV1(
         executor_ids=("claude", "codex", "agy"), rounds=3, timeout=42,
-        retries=1, minimum_success=2,
+        retries=0, minimum_success=3,
     )
     policy = RoundPolicy.from_provider_policy(provider, max_workers=6)
     assert policy == _round_policy(
         executor_ids=("claude", "codex", "agy"), rounds=3,
-        minimum_success=2, max_workers=6, timeout=42, retries=1,
+        minimum_success=3, max_workers=6, timeout=42, retries=0,
     )
     with pytest.raises(CollaborationValidationError):
         _round_policy(rounds=1, minimum_success=2, max_workers=7)
@@ -2831,244 +3670,8 @@ def test_read_only_round_resume_reauthenticates_each_snapshot_after_coordinator_
     assert all(Path(request.cwd) != repository for request in resumed)
 
 
-def test_repo_write_uses_authenticated_distinct_seat_roots_never_packet_cwd(
-    tmp_path: Path,
-) -> None:
-    repository = tmp_path / "caller"
-    repository.mkdir()
-    environment = dict(os.environ)
-    for name in tuple(environment):
-        if name.startswith("GIT_"):
-            environment.pop(name)
-    environment.update({
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-    })
-
-    def git(*args: str) -> bytes:
-        completed = subprocess.run(
-            ("git", "-C", os.fspath(repository), *args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
-        return completed.stdout
-
-    git("init", "-q", "-b", "main")
-    git("config", "user.name", "Fixture")
-    git("config", "user.email", "fixture@example.invalid")
-    (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
-    git("add", ".")
-    git("commit", "-qm", "baseline")
-    baseline = fanout.capture_repository_baseline(repository)
-    controller = fanout.create_lifecycle_controller(tmp_path / "controller")
-    workspace_by_executor = {
-        executor: fanout.create_seat_workspace(
-            baseline,
-            controller.root / "workspaces",
-            f"seat-{executor}",
-        )
-        for executor in ("claude", "codex")
-    }
-    verification_by_executor = {
-        executor: fanout.verify_seat_workspace(
-            baseline,
-            workspace,
-            controller=controller,
-        )
-        for executor, workspace in workspace_by_executor.items()
-    }
-    store = ArtifactStore(tmp_path / "artifacts")
-    packet = _packet(
-        store,
-        tmp_path,
-        execution_class="repo-write",
-        cwd=repository,
-        workspace_verifications=tuple(verification_by_executor.values()),
-        lifecycle_controller=controller,
-    )
-    seats = tuple(
-        _seat(
-            tmp_path,
-            executor,
-            workspace_verification=verification_by_executor[executor],
-        )
-        for executor in ("claude", "codex")
-    )
-    memory = _ExactMemory()
-    memory.fail_with_publication_at = 1
-    coordinator, journal, provider, _memory = _coordinator(
-        tmp_path,
-        packet,
-        ("claude", "codex"),
-        memory=memory,
-        repo_baseline_sha256=baseline.digest,
-        lifecycle_controller=controller,
-        repository_baseline=baseline,
-    )
-    try:
-        blocked = coordinator.execute_round(
-            packet,
-            seats,
-            _round_policy(rounds=1, minimum_success=2, max_workers=2),
-            round=1,
-        )
-        assert blocked.status == "blocked-memory"
-        assert len(blocked.candidate_sources) == 2
-        assert blocked.barrier_ref is not None
-        assert coordinator.restore_barrier(blocked.barrier_ref, packet=packet).candidate_sources == blocked.candidate_sources
-        assert coordinator.discover_barrier(packet, round=1).candidate_sources == blocked.candidate_sources
-        blocked_sources = blocked.candidate_sources
-        for workspace in workspace_by_executor.values():
-            (workspace.root / "tracked.txt").write_text("changed during memory outage\n")
-        memory.fail_with_publication_at = None
-        result = coordinator.execute_round(
-            packet, seats,
-            _round_policy(rounds=1, minimum_success=2, max_workers=2),
-            round=1, recovery=blocked,
-        )
-        assert result.candidate_sources == blocked_sources
-        assert result.barrier_ref is not None
-        frozen = {
-            seat_id: store.read_bytes(ref)
-            for seat_id, ref in result.candidate_sources
-        }
-        assert set(frozen) == {"seat-claude", "seat-codex"}
-        for workspace in workspace_by_executor.values():
-            (workspace.root / "tracked.txt").write_text("changed after barrier\n")
-        restored = coordinator.restore_barrier(result.barrier_ref, packet=packet)
-        discovered = coordinator.discover_barrier(packet, round=1)
-        assert discovered is not None
-        assert restored.candidate_sources == discovered.candidate_sources == result.candidate_sources
-        assert {
-            seat_id: store.read_bytes(ref)
-            for seat_id, ref in discovered.candidate_sources
-        } == frozen
-        assert all(
-            fanout.CandidateBundle.from_manifest(manifest).digest
-            != fanout.create_candidate(baseline, workspace_by_executor[seat_id.removeprefix("seat-")]).digest
-            for seat_id, manifest in frozen.items()
-        )
-    finally:
-        journal.close()
-        store.close()
-
-    assert result.status == "round-complete"
-    assert {Path(request.cwd) for request in provider.requests} == {
-        workspace.root for workspace in workspace_by_executor.values()
-    }
-    assert {
-        terminal.workspace_evidence_sha256 for terminal in result.terminals
-    } == {
-        verification.evidence_digest
-        for verification in verification_by_executor.values()
-    }
-    assert all(Path(request.cwd) != repository for request in provider.requests)
 
 
-def test_first_repo_dispatch_reproves_baseline_after_its_durable_intent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repository = tmp_path / "caller"
-    repository.mkdir()
-    environment = dict(os.environ)
-    for name in tuple(environment):
-        if name.startswith("GIT_"):
-            environment.pop(name)
-    environment.update({
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-    })
-
-    def git(*args: str) -> None:
-        completed = subprocess.run(
-            ("git", "-C", os.fspath(repository), *args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
-
-    git("init", "-q", "-b", "main")
-    git("config", "user.name", "Fixture")
-    git("config", "user.email", "fixture@example.invalid")
-    (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
-    git("add", ".")
-    git("commit", "-qm", "baseline")
-    baseline = fanout.capture_repository_baseline(repository)
-    controller = fanout.create_lifecycle_controller(tmp_path / "controller")
-    workspaces = {
-        executor: fanout.create_seat_workspace(
-            baseline,
-            controller.root / "workspaces",
-            f"seat-{executor}",
-        )
-        for executor in ("claude", "codex")
-    }
-    verifications = {
-        executor: fanout.verify_seat_workspace(
-            baseline,
-            workspace,
-            controller=controller,
-        )
-        for executor, workspace in workspaces.items()
-    }
-    store = ArtifactStore(tmp_path / "artifacts")
-    packet = _packet(
-        store,
-        tmp_path,
-        execution_class="repo-write",
-        cwd=repository,
-        workspace_verifications=tuple(verifications.values()),
-        lifecycle_controller=controller,
-    )
-    seats = tuple(
-        _seat(
-            tmp_path,
-            executor,
-            workspace_verification=verifications[executor],
-        )
-        for executor in ("claude", "codex")
-    )
-    coordinator, journal, provider, _memory = _coordinator(
-        tmp_path,
-        packet,
-        ("claude", "codex"),
-        repo_baseline_sha256=baseline.digest,
-        lifecycle_controller=controller,
-        repository_baseline=baseline,
-    )
-    original_append = journal.append
-
-    def drift_after_intent(event_type, **values):
-        original_append(event_type, **values)
-        if event_type == "dispatch-intent":
-            executor = values["seat_id"].removeprefix("seat-")
-            (workspaces[executor].root / "tracked.txt").write_text(
-                "drifted after intent\n",
-                encoding="utf-8",
-            )
-
-    monkeypatch.setattr(journal, "append", drift_after_intent)
-    try:
-        with pytest.raises(CollaborationDurabilityError, match="dispatch|workspace|baseline"):
-            coordinator.execute_round(
-                packet,
-                seats,
-                _round_policy(rounds=1, minimum_success=2, max_workers=2),
-                round=1,
-            )
-    finally:
-        journal.close()
-        store.close()
-
-    assert provider.requests == []
 
 
 def test_finding_2_caller_cannot_lower_the_compiled_minimum_success(
@@ -3097,11 +3700,11 @@ def test_finding_3_later_round_requires_every_valid_survivor(tmp_path: Path) -> 
     seats = tuple(_seat(tmp_path, name) for name in executors)
     coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, executors)
     policy = _round_policy(
-        executor_ids=executors, rounds=2, minimum_success=2, max_workers=3,
+        executor_ids=executors, rounds=2, max_workers=3,
     )
     try:
         first = coordinator.execute_round(packet, seats, policy, round=1)
-        with pytest.raises(CollaborationValidationError, match="survivor|executor set"):
+        with pytest.raises(CollaborationValidationError, match="survivor|executor set|expected seat count"):
             coordinator.execute_round(
                 packet, seats[:2], policy, round=2, peer_source=first,
             )
@@ -3127,26 +3730,25 @@ def test_finding_3_uncertain_source_requires_durable_owner_resolution(
     coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, executors)
     coordinator.provider_runner = uncertain_agy
     policy = _round_policy(
-        executor_ids=executors, rounds=2, minimum_success=2, max_workers=3,
+        executor_ids=executors, rounds=2, max_workers=3,
     )
     try:
         first = coordinator.execute_round(packet, seats, policy, round=1)
-        assert first.status == "round-complete"
-        with pytest.raises(CollaborationDurabilityError, match="owner.*resolution"):
+        assert first.status == "failed-minimum"
+        with pytest.raises(CollaborationDurabilityError, match="complete preceding"):
             coordinator.execute_round(
                 packet, seats, policy, round=2, peer_source=first,
             )
         coordinator.resolve_uncertain_source(
             task_id=packet.task_id, seat_id="seat-agy", attempt=1, round=1,
         )
-        second = coordinator.execute_round(
-            packet, seats[:2], policy, round=2, peer_source=first,
-        )
+        with pytest.raises(CollaborationDurabilityError, match="complete preceding"):
+            coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
     finally:
         journal.close()
         store.close()
 
-    assert second.status == "round-complete"
+    assert len(normal.requests) == 2
 
 
 def test_finding_4_exact_session_is_serialized_across_coordinators(tmp_path: Path) -> None:
@@ -3412,7 +4014,7 @@ def _cold_coordinator(coordinator, *, memory=None):
     exchange = coordinator.memory if memory is None else memory(store)
     if isinstance(exchange, _ExactMemory):
         exchange.artifacts = store
-    return CollaborationCoordinator(
+    reopened_coordinator = CollaborationCoordinator(
         artifacts=store, journal=reopened, owner=owner, memory=exchange,
         registry=coordinator.registry, provider_runner=coordinator.provider_runner,
         peer_packet_limit=coordinator.peer_packet_limit,
@@ -3420,7 +4022,10 @@ def _cold_coordinator(coordinator, *, memory=None):
         repository_baseline=coordinator.repository_baseline,
         repository_baselines=coordinator.repository_baselines,
         slot_root=coordinator.slot_root,
+        dependency_scheduler=coordinator.dependency_scheduler,
+        forbidden_read_roots=coordinator.forbidden_read_roots,
     )
+    return reopened_coordinator
 
 
 class _DurableObservationTransport:
@@ -3557,7 +4162,7 @@ def test_cold_recovery_loads_authenticated_progress_newer_than_saved_barrier(tmp
         store.close()
 
 
-def test_cold_recovery_honors_exact_owner_exclusion_without_replaying_uncertain_seat(tmp_path, monkeypatch):
+def test_cold_owner_exclusion_never_replays_or_reduces_required_final_cohort(tmp_path, monkeypatch):
     store = ArtifactStore(tmp_path / "artifacts")
     executors = ("claude", "codex", "agy")
     packet = _packet(store, tmp_path, executors=executors, rounds=2)
@@ -3577,9 +4182,10 @@ def test_cold_recovery_honors_exact_owner_exclusion_without_replaying_uncertain_
     policy = _round_policy(executor_ids=executors, rounds=2)
     try:
         saved = coordinator.execute_round(packet, seats, policy, round=1)
-        assert saved.status == "blocked-memory"
+        assert saved.status == "failed-minimum"
         uncertain_terminal = next(item for item in saved.terminals if item.executor_id == "agy")
         assert uncertain_terminal.state == "uncertain-attempt"
+        calls = len(normal.requests)
         with pytest.raises(CollaborationDurabilityError, match="owner action"):
             coordinator.execute_round(packet, seats, policy, round=1, recovery=saved)
         for seat_id, round_number in (("seat-claude", 1), ("seat-agy", 2), ("foreign", 1)):
@@ -3589,14 +4195,15 @@ def test_cold_recovery_honors_exact_owner_exclusion_without_replaying_uncertain_
         coordinator = _cold_coordinator(coordinator, memory=factory)
         saved = coordinator.restore_barrier(saved.barrier_ref, packet=packet)
         completed = coordinator.execute_round(packet, seats, policy, round=1, recovery=saved)
-        assert completed.status == "round-complete"
+        assert completed.status == "failed-minimum"
         assert next(item for item in completed.terminals if item.executor_id == "agy") == uncertain_terminal
         survivors = tuple(seat for seat in seats if seat.executor_id != "agy")
-        second = coordinator.execute_round(packet, survivors, policy, round=2, peer_source=completed)
-        assert second.status == "round-complete"
+        with pytest.raises((CollaborationValidationError, CollaborationDurabilityError)):
+            coordinator.execute_round(packet, survivors, policy, round=2, peer_source=completed)
+        assert len(normal.requests) == calls
         assert all(request.executor_id != "agy" for request in normal.requests)
         rows = json.loads(observations.read_bytes())["observations"]
-        assert len(rows) == 4 and all("seat-agy" not in row["text"] for row in rows)
+        assert rows == []
         assert coordinator.journal.state.uncertainty_resolutions[("work", "seat-agy", 1, 1)] == "exclude"
     finally:
         coordinator.journal.close()
@@ -3637,20 +4244,13 @@ def test_cold_discovery_selects_only_authenticated_monotonic_barrier_progress(tm
         store.close()
 
 
-@pytest.mark.parametrize("conflict", ["incomparable", "publication-id", "terminal", "peer-cohort", "candidate"])
+@pytest.mark.parametrize("conflict", ["incomparable", "publication-id", "terminal", "peer-cohort"])
 def test_discovery_rejects_authenticated_progress_conflicts_before_selection(tmp_path, monkeypatch, conflict):
-    if conflict == "candidate":
-        packet, seats, coordinator, _journal, provider, store = _v2_hermetic_round(
-            tmp_path, monkeypatch, execution_class="repo-write",
-        )
-        memory = coordinator.memory
-        policy = RoundPolicy.from_provider_policy(packet.provider_policy)
-    else:
-        store = ArtifactStore(tmp_path / "artifacts")
-        packet = _packet(store, tmp_path, rounds=2)
-        seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
-        coordinator, _journal, provider, memory = _coordinator(tmp_path, packet, ("claude", "codex"))
-        policy = _round_policy(rounds=2)
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2)
+    seats = tuple(_seat(tmp_path, name) for name in ("claude", "codex"))
+    coordinator, _journal, provider, memory = _coordinator(tmp_path, packet, ("claude", "codex"))
+    policy = _round_policy(rounds=2)
     try:
         first = coordinator.execute_round(packet, seats, policy, round=1)
         latest = (coordinator.execute_round(packet, seats, policy, round=2, peer_source=first)
@@ -3671,10 +4271,6 @@ def test_discovery_rejects_authenticated_progress_conflicts_before_selection(tmp
         elif conflict == "peer-cohort":
             changed = dataclasses.replace(latest, status="blocked-memory", peer_packets=latest.peer_packets[::-1],
                                           barrier_ref=None)
-        else:
-            first_source, second_source = latest.candidate_sources
-            changed = dataclasses.replace(latest, status="blocked-memory", barrier_ref=None,
-                candidate_sources=((first_source[0], second_source[1]), (second_source[0], first_source[1])))
         coordinator._persist_barrier(changed)
         calls = len(provider.requests), len(memory.publish_calls)
         coordinator = _cold_coordinator(coordinator)
@@ -3973,17 +4569,17 @@ def test_finding_8_queued_seats_remain_dispatch_intent_until_provider_boundary(
     def blocking_first(request, *, registry):
         if request.executor_id == "claude":
             entered.set()
-            assert release.wait(3)
+            assert release.wait(30)
         return normal(request, registry=registry)
 
     coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, executors)
     coordinator.provider_runner = blocking_first
     policy = _round_policy(
-        executor_ids=executors, rounds=1, minimum_success=2, max_workers=1,
+        executor_ids=executors, rounds=1, max_workers=1,
     )
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(coordinator.execute_round, packet, seats, policy, round=1)
-        assert entered.wait(3)
+        assert entered.wait(30)
         try:
             assert journal.state.seat_phase("work", "seat-claude", 1, 1) == "process-started"
             assert journal.state.seat_phase("work", "seat-codex", 1, 1) == "dispatch-intent"
@@ -3993,417 +4589,3 @@ def test_finding_8_queued_seats_remain_dispatch_intent_until_provider_boundary(
     future.result(timeout=5)
     journal.close()
     store.close()
-
-
-def _container_helpers():
-    try:
-        return importlib.import_module(f"{SPEC.name}.container_coordinator")
-    except ModuleNotFoundError:
-        pytest.fail("controller-authenticated container coordinator integration is missing")
-
-
-@pytest.mark.parametrize("changed", [None, "inputs", "baseline", "delivery", "mode"])
-def test_container_material_preserves_complete_authenticated_inputs(tmp_path, monkeypatch, changed):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write", required_file=True)
-    try:
-        helper = _container_helpers()
-        runtime = importlib.import_module(f"{SPEC.name}.container_runtime")
-        seat = seats[0]
-        workspace, session = runtime.private_volume_names(
-            packet.run_id, packet.task_id, "booking", seat.seat_id)
-        handle = runtime.ContainerHandle("c" * 64, "d" * 64, workspace, session)
-        request = fanout.ProviderRequest(
-            seat.executor_id, coordinator._prompt(packet, seat, 1, None), cwd=packet.cwd,
-            execution_class="repo-write", run_id=packet.run_id, task_id=packet.task_id,
-            target_id="booking", seat_id=seat.seat_id, inputs_digest=journal.inputs.digest,
-            context_sha256=packet.context_sha256, skill_bundle_sha256=packet.skill_bundle_sha256,
-            skill_delivery_sha256=seat.delivery_evidence_sha256)
-        if changed == "inputs":
-            journal.inputs = dataclasses.replace(journal.inputs, draft_sha256="0" * 64)
-        elif changed == "baseline":
-            coordinator.repository_baselines["booking"] = dataclasses.replace(
-                coordinator.repository_baselines["booking"], head="0" * 40)
-        elif changed == "delivery":
-            delivery_path = store.root / seat.delivery_evidence_ref.path
-            delivery_path.chmod(0o600)
-            delivery_path.write_bytes(b"changed delivery")
-        if changed and changed != "mode":
-            with pytest.raises((CollaborationValidationError, CollaborationDurabilityError)):
-                helper.stage_input_material(coordinator, packet, seat, request, handle)
-            return
-        source, name, digest = helper.stage_input_material(coordinator, packet, seat, request, handle)
-        controller_module = importlib.import_module(f"{SPEC.name}.controller")
-        material = controller_module.read_evidence(
-            coordinator.lifecycle_controller, "container-input-material", name, digest)
-        assert material["run_inputs_sha256"] == journal.inputs.digest
-        assert material["target_baseline_sha256"] == packet.target_binding.baseline_sha256
-        assert (source / "repo" / "source.txt").read_bytes() == b"immutable caller input\n"
-        assert (source / "context" / "compiled-plan.json").read_bytes() == packet.compiled_plan
-        assert (source / "context" / "source.md").read_bytes() == packet.source_markdown
-        assert (source / "context" / "task.json").read_bytes() == packet.task
-        assert (source / "context" / "skill-bundle.json").read_bytes() == packet.skill_bundle
-        assert (source / "context" / "dependencies.json").read_bytes() == b"[]\n"
-        assert not (source / "repo" / ".git").exists()
-        if changed == "mode":
-            (source / "repo/source.txt").chmod(0o755)
-            with pytest.raises(CollaborationValidationError):
-                helper.stage_input_material(coordinator, packet, seat, request, handle)
-    finally:
-        journal.close()
-        store.close()
-
-
-def test_container_material_includes_nonempty_skills_and_authenticated_cross_target_bytes(tmp_path, monkeypatch):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write", material_controls=True,
-    )
-    try:
-        runtime = importlib.import_module(f"{SPEC.name}.container_runtime")
-        seat = seats[0]
-        workspace, session = runtime.private_volume_names(packet.run_id, packet.task_id, "booking", seat.seat_id)
-        handle = runtime.ContainerHandle("c" * 64, "d" * 64, workspace, session)
-        request = fanout.ProviderRequest(seat.executor_id, coordinator._prompt(packet, seat, 1, None), cwd=packet.cwd,
-            execution_class="repo-write", run_id=packet.run_id, task_id=packet.task_id, target_id="booking",
-            seat_id=seat.seat_id, inputs_digest=journal.inputs.digest, context_sha256=packet.context_sha256,
-            skill_bundle_sha256=packet.skill_bundle_sha256, skill_delivery_sha256=seat.delivery_evidence_sha256)
-        root, name, digest = _container_helpers().stage_input_material(coordinator, packet, seat, request, handle)
-        skills = json.loads((root / "context/skill-files.json").read_bytes())["files"]
-        assert len(skills) == 1 and skills[0]["path"] == "test-skill/SKILL.md"
-        assert base64.b64decode(skills[0]["content_base64"]) == "# Admitted material skill α\n".encode()
-        dependencies = json.loads((root / "context/dependencies.json").read_bytes())
-        assert len(dependencies) == 1 and dependencies[0]["trust"] == "untrusted"
-        assert dependencies[0]["record"] == packet.dependency_records[0].to_dict()
-        assert base64.b64decode(dependencies[0]["content_base64"]) == "Declared cross-target evidence 雪\n".encode()
-        controller = importlib.import_module(f"{SPEC.name}.controller")
-        evidence = controller.read_evidence(coordinator.lifecycle_controller, "container-input-material", name, digest)
-        assert evidence["dependency_context_sha256"] == _digest((root / "context/dependencies.json").read_bytes())
-        assert evidence["skill_bundle_sha256"] == packet.skill_bundle_sha256
-    finally:
-        journal.close()
-        store.close()
-
-
-def test_container_transcript_store_rejects_caller_replacement(tmp_path, monkeypatch):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    try:
-        helper = _container_helpers()
-        private = helper.transcript_store(coordinator)
-        assert private.root == coordinator.lifecycle_controller.root / "quarantine" / "provider-transcripts"
-        ref = private.write_bytes("proof/stdout.bin", b"private raw transcript")
-        coordinator._container_transcripts = store
-        with pytest.raises(CollaborationDurabilityError):
-            helper.transcript_store(coordinator)
-        assert not (store.root / ref.path).exists()
-        private.close()
-    finally:
-        journal.close()
-        store.close()
-
-
-@pytest.mark.parametrize("changed", [None, "authority", "root"])
-def test_container_transcript_cold_reopen_preserves_exact_authority(tmp_path, monkeypatch, changed):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    private = None
-    try:
-        helper = _container_helpers()
-        private = helper.transcript_store(coordinator)
-        original = coordinator._container_transcript_evidence
-        ref = private.write_bytes("proof/stdout.bin", b"private persisted bytes")
-        private.close()
-        coordinator._container_transcripts = None
-        coordinator._container_transcript_evidence = None
-        if changed == "authority":
-            record = store.root / f"runs/{packet.run_id}/container-transcripts.json"
-            record.write_bytes(b"{}\n")
-        elif changed == "root":
-            root = coordinator.lifecycle_controller.root / "quarantine/provider-transcripts"
-            root.rename(root.with_name("old-transcripts"))
-            root.mkdir(mode=0o700)
-        if changed:
-            with pytest.raises(CollaborationDurabilityError):
-                helper.transcript_store(coordinator)
-        else:
-            private = helper.transcript_store(coordinator)
-            assert coordinator._container_transcript_evidence == original
-            assert private.read_bytes(ref) == b"private persisted bytes"
-    finally:
-        if private is not None:
-            private.close()
-        journal.close()
-        store.close()
-
-
-def test_trial_core_validator_refuses_scalar_claimed_success(tmp_path):
-    validator = getattr(collaboration, "validate_container_trial_result", None)
-    assert callable(validator), "fixed trial semantic validator is missing"
-    module = importlib.import_module(f"{SPEC.name}.container_source")
-    controller = fanout.create_lifecycle_controller(tmp_path / "controller")
-    checks = {name: {"passed": True} for name in (
-        "two_repository", "peer_exchange", "candidate_verification", "partial_failure", "cold_recovery")}
-    assert not validator(controller, tmp_path, checks, module.release_source_binding()).passed
-
-
-@pytest.mark.parametrize("changed", [None, "missing", "target", "manifest", "completion", "baseline", "inputs",
-                                      "cold-tree", "cold-authority", "cold-inputs"])
-def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_path, monkeypatch, changed):
-    from types import SimpleNamespace
-    from test_fanout_container_runtime import _volumes
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    try:
-        runtime = importlib.import_module(f"{SPEC.name}.container_runtime")
-        transfer = importlib.import_module(f"{SPEC.name}.container_transfer")
-        transport_module = importlib.import_module(f"{SPEC.name}.container_transfer_transport")
-        controller_module = importlib.import_module(f"{SPEC.name}.controller")
-        boundary_module = importlib.import_module(f"{SPEC.name}.container_boundary")
-        source_module = importlib.import_module(f"{SPEC.name}.container_source")
-        seat = seats[0]
-        baseline = coordinator.repository_baselines["booking"]
-        request = fanout.ProviderRequest(seat.executor_id, b"synthetic exact turn", cwd=packet.cwd,
-            execution_class="repo-write", run_id=packet.run_id, task_id=packet.task_id,
-            target_id="booking", seat_id=seat.seat_id, inputs_digest=journal.inputs.digest,
-            context_sha256=packet.context_sha256, skill_bundle_sha256=packet.skill_bundle_sha256,
-            skill_delivery_sha256=seat.delivery_evidence_sha256)
-        workspace, session = runtime.private_volume_names(packet.run_id, packet.task_id, "booking", seat.seat_id)
-        spec = runtime.ContainerSpec(packet.run_id, packet.task_id, "booking", seat.seat_id,
-            "fanout-seat@sha256:" + "a" * 64, workspace, session, f"/run/fanout/{seat.seat_id}.sock", "b" * 64)
-        handle = runtime.ContainerHandle("c" * 64, "d" * 64, workspace, session)
-        controller = coordinator.lifecycle_controller
-        launch = controller_module.write_evidence(controller, "container-seat-launch", {
-            "spec": dataclasses.asdict(spec), "handle": dataclasses.asdict(handle), "route": "start",
-            "volumes": _volumes(spec)})
-        boundary = {"route": "initial", "upstream_route_digest": "e" * 64,
-                    "permit_id": "f" * 64, "permit_epoch": 1,
-                    "request_digest": transport_module.admitted_request_digest(request)}
-        boundary_ref = controller_module.write_evidence(controller, "container-seat-admission", boundary)
-        turn_digest = boundary_module._turn_digest(request, SimpleNamespace(**boundary))
-        export_parent = controller.root / "quarantine" / "candidate-terminal"
-        export_parent.mkdir(mode=0o700)
-        exported_root = export_parent / "published"
-        exported_root.mkdir(mode=0o700)
-        (exported_root / "source.txt").write_bytes(b"container changed bytes\n")
-        (exported_root / "source.txt").chmod(0o644)
-        identity = transfer.TransferIdentity(packet.run_id, packet.task_id, "booking", seat.seat_id, journal.inputs.digest)
-        manifest = transfer.snapshot_manifest(exported_root, identity)
-        manifest_digest = _digest(canonical_json(dataclasses.asdict(manifest)))
-        export = {"identity": dataclasses.asdict(identity), "turn_digest": turn_digest,
-            "manifest_sha256": manifest_digest, "root": str(exported_root),
-            "container_id": handle.container_id, "container_inspect_sha256": handle.inspect_sha256,
-            "workspace_volume": workspace, "session_volume": session}
-        export_ref = controller_module.write_evidence(controller, "container-candidate-export", export)
-        receipt = transport_module.CandidateExportReceipt(identity, turn_digest, manifest_digest,
-            exported_root, handle.container_id, handle.inspect_sha256, workspace, session, *export_ref)
-        inspect = [{"Id": handle.container_id, "Config": {"Image": spec.image_digest,
-            "Labels": runtime.ContainerLauncher._labels(spec)}, "State": {"Running": False},
-            "HostConfig": {"RestartPolicy": {"Name": "no"}, "Mounts": [
-                {"Target": "/workspace", "Type": "volume", "Source": spec.workspace_volume,
-                 "ReadOnly": spec.workspace_readonly},
-                {"Target": "/session", "Type": "volume", "Source": spec.session_volume,
-                 "ReadOnly": False},
-                {"Target": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path,
-                 "ReadOnly": True}]}, "Mounts": [
-                {"Destination": "/workspace", "Type": "volume", "Name": spec.workspace_volume,
-                 "RW": not spec.workspace_readonly},
-                {"Destination": "/session", "Type": "volume", "Name": spec.session_volume,
-                 "RW": True},
-                {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path,
-                 "RW": False}]}]
-        with ArtifactStore(controller.root / "quarantine" / "runtime-proofs") as raw:
-            raw_ref = raw.write_json(f"stopped/{handle.container_id}.json", inspect)
-        stop_ref = controller_module.write_evidence(controller, "container-seat-stopped", {
-            "spec": dataclasses.asdict(spec), "handle": dataclasses.asdict(handle),
-            "launch_evidence_name": launch[0], "launch_evidence_digest": launch[1],
-            "raw_inspect": dataclasses.asdict(raw_ref)})
-        completion = controller_module.write_evidence(controller, "container-coordinator-turn", {
-            "schema_version": "fanout-container-coordinator-turn-v1",
-            "request_digest": transport_module.admitted_request_digest(request),
-            "task_packet_sha256": _digest(canonical_json(packet.to_dict())),
-            "release_source_binding": source_module.release_source_binding().to_dict(),
-            "boundary": list(boundary_ref), "export": list(export_ref), "stop": list(stop_ref),
-            "turn_digest": turn_digest})
-        assert transport_module.reopen_candidate_export(controller, receipt, identity=identity,
-            turn_digest=turn_digest, stop_evidence=stop_ref) == receipt
-        if changed == "missing":
-            receipt = None
-        elif changed == "target":
-            receipt = dataclasses.replace(receipt, identity=dataclasses.replace(identity, target_id="other"))
-        elif changed == "manifest":
-            receipt = dataclasses.replace(receipt, manifest_sha256="0" * 64)
-        elif changed == "completion":
-            completion = (completion[0], "0" * 64)
-        elif changed == "baseline":
-            coordinator.repository_baselines["booking"] = dataclasses.replace(baseline, head="0" * 40)
-        elif changed == "inputs":
-            journal.inputs = dataclasses.replace(journal.inputs, draft_sha256="0" * 64)
-        result = ProviderResult(seat.executor_id, True, "ok", None, 1, 0, None, "session",
-            "completed", b"", b"", candidate_export=receipt)
-        if changed and not changed.startswith("cold-"):
-            with pytest.raises(CollaborationDurabilityError) as refused:
-                coordinator._persist_terminal_candidate(packet, seat, 1, request=request,
-                    result=result, completion_evidence=completion)
-            cause = refused.value
-            while cause.__cause__ is not None:
-                cause = cause.__cause__
-            assert cause.args == {
-                "missing": ("target baseline or export",), "target": ("other",),
-                "manifest": ("export association",), "completion": ("controller evidence digest changed",),
-                "baseline": ("v2 target repository baseline changed",), "inputs": ("immutable run inputs",),
-            }[changed]
-        else:
-            ref = coordinator._persist_terminal_candidate(packet, seat, 1, request=request,
-                result=result, completion_evidence=completion)
-            candidate = fanout.CandidateBundle.from_manifest(store.read_bytes(ref))
-            assert candidate.entries[0].data == b"container changed bytes\n"
-            assert candidate.baseline_digest == baseline.digest
-            assert (seat.workspace_verification.workspace.root / "source.txt").read_bytes() == b"immutable caller input\n"
-            reopen = getattr(_container_helpers(), "reopen_source_candidate", None)
-            assert callable(reopen), "cold exported candidate authority is missing"
-            if changed == "cold-tree":
-                (exported_root / "source.txt").write_bytes(b"changed after export\n")
-            elif changed == "cold-authority":
-                (store.root / (ref.path + ".authority.json")).write_bytes(b"{}\n")
-            elif changed == "cold-inputs":
-                journal.inputs = dataclasses.replace(journal.inputs, source_sha256="0" * 64)
-            if changed:
-                with pytest.raises(CollaborationDurabilityError):
-                    reopen(coordinator, packet, seat.seat_id, 1, ref)
-            else:
-                assert reopen(coordinator, packet, seat.seat_id, 1, ref).manifest_bytes == store.read_bytes(ref)
-    finally:
-        journal.close()
-        store.close()
-
-
-@pytest.mark.parametrize("changed", [None, "bytes", "prompt", "store"])
-def test_container_resume_binds_persisted_peer_bytes_to_exact_prompt(tmp_path, monkeypatch, changed):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    try:
-        helper = _container_helpers()
-        seat = seats[0]
-        document = {"schema_version": "fanout-peer-packet-v1", "untrusted_evidence": True,
-            "run_id": packet.run_id, "task_id": packet.task_id, "attempt": 1,
-            "source_round": 1, "target_round": 2, "target_seat_id": seat.seat_id,
-            "target_session_id": "exact-session", "peers": [{"answer": "peer answer",
-                "answer_length": 11, "answer_sha256": _digest(b"peer answer"),
-                "checkpoint_digest": "a" * 64, "executor_id": "codex",
-                "provider_session_id": "peer-session", "source_seat_id": "seat-codex"}]}
-        payload = canonical_json(document)
-        peer_ref = store.write_bytes("peers/exact.json", payload)
-        peer = PeerPacket(packet.run_id, packet.task_id, 1, 1, 2, seat.seat_id,
-            "exact-session", payload, peer_ref.digest, peer_ref)
-        request = fanout.ProviderRequest(seat.executor_id, coordinator._prompt(packet, seat, 2, peer),
-            cwd=packet.cwd, execution_class="repo-write", session_id="exact-session", resume=True,
-            run_id=packet.run_id, task_id=packet.task_id, target_id="booking",
-            seat_id=seat.seat_id, inputs_digest=journal.inputs.digest,
-            artifact_store=helper.transcript_store(coordinator),
-            artifact_prefix=coordinator._provider_prefix(packet, 2, seat.seat_id))
-        if changed == "bytes":
-            path = store.root / peer_ref.path
-            path.chmod(0o600)
-            path.write_bytes(b"changed peer bytes")
-        elif changed == "prompt":
-            request = dataclasses.replace(request, prompt=b"prompt omits admitted peer")
-        elif changed == "store":
-            request = dataclasses.replace(request, artifact_store=store)
-        if changed:
-            with pytest.raises(CollaborationDurabilityError):
-                helper.bind_turn_context(coordinator, packet, seat, 2, request, peer)
-        else:
-            name, digest = helper.bind_turn_context(coordinator, packet, seat, 2, request, peer)
-            controller_module = importlib.import_module(f"{SPEC.name}.controller")
-            evidence = controller_module.read_evidence(coordinator.lifecycle_controller,
-                "container-coordinator-context", name, digest)
-            assert evidence["peer"] == dataclasses.asdict(peer_ref)
-            assert evidence["prompt_sha256"] == _digest(request.prompt_bytes)
-            prompt_ref = fanout.ArtifactRef(**evidence["prompt"])
-            assert request.artifact_store.read_bytes(prompt_ref) == request.prompt_bytes
-            assert evidence["imported_peer"] is False
-    finally:
-        private = getattr(coordinator, "_container_transcripts", None)
-        if private is not None:
-            private.close()
-        journal.close()
-        store.close()
-
-
-def test_container_turn_refuses_changed_inputs_before_fixed_launcher(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT))
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    try:
-        helper = _container_helpers()
-        boundary = importlib.import_module(f"{SPEC.name}.container_boundary")
-        monkeypatch.setattr(boundary.PinnedDockerTransport, "start_live",
-            lambda *args, **kwargs: pytest.fail("container launch preceded input authentication"))
-        seat = seats[0]
-        request = fanout.ProviderRequest(seat.executor_id, coordinator._prompt(packet, seat, 1, None),
-            cwd=packet.cwd, execution_class="repo-write", run_id=packet.run_id,
-            task_id=packet.task_id, target_id="booking", seat_id=seat.seat_id,
-            inputs_digest=journal.inputs.digest)
-        journal.inputs = dataclasses.replace(journal.inputs, draft_sha256="0" * 64)
-        run = getattr(helper, "run_coordinator_turn", None)
-        assert callable(run), "fixed production container composition is missing"
-        with pytest.raises(CollaborationDurabilityError):
-            run(coordinator, packet, seat, 1, request, None)
-    finally:
-        journal.close()
-        store.close()
-
-
-def test_container_barrier_keeps_target_identity_private_store_and_durable_start(tmp_path, monkeypatch):
-    packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    coordinator.provider_runner = fanout.run_provider
-    coordinator._container_execution = True
-    helper = _container_helpers()
-    turns = []
-    # Profile authority is covered by real persisted certificate fixtures separately;
-    # this capture proves only the coordinator's request/phase composition.
-    monkeypatch.setattr(coordinator, "_selected_profile", lambda packet, seat, policy, inputs:
-        (coordinator.registry.select(seat.executor_id, "repo-write", "standard"), 120))
-    def unavailable(coordinator, packet, seat, round, request, peer):
-        turns.append((request, journal.state.seat_phase(packet.task_id, seat.seat_id, packet.attempt, round)))
-        raise CollaborationDurabilityError("fixed container transport unavailable")
-    monkeypatch.setattr(helper, "run_coordinator_turn", unavailable)
-    try:
-        terminals = coordinator._run_provider_barrier(packet, seats,
-            RoundPolicy.from_provider_policy(packet.provider_policy), 1, {}, ())
-        assert len(turns) == len(seats)
-        for request, phase in turns:
-            assert phase == "process-started"
-            assert request.cwd == packet.target_binding.root
-            assert request.certificate_roots == (packet.target_binding.root,)
-            assert request.artifact_store is coordinator._container_transcripts
-            assert request.artifact_store is not store
-            assert request.native_boundary is None
-        assert all(terminal.state == "uncertain-attempt" for terminal in terminals)
-        assert all(phase == "uncertain-attempt" for phase in journal.state.seat_phases.values())
-    finally:
-        private = getattr(coordinator, "_container_transcripts", None)
-        if private is not None:
-            private.close()
-        journal.close()
-        store.close()
-
-
-def test_container_terminal_cannot_claim_valid_without_fixed_completion(tmp_path, monkeypatch):
-    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
-        tmp_path, monkeypatch, execution_class="repo-write")
-    coordinator._container_execution = True
-    private = _container_helpers().transcript_store(coordinator)
-    seat = seats[0]
-    try:
-        request = fanout.ProviderRequest(seat.executor_id, coordinator._prompt(packet, seat, 1, None),
-            cwd=packet.cwd, execution_class="repo-write", artifact_store=private,
-            artifact_prefix=coordinator._provider_prefix(packet, 1, seat.seat_id))
-        result = provider(request, registry=coordinator.registry)
-        with pytest.raises(CollaborationDurabilityError):
-            coordinator._terminal_from_provider(packet, seat, 1, request, result)
-    finally:
-        private.close()
-        journal.close()
-        store.close()

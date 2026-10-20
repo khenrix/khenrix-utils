@@ -87,7 +87,7 @@ def test_cached_refresh_never_rediscovers_or_changes_its_recovery_backup(monkeyp
     monkeypatch.setattr(refresh, "HOME", home)
 
     first_notes = refresh.sync(cli)
-    backups = list(home.rglob(".khenrix-historical-backup-*"))
+    backups = list(home.rglob(".khenrix-retired-backup-*"))
     assert len(backups) == 1
     backup = backups[0]
     before = {p.relative_to(backup): (p.read_bytes(), p.stat().st_mode)
@@ -98,7 +98,7 @@ def test_cached_refresh_never_rediscovers_or_changes_its_recovery_backup(monkeyp
 
     refresh.sync(cli)
 
-    assert list(home.rglob(".khenrix-historical-backup-*")) == [backup]
+    assert list(home.rglob(".khenrix-retired-backup-*")) == [backup]
     assert {p.relative_to(backup): (p.read_bytes(), p.stat().st_mode)
             for p in backup.rglob("*") if p.is_file()} == before
     assert not (backup / "skills/ordinary").exists()

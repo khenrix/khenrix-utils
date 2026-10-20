@@ -93,7 +93,9 @@ def test_self_target_checked_archive_refuses_launch_on_either_failure(tmp_path, 
     assert admitted.returncode == 0, admitted.stderr
     policy = json.loads(admitted.stdout)["compiled"]["plan"]["defaults"]
     assert policy["executor_ids"] == ["claude", "codex", "agy"]
-    assert (policy["rounds"], policy["retries"], policy["minimum_success"]) == (2, 0, 2)
+    # This test executes HEAD, not the uncommitted candidate. Current admission's
+    # all-seat threshold is tested separately below; archive bytes are checked above.
+    assert (policy["rounds"], policy["retries"]) == (2, 0)
 
 
 @pytest.mark.parametrize("outcome", ("complete", "below-quorum", "uncertain"))
@@ -174,3 +176,28 @@ def test_tuneup_review_failed_authenticated_preflight_cannot_dispatch(tmp_path):
             provider_runner=lambda *_args, **_kwargs: pytest.fail("failed preflight dispatched"))
     assert not (tmp_path / "run").exists() and not (tmp_path / "authority").exists()
     assert list(private.iterdir()) == []
+
+
+def test_lock_window_uses_slowest_independent_seat_not_sum(tmp_path):
+    runtime = ROOT / "shared/lib/fanout"
+    planner = tmp_path / "plan.py"
+    source = (ROOT / "shared/skills/llm-fanout-plan/scripts/plan.py").read_text()
+    planner.write_text(source.replace('"rounds": 2,',
+        '"rounds": 2, "iteration_limits": {"claude": 2, "codex": 3, "agy": 4},'))
+    assert tuneup.review_window_minutes(runtime, planner) == 120
+
+
+def test_current_tuneup_review_admission_requires_all_three_seats(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    question = tmp_path / "question.md"
+    question.write_text("Review supplied synthetic evidence.")
+    planner = ROOT / "shared/skills/llm-fanout-plan/scripts/plan.py"
+    result = subprocess.run([
+        sys.executable, str(planner), "from-question", "--question-file", str(question),
+        "--approval", "invocation-authorized", "--tier", "deep", "--skill-root", str(skills),
+        "--none-reason", "Supplied synthetic evidence is sufficient.",
+    ], capture_output=True, text=True, check=True)
+    policy = json.loads(result.stdout)["compiled"]["plan"]["defaults"]
+    assert policy["executor_ids"] == ["claude", "codex", "agy"]
+    assert (policy["rounds"], policy["retries"], policy["minimum_success"]) == (2, 0, 3)

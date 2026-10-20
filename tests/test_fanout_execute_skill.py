@@ -35,12 +35,11 @@ def execute():
     return module
 
 
-def test_v2_read_only_cli_dispatch_requires_native_boundary(execute):
+def test_v2_native_read_cli_dispatch_needs_no_retired_boundary(execute):
     plan = SimpleNamespace(schema_version="v2", tasks=(
         SimpleNamespace(kind="work", execution_class="read-only"),
     ))
-    with pytest.raises(ValueError, match="native seat boundary"):
-        execute._require_native_seat_boundary(plan)
+    execute._require_native_seat_boundary(plan)
     execute._require_native_seat_boundary(SimpleNamespace(
         schema_version="v1", tasks=plan.tasks,
     ))
@@ -117,7 +116,7 @@ def _write_packet(tmp_path: Path, *, retries: int = 0) -> tuple[dict[str, object
         "schema_version": "fanout-draft-v1",
         "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
         "defaults": {"executor_ids": ["claude", "codex", "agy"], "rounds": 2,
-                     "timeout": 120, "retries": retries, "minimum_success": 2},
+                     "timeout": 120, "retries": retries, "minimum_success": 3},
         "tasks": [{
             "id": "change", "kind": "work", "parent_id": None,
             "title": "Update module", "objective": "Implement the bounded change.",
@@ -306,13 +305,12 @@ def test_delivery_stages_executor_runtime_memory_and_gate(tmp_path: Path):
     config = skillctl.load_configuration(ROOT, tmp_path / "home", None)
     with skillctl.staged_skill_sources(config) as staged:
         bundled = staged["llm-fanout-execute"]
-        for relative, source in (("shared/lib/fanout/__init__.py", "shared/lib/fanout/__init__.py"),
-                                 ("components/memory/memory_exchange.py", "components/memory/memory_exchange.py")):
-            assert (bundled / ".runtime" / relative).read_bytes() == (ROOT / source).read_bytes()
+        for relative, source in (("lib/fanout/__init__.py", "shared/lib/fanout/__init__.py"),
+                                 ("memory/memory_exchange.py", "components/memory/memory_exchange.py")):
+            assert (bundled / relative).read_bytes() == (ROOT / source).read_bytes()
         assert (bundled / "scripts/execute.py").is_file()
         assert {path.relative_to(bundled).as_posix() for path in bundled.rglob("SKILL.md")} == {
-            "SKILL.md", ".runtime/shared/skills/llm-fanout-plan/SKILL.md",
-            ".runtime/shared/skills/llm-fanout-execute/SKILL.md",
+            "SKILL.md",
         }
     source_paths = {path for path, _ in checks.source_manifest(ROOT, "llm-fanout-execute")}
     assert "shared/lib/fanout/execute.py" in source_paths
@@ -348,8 +346,6 @@ def test_delivered_cold_helpers_attest_checkout_closure_without_source(
             shutil.copy2(source, destination)
     config = delivery.load_configuration(origin, tmp_path / "home", None)
     delivery.apply(config, expect=delivery.plan(config)[0], as_json=True)
-    from fanout.container_source import release_source_binding
-    expected = release_source_binding(ROOT).to_dict()
     origin.rename(tmp_path / "hidden-origin")
     installed = config.home / ".agents/skills" / skill
     probe = '''
@@ -360,23 +356,15 @@ helper = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = helper
 spec.loader.exec_module(helper)
 runtime = helper._runtime()
-source = importlib.import_module(runtime.__name__ + ".container_source")
-binding = source.release_source_binding()
-certification = importlib.import_module(runtime.__name__ + ".container_certification")
-coordinator = importlib.import_module(runtime.__name__ + ".container_coordinator")
-probe = importlib.import_module("scripts.fanout_container_certify")
-evaluations = importlib.import_module("scripts.fanout_release_evaluations")
-assert probe.SourceClosureError is source.SourceClosureError
-assert probe.CertificationRejected is certification.CertificationRejected
-assert evaluations.ReleaseSourceBinding is source.ReleaseSourceBinding
-assert coordinator.run_coordinator_turn.__globals__["ArtifactStore"] is runtime.ArtifactStore
-assert pathlib.Path(probe.__file__).is_relative_to(entry.parent.parent)
-assert pathlib.Path(source.__file__).is_relative_to(entry.parent.parent)
+assert pathlib.Path(runtime.__file__).parent == entry.parent.parent / "lib/fanout"
+assert runtime.ArtifactStore.__module__.startswith(runtime.__name__ + ".")
 if hasattr(helper, "_memory_modules"):
     controller, exchange = helper._memory_modules()
-    assert pathlib.Path(controller.__file__).is_relative_to(entry.parent.parent / ".runtime/components/memory")
+    assert pathlib.Path(controller.__file__).parent == entry.parent.parent / "memory"
+    assert pathlib.Path(exchange.__file__).parent == entry.parent.parent / "memory"
+    assert exchange.memoryctl is controller
     assert not controller.installed_controller_root().is_relative_to(entry.parent.parent)
-print(json.dumps(binding.to_dict(), sort_keys=True))
+print("owned-native-runtime")
 '''
     environment = {"PATH": os.environ["PATH"], "HOME": str(config.home),
                    "PYTHONDONTWRITEBYTECODE": "1"}
@@ -384,66 +372,26 @@ print(json.dumps(binding.to_dict(), sort_keys=True))
                              str(installed / "scripts" / entry)],
                             cwd=config.home, env=environment, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == expected
+    assert result.stdout.strip() == "owned-native-runtime"
     assert not list(installed.rglob("__pycache__"))
-    foreign = '''
-from types import ModuleType
-foreign = ModuleType("shared")
-foreign.__path__ = ["/foreign/shared"]
-sys.modules["shared"] = foreign
-'''
-    refused = subprocess.run([sys.executable, "-I", "-B", "-c",
-                              "import sys\n" + foreign + probe,
-                              str(installed / "scripts" / entry)],
-                             cwd=config.home, env=environment, capture_output=True, text=True)
-    assert refused.returncode != 0
-    assert "foreign parent package" in refused.stderr
-    for relative in ("shared/lib/fanout/container_boundary.py",
-                     "components/memory/memoryctl.py", "mise.lock"):
-        leaf = installed / ".runtime" / relative
-        original = leaf.read_bytes()
-        leaf.write_bytes(original + b"\n# source changed\n")
-        changed = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
-                                  str(installed / "scripts" / entry)],
-                                 cwd=config.home, env=environment, capture_output=True, text=True)
-        assert changed.returncode == 0, changed.stderr
-        assert json.loads(changed.stdout) != expected
-        leaf.write_bytes(original)
-    leaf = installed / ".runtime/components/fanout-container/relay.py"
-    original = leaf.read_bytes()
-    leaf.unlink()
-    for symlink in (False, True):
-        if symlink:
-            leaf.symlink_to(tmp_path / "hidden-origin/components/fanout-container/relay.py")
-        refused = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
-                                  str(installed / "scripts" / entry)],
-                                 cwd=config.home, env=environment, capture_output=True, text=True)
-        assert refused.returncode != 0
-        assert "SourceClosureError" in refused.stderr
-    leaf.unlink()
-    leaf.write_bytes(original)
 
 
 @pytest.mark.parametrize("skill,entry", (("llm-fanout-plan", "plan.py"),
                                         ("llm-fanout-execute", "execute.py")))
 @pytest.mark.parametrize("relative", ("SKILL.md", "agents/openai.yaml", "scripts/{entry}"))
-@pytest.mark.parametrize("canonical", (False, True))
 def test_source_binding_refuses_changed_active_installed_entry(tmp_path: Path, relative: str,
-                                                              skill: str, entry: str, canonical: bool):
+                                                              skill: str, entry: str):
     spec = importlib.util.spec_from_file_location("_active_delivery", ROOT / "components/skills/skillctl.py")
     assert spec and spec.loader
     delivery = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = delivery
     spec.loader.exec_module(delivery)
     config = delivery.load_configuration(ROOT, tmp_path / "home", None)
-    from fanout.container_source import SourceClosureError, release_source_binding
-    with delivery.staged_skill_sources(config) as staged:
-        installed = staged[skill]
-        active_root = installed / ".runtime/shared/skills" / skill if canonical else installed
-        active = active_root / relative.format(entry=entry)
-        active.write_bytes(active.read_bytes() + b"\n# changed active entry\n")
-        with pytest.raises(SourceClosureError, match="active"):
-            release_source_binding(installed)
+    delivery.apply(config, expect=delivery.plan(config)[0], as_json=True)
+    active = config.home / ".agents/skills" / skill / relative.format(entry=entry)
+    active.write_bytes(active.read_bytes() + b"\n# changed active entry\n")
+    with pytest.raises(delivery.DeliveryError, match="doctor found"):
+        delivery.doctor(config, as_json=True)
 
 
 @pytest.mark.parametrize("source_cli", (PLANNER, CLI))
@@ -472,11 +420,8 @@ helper._runtime()
 
 
 @pytest.mark.parametrize("source_cli", (PLANNER, CLI))
-@pytest.mark.parametrize("relative", (".runtime", ".runtime/shared", ".runtime/shared/lib",
-                                      ".runtime/shared/lib/fanout",
-                                      ".runtime/shared/lib/fanout/__init__.py",
-                                      ".runtime/shared/lib/fanout/container_source.py",
-                                      ".runtime/shared/lib/fanout/compiler.py"))
+@pytest.mark.parametrize("relative", ("lib", "lib/fanout", "lib/fanout/__init__.py",
+                                      "lib/fanout/durable_io.py", "lib/fanout/compiler.py"))
 def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, source_cli, relative):
     spec = importlib.util.spec_from_file_location("_import_boundary_delivery", ROOT / "components/skills/skillctl.py")
     delivery = importlib.util.module_from_spec(spec)
@@ -485,9 +430,9 @@ def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, sourc
     config = delivery.load_configuration(ROOT, tmp_path / "home", None)
     marker = tmp_path / "external-imported"
     external = tmp_path / "external"
-    shutil.copytree(ROOT / "shared/lib/fanout", external / ".runtime/shared/lib/fanout",
+    shutil.copytree(ROOT / "shared/lib/fanout", external / "lib/fanout",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    leaf = external / (relative if relative.endswith(".py") else ".runtime/shared/lib/fanout/__init__.py")
+    leaf = external / (relative if relative.endswith(".py") else "lib/fanout/__init__.py")
     code = leaf.read_text()
     mark = f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
     if "from __future__ import annotations\n" in code:
@@ -509,8 +454,7 @@ spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
 helper = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = helper
 spec.loader.exec_module(helper)
-runtime = helper._runtime()
-importlib.import_module(runtime.__name__ + ".container_source").release_source_binding()
+helper._runtime()
 '''
         result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
                                  str(installed / "scripts" / source_cli.name)],
@@ -663,6 +607,31 @@ def test_execute_receipt_stales_on_runtime_memory_or_bundle_mapping(tmp_path: Pa
     assert checks.source_hash(tmp_path, "llm-fanout-execute") != after_memory
 
 
+@pytest.mark.parametrize("layout", ("memory", ".runtime/components/memory"))
+def test_cold_memory_loader_loads_owned_minimal_and_hidden_layouts(tmp_path, layout):
+    installed = tmp_path / "installed"
+    (installed / "scripts").mkdir(parents=True)
+    shutil.copy2(CLI, installed / "scripts/execute.py")
+    destination = installed / layout
+    shutil.copytree(ROOT / "components/memory", destination,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    command = """
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+controller, exchange = helper._memory_modules()
+assert pathlib.Path(controller.__file__).parent == pathlib.Path(sys.argv[2])
+assert pathlib.Path(exchange.__file__).parent == pathlib.Path(sys.argv[2])
+"""
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+        str(installed / "scripts/execute.py"), str(destination)],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+
 def test_memory_loader_ignores_a_foreign_preloaded_controller(execute, monkeypatch):
     foreign = SimpleNamespace(__file__="/tmp/foreign/memoryctl.py")
     monkeypatch.setitem(sys.modules, "memoryctl", foreign)
@@ -722,25 +691,8 @@ def test_planner_bundle_digest_matches_native_skill_grant_encoding(execute, tmp_
     )
     assert len(json.loads(bundle)["skills"]) == 1
     assert assignment.skill_bundle_sha256 == hashlib.sha256(bundle).hexdigest()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(mode=0o700)
-    controller = tmp_path / "controller"
-    controller.mkdir(mode=0o700)
-    denied = tmp_path / "denied"
-    denied.mkdir(mode=0o700)
-    request = fanout.ProviderRequest(
-        "codex", "bounded task", cwd=workspace,
-        task_id=task_id, seat_id=assignment.seat_id,
-        staged_skill_root=assignment.staged_root,
-        staged_skill_admission=assignment.admission,
-        skill_bundle_sha256=assignment.skill_bundle_sha256,
-        skill_delivery_sha256=assignment.delivery_evidence_sha256,
-    )
-
-    native_boundary = importlib.import_module("fanout.native_boundary")
-    grant = native_boundary._staged_skill_grant(request, (denied,), workspace, controller)
-    assert grant is not None
-    assert grant["skill_bundle_sha256"] == assignment.skill_bundle_sha256
+    assert assignment.delivery_evidence_sha256
+    assert assignment.admission.seat_id == "seat-1"
 
 
 def test_oversized_valid_admission_fails_before_startup_escrow(execute, tmp_path):
@@ -1247,9 +1199,9 @@ def test_v2_public_cli_start_is_dormant_and_resume_refuses_spend(execute, tmp_pa
     assert execute.load_private_descriptor(private)["schema_version"] == "fanout-execute-private-v2"
     assert execute.main(["resume", "--private-root", str(private)],
                         runtime=fanout, registry=_registry(), provider_runner=no_provider) == 2
-    assert "native seat boundary" in capsys.readouterr().err
+    assert "repo-write workers" in capsys.readouterr().err
     monkeypatch.setattr(execute, "_real_memory", lambda *args: pytest.fail("unapproved resume probed ambient memory"))
-    with pytest.raises(ValueError, match="native seat boundary"):
+    with pytest.raises(ValueError, match="repo-write workers"):
         execute.resume_run(
             private, runtime=fanout, registry=_registry(), provider_runner=no_provider,
         )
@@ -1292,17 +1244,15 @@ def test_v2_start_escrows_targets_and_dormant_backends_without_spend(execute, tm
     assert not (run / "slots").exists()
 
 
-def test_v2_repeated_plan_uses_distinct_guest_sockets_and_cold_reopens_exact_seats(
+def test_v2_repeated_plan_uses_distinct_seat_identities_and_cold_reopens_exact_seats(
     execute, tmp_path,
 ):
-    from fanout.container_runtime import seat_socket_path
-
     packet, _ = _v2_write_packet(tmp_path)
     address = _v2_target_root(tmp_path)
     common = dict(runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
                   memory_preflight=lambda: False,
                   provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
-    sockets = []
+    identities = []
     for index in range(2):
         storage = tmp_path / f"execution-{index}"
         storage.mkdir()
@@ -1319,8 +1269,8 @@ def test_v2_repeated_plan_uses_distinct_guest_sockets_and_cold_reopens_exact_sea
         with execute.open_run(private, **common) as reopened:
             assert tuple(seat.seat_id for seat in reopened.service.preparations["change"].seats) == seats
         assert len(set(seats)) == 3
-        sockets.append({seat_socket_path(seat) for seat in seats})
-    assert sockets[0].isdisjoint(sockets[1])
+        identities.append(set(seats))
+    assert identities[0].isdisjoint(identities[1])
 
 
 def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None):
@@ -1408,7 +1358,7 @@ def test_v2_cli_cold_status_survives_runtime_and_profile_drift_only(execute, tmp
     assert execute.main(
         ["resume", "--private-root", str(private)], runtime=fanout, registry=drifted,
     ) == 2
-    assert "native seat boundary" in capsys.readouterr().err
+    assert "restore the original runtime" in capsys.readouterr().err
 
 
 def _v2_cold_delivered_fixture(execute, tmp_path):
@@ -2098,6 +2048,30 @@ def _registry(*, write_characterized: bool = False):
     ), version_probe=lambda executor: pins[executor])
 
 
+def test_asymmetric_caps_cold_v1_status_preserves_exact_admitted_budget(execute, tmp_path):
+    packet, resolver = _question_packet(tmp_path, executors=("claude", "codex", "agy"))
+    packet["draft"]["defaults"]["iteration_limits"] = {"claude": 1, "codex": 1, "agy": 2}
+    packet["compiled"] = fanout.compile_superpowers_plan(
+        packet["source_markdown"].encode(),
+        source_path=packet["compiled"]["plan"]["source"]["path"],
+        draft_bytes=fanout.canonical_json(packet["draft"]), resolver=resolver).to_dict()
+    repo = _repository(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    execute.prepare_run(packet, repo_root=repo, run_root=run, authority_root=authority,
+        private_root=private, skill_roots=(tmp_path / "skills",), budget=4,
+        runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+        memory_preflight=lambda: True,
+        provider_runner=lambda *args, **kwargs: pytest.fail("cold status dispatched a provider"))
+    before = {str(path): path.read_bytes() for root in (private, run, authority)
+              for path in root.rglob("*") if path.is_file()}
+    status = execute.inspect_v1_status(private, runtime=fanout, registry=_registry())
+    assert status["projected_provider_turns"] == 4
+    assert status["tasks"][0]["phase"] == "scheduled"
+    assert {str(path): path.read_bytes() for root in (private, run, authority)
+            for path in root.rglob("*") if path.is_file()} == before
+
+
 def test_start_and_cold_status_use_real_durable_stores_without_spend(execute, tmp_path):
     """A dirty caller stays byte-identical and owner capability cold-opens privately."""
     packet, _ = _question_packet(tmp_path, executors=("claude", "codex"))
@@ -2461,66 +2435,8 @@ def test_fresh_process_v1_status_authenticates_accepted_amendment_and_runtime_fe
     assert _private_inventory(private, run, authority, repo) == mismatched
 
 
-def test_cold_status_survives_agy_binary_drift_but_dispatch_still_refuses(
-    execute, tmp_path, monkeypatch,
-):
-    """A changed installed CLI must not hide saved state or authorize another turn."""
-    packet, _ = _question_packet(tmp_path, executors=("claude", "agy"))
-    repo = _repository(tmp_path)
-    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
-    private.mkdir(mode=0o700)
-    common = dict(runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
-                  memory_preflight=lambda: True,
-                  provider_runner=lambda *args, **kwargs: pytest.fail("provider launched"))
-    monkeypatch.setattr(fanout, "issue_agy_readonly_guard", lambda *_args: None)
-    started = execute.prepare_run(
-        packet, repo_root=repo, run_root=run, authority_root=authority,
-        private_root=private, skill_roots=(tmp_path / "skills",), budget=12, **common,
-    )
-
-    def drifted_binary(*_args):
-        raise fanout.ProviderRequestError("direct agy binary version differs from profile")
-
-    monkeypatch.setattr(fanout, "issue_agy_readonly_guard", drifted_binary)
-    with execute.open_run(private, **common) as reopened:
-        assert reopened.service.status().to_dict() == started
-    with pytest.raises(fanout.ProviderRequestError, match="binary version differs"):
-        execute.open_run(private, for_dispatch=True, **common)
 
 
-def test_cold_status_preserves_issued_agy_guard_binding(
-    execute, tmp_path, monkeypatch,
-):
-    """An issued guard must remain bound without a live binary probe on status."""
-    packet, _ = _question_packet(tmp_path, executors=("claude", "agy"))
-    repo = _repository(tmp_path)
-    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
-    private.mkdir(mode=0o700)
-    guard_digest = "a" * 64
-
-    def issue_guard(controller, verification, profile):
-        return fanout.AgyReadOnlyGuard(
-            controller, verification, profile.digest,
-            tmp_path / "guard", tmp_path / "agy", tmp_path / "adc",
-            "guard.json", guard_digest,
-        )
-
-    monkeypatch.setattr(fanout, "issue_agy_readonly_guard", issue_guard)
-    monkeypatch.setattr(
-        fanout, "agy_readonly_guard_receipt_sha256", lambda *_args: guard_digest,
-        raising=False,
-    )
-    monkeypatch.setattr(fanout.execute, "validate_agy_readonly_guard", lambda *_args: None)
-    common = dict(runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
-                  memory_preflight=lambda: True,
-                  provider_runner=lambda *args, **kwargs: pytest.fail("provider launched"))
-    started = execute.prepare_run(
-        packet, repo_root=repo, run_root=run, authority_root=authority,
-        private_root=private, skill_roots=(tmp_path / "skills",), budget=12, **common,
-    )
-
-    with execute.open_run(private, **common) as reopened:
-        assert reopened.service.status().to_dict() == started
 
 
 def test_admitted_source_reaches_cold_reopened_read_only_seats(execute, tmp_path):
@@ -2574,7 +2490,7 @@ def test_public_start_rejects_repo_write_before_git_version_or_roots(
         **({"provider_runner": forbidden} if injected_runner else {}))
 
     assert result == 2
-    assert "native seat boundary" in capsys.readouterr().err
+    assert "repo-write workers" in capsys.readouterr().err
     assert called == []
     assert not run.exists() and not authority.exists()
     assert list(private.iterdir()) == []
@@ -2615,7 +2531,7 @@ def test_public_cold_resume_rejects_repo_write_before_workspace_git_or_version(
                           **({"provider_runner": forbidden} if injected_runner else {}))
 
     assert result == 2
-    assert "native seat boundary" in capsys.readouterr().err
+    assert "repo-write workers" in capsys.readouterr().err
     assert called == []
 
 
@@ -2665,7 +2581,7 @@ def test_public_resume_inspects_journal_before_mutating_recovery(
     assert not resumed
     message = capsys.readouterr().err
     assert ("pending journal authority" if reason == "pending-authority"
-            else "native seat boundary") in message
+            else "repo-write workers") in message
 
 
 def test_failed_memory_preflight_creates_no_run_or_provider_turn(execute, tmp_path):
@@ -2684,12 +2600,12 @@ def test_failed_memory_preflight_creates_no_run_or_provider_turn(execute, tmp_pa
     assert list(private.iterdir()) == []
 
 
-@pytest.mark.parametrize("max_turns", [0, 11])
+@pytest.mark.parametrize("max_turns", [0, 5])
 def test_cli_rejects_invalid_or_insufficient_turn_budget_before_startup_escrow(
     execute, tmp_path, capsys, max_turns,
 ):
-    """A three-seat, two-round, one-retry plan needs 12 turns before roots exist."""
-    packet, _ = _write_packet(tmp_path, retries=1)
+    """A three-seat, two-round native read plan needs six turns before roots exist."""
+    packet, _ = _question_packet(tmp_path)
     packet_file = tmp_path / "admission.json"
     packet_file.write_bytes(fanout.canonical_json(packet))
     repo = _repository(tmp_path)

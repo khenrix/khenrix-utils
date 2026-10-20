@@ -172,7 +172,7 @@ echo "== Claude MCP =="
 
 echo "== Codex (native XOR shared-MCP) =="
 # Native-preferred ONLY where reconcile does NOT own the capability: slack and github.
-# Superpowers is owned by the 17-skill direct-copy delivery below, so an upstream plugin
+# Superpowers is owned by the 19-skill direct-copy delivery below, so an upstream plugin
 # on any CLI would duplicate those native skills. (google-drive was decommissioned
 # 2026-07-20 -- the native claude.ai Drive MCP covers it, and the stdio one hardcoded an
 # asdf node path.)
@@ -199,7 +199,7 @@ if [ -d "$REPO/.git" ]; then skip "clone $REPO"; else run git clone "$REPO_URL" 
 if [ -d "$VAULT/.git" ]; then skip "clone $VAULT"; else run git clone "$VAULT_URL" "$VAULT"; fi
 run mise -C "$REPO" trust
 run mise -C "$REPO" install
-# The 17 canonical quality, writing, and Superpowers skills use their native direct-copy
+# The 19 canonical quality, writing, fanout, and Superpowers skills use their native direct-copy
 # path. Running the machine bootstrap is the explicit authorization for this apply;
 # interactive maintenance still
 # uses skills:plan plus `skills:apply -- --expect ...`. Optional plugin bundles are

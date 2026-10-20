@@ -86,9 +86,9 @@ else:
     if scenario == "helper-first":
         importlib.import_module("scripts.fanout_smoke")
     from _pytest.monkeypatch import derive_importpath
-    attribute, module = derive_importpath("shared.lib.fanout.container_upstream._connect", raising=True)
-    assert attribute == "_connect"
-    assert module is importlib.import_module("shared.lib.fanout.container_upstream")
+    attribute, module = derive_importpath("shared.lib.fanout.providers._run_provider_with_runner", raising=True)
+    assert attribute == "_run_provider_with_runner"
+    assert module is importlib.import_module("shared.lib.fanout.providers")
 print("PASS " + helper_name + " " + scenario)
 """
 

@@ -19,10 +19,6 @@ import skillctl  # noqa: E402
 
 
 CAPABILITIES = """
-[historical_only]
-skills = ["llm-council", "llm-forge"]
-libraries = ["council", "forge"]
-
 [skill_delivery]
 skills = ["khenrix-quality", "khenrix-writing"]
 state_dir = "${HOME}/.local/state/khenrix-utils/skills"
@@ -122,12 +118,6 @@ def test_file_bundle_delivery_tracks_bytes_modes_and_restore(tmp_path: Path) -> 
     target.chmod(0o644)
     skillctl.restore(config, receipt["backup_id"])
     assert tree_snapshot(target.parent.parent) == original
-
-
-@pytest.mark.parametrize("source", ("shared", "shared/lib", "shared/lib/council/file.py"))
-def test_file_bundle_refuses_historical_ancestors(tmp_path: Path, source: str) -> None:
-    with pytest.raises(skillctl.DeliveryError, match="historical-only"):
-        bundle_fixture(tmp_path, {"khenrix-quality": {"source": source}})
 
 
 @pytest.mark.parametrize("changed", ("symlink", "fifo", "missing", "ancestor"))

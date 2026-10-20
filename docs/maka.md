@@ -6,12 +6,15 @@ portable Maka runtime and policy used on managed machines: the exact package
 pin, launcher, authentication helpers, model and permission defaults,
 provenance, tests, and audit lab live in `components/maka`.
 
-The current pin is `maka-agent@0.2.0-dev.62.20260928`. Agentic Setup remains the
+The current interactive pin is `maka-agent@0.2.0-dev.70.20261005`. Agentic Setup remains the
 broader inventory and sync owner for the other shared skills and plugins.
-Khenrix Utils owns and direct-delivers `khenrix-quality` and `khenrix-writing`
-plus the 15-skill Superpowers bundle to Claude, Codex, agy, and Maka. Installing
-the Maka runtime itself does not copy skills; Maka discovers all 17 from the shared
+Khenrix Utils owns and direct-delivers `khenrix-quality`, `khenrix-writing`, both
+native fanout skills, and the 15-skill Superpowers bundle to Claude, Codex, agy, and Maka. Installing
+the Maka runtime itself does not copy skills; Maka discovers all 19 from the shared
 native skill root after `mise run skills:apply`.
+
+The Harbor controller, compatibility overlays and historical qualification remain
+frozen at `0.2.0-dev.62.20260928`; they do not certify the interactive upgrade.
 
 ## Supported setups
 
@@ -20,9 +23,10 @@ native skill root after `mise run skills:apply`.
 | macOS arm64 | Yes | Yes | Yes, with Colima |
 | Linux x86-64, including WSL | Yes | No | No |
 
-Both authentication routes use `gpt-6.1-sol`, `ask` permissions, and `xhigh`
-for normal interactive and headless work. The API route also supports an
-explicit `max` setting for planning. The ChatGPT subscription route in this
+Both authentication routes use `gpt-6.1-sol` and default to `ask` permissions.
+The wrapper defaults headless execution to `medium`; planning, review and merging
+explicitly select `xhigh`. The API route also supports an explicit `max` setting.
+The ChatGPT subscription route in this
 pinned release has no live proof of GPT-6.1 Sol `max`, so `xhigh` is its highest
 offered planning setting, pending fresh entitlement proof. Both routes keep `gpt-6-sol` and `gpt-5.6-sol` selectable for
 resuming old sessions. The frozen evaluation controller remains on 5.6.
@@ -174,15 +178,15 @@ maka run --resume <session-id> "Finish the review"
 maka run --graph "Implement two independent slices, integrate them, then review"
 ```
 
-If no thinking value is supplied, the launcher adds `--thinking xhigh`. On the
-API route, request the available planning maximum explicitly:
+If no thinking value is supplied, the launcher adds `--thinking medium`.
+For planning, review or merging, select xhigh explicitly:
 
 ```sh
-maka run --thinking max "Create a detailed implementation plan"
+maka run --thinking xhigh "Create a detailed implementation plan"
 ```
 
-Do not use that example with subscription OAuth; this pin supports only
-`xhigh` there.
+The API route additionally supports `--thinking max`; subscription OAuth is
+limited to `xhigh` for GPT-6.1 Sol pending fresh entitlement proof.
 
 Maka stores session history locally. Prompt text, model input, and tool output
 included in a model request still go to the selected OpenAI service for
@@ -217,8 +221,11 @@ component's `interactive/README.md` for its exact request and storage boundary.
 Run the credential-free component tests from the checkout:
 
 ```sh
-mise -C components/maka run maka:test
+mise -C components/maka run maka:test-native
 ```
+
+The frozen lab's full `maka:test` requires an explicit unpatched `.62` baseline
+package. See [the component README](../components/maka/README.md) for that separate gate.
 
 Run the read-only component doctor to verify the pin, npm integrity,
 provenance, third-party notices, supported-platform locks, wrapper, and
@@ -275,7 +282,8 @@ as one reviewed unit:
 3. Update the exact version and both supported platform locks.
 4. Rebase each named compatibility overlay and verify its base and patched
    hashes rather than assuming it still applies.
-5. Run `maka:stage`, `maka:test`, and `maka:component-doctor` after activation.
+5. Run `maka:stage`, `maka:test-native`, and `maka:component-doctor` after activation;
+   qualify frozen lab changes separately with its explicit baseline package.
 6. Run the full macOS doctor when the change touches the audit lab, then review
    `maka:plan` before applying the upgrade.
 7. Verify the selected auth route, `ask` permission default,

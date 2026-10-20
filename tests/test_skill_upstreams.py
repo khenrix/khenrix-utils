@@ -947,7 +947,7 @@ def test_real_owner_report_sources_cover_complete_transitive_capability_sets() -
 
 
 def test_all_khenrix_owned_skills_have_valid_codex_metadata() -> None:
-    managed_shared = {"chunk-map", "llm-council", "llm-forge", "markitdown", "mikado-graph"}
+    managed_shared = {"chunk-map", "llm-fanout-plan", "llm-fanout-execute", "markitdown", "mikado-graph"}
     direct = {"khenrix-quality", "khenrix-writing"}
     superpowers = {
         path.name for path in (ROOT / "shared" / "superpowers").iterdir() if path.is_dir()
@@ -975,7 +975,7 @@ def test_all_khenrix_owned_skills_have_valid_codex_metadata() -> None:
 
     assert observed == expected
     assert len(observed) == 22
-    assert explicit_only == {"llm-forge"}
+    assert explicit_only == set()
 
 
 def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces() -> None:

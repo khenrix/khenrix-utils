@@ -31,7 +31,6 @@ ROOT = Path(__file__).resolve().parent.parent
 # rendered while a check quietly skipped it.
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import checks  # noqa: E402
-from historical_only import historical_only  # noqa: E402
 
 CLIS = checks.CLIS
 BUNDLED = ["capabilities.toml", "house-style.md", "headless-invocation.md"]
@@ -43,13 +42,12 @@ LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
 # Shared stdlib engines under shared/lib/<name>/, bundled once per plugin at lib/<name>/
 # so skills can `PYTHONPATH=<plugin>/lib python3 -m <name>` after a marketplace copy.
 # Runtime code only — tests are excluded to keep the plugin lean.
-SHARED_LIBS = ["wikisync", "council", "forge"]
+SHARED_LIBS = ["wikisync"]
 # Single MODULES (not packages) that land beside those engines at lib/<file>.py, because
 # an engine imports them at runtime. forge/screen.py loads checks.py by path to get the
 # secret patterns rather than forking them; once the marketplace copies a plugin out of
 # this repo, lib/checks.py is the only candidate its resolver can still reach.
-SHARED_LIB_FILES = [ROOT / "scripts" / "lib" / "checks.py",
-                    ROOT / "shared" / "lib" / "fanout" / "historical_only.py"]
+SHARED_LIB_FILES = [ROOT / "scripts" / "lib" / "checks.py"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
@@ -214,11 +212,10 @@ def render_templated_skill(skill: str, cli: str, caps: dict, problems: list):
 def render():
     caps = load_caps()
     native_only = native_only_skills(caps)
-    historical_skills, historical_libs = historical_only(caps)
     problems: list[str] = []
     shared_skills = sorted(
         p for p in (ROOT / "shared" / "skills").glob("*/")
-        if p.name not in native_only | historical_skills
+        if p.name not in native_only
     )
     for cli in CLIS:
         pdir = plugin_dir(cli)
@@ -260,7 +257,7 @@ def render():
         # rendered tree depend on which interpreters had happened to run — this machine
         # carried both cpython-313 and cpython-314 copies. Same patterns as the other four
         # calls, and the same exclusion `checks.py` already applies to the receipt closure.
-        for name in native_only | historical_skills:
+        for name in native_only | {"llm-council", "llm-forge"}:
             # Remove copies emitted by older renders; filtering future copytree calls alone
             # would leave the stale bundle present forever.
             shutil.rmtree(pdir / "skills" / name, ignore_errors=True)
@@ -279,13 +276,12 @@ def render():
                     shutil.copy2(lib, skill / "scripts" / lib.name)
         # 4. bundle shared stdlib engines (runtime only) at the plugin's lib/<name>/
         (pdir / "lib").mkdir(parents=True, exist_ok=True)
-        for name in historical_libs:
+        for name in ("council", "forge"):
             shutil.rmtree(pdir / "lib" / name, ignore_errors=True)
+        (pdir / "lib" / "historical_only.py").unlink(missing_ok=True)
         for f in SHARED_LIB_FILES:
             shutil.copy2(f, pdir / "lib" / f.name)
         for name in SHARED_LIBS:
-            if name in historical_libs:
-                continue
             src = ROOT / "shared" / "lib" / name
             if src.is_dir():
                 dst = pdir / "lib" / name

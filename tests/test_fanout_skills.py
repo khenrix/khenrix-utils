@@ -150,13 +150,9 @@ def test_consumption_refuses_file_mode_or_owner_drift(tmp_path, monkeypatch, fie
 
 
 @pytest.mark.parametrize("name", ["llm-council", "llm-forge"])
-def test_managed_khenrix_source_root_cannot_admit_historical_skills(tmp_path, name):
-    repo = tmp_path / "managed"
-    source = repo / "shared/skills"
-    _write_skill(source, name)
-    (repo / "capabilities.toml").write_bytes((ROOT / "capabilities.toml").read_bytes())
-    with pytest.raises(SkillAdmissionError, match="historical"):
-        _resolver(_root("managed", source, 0)).resolve((name,))
+def test_retired_skills_are_absent_from_actual_source(name):
+    with pytest.raises(SkillAdmissionError, match="missing|SKILL|contains no files"):
+        _resolver(_root("source", ROOT / "shared/skills", 0)).resolve((name,))
 
 
 @pytest.mark.parametrize("name", ["llm-council", "llm-forge"])
@@ -165,28 +161,6 @@ def test_foreign_explicit_roots_keep_arbitrary_skill_names(tmp_path, name):
     _write_skill(source, name)
     (tmp_path / "foreign/capabilities.toml").write_text("version = 1\n[unrelated]\nvalue = true\n")
     assert _resolver(_root("foreign", source, 0)).resolve((name,))[0].name == name
-
-
-@pytest.mark.parametrize("version", [None, 99])
-@pytest.mark.parametrize("name", ["llm-council", "llm-forge"])
-def test_known_managed_admission_requires_policy_without_a_version_marker(tmp_path, monkeypatch, version, name):
-    repo = tmp_path / "managed"
-    source = repo / "shared/skills"
-    _write_skill(source, name)
-    (repo / "capabilities.toml").write_text("" if version is None else f"version = {version}\n")
-    monkeypatch.setattr(skills_module, "__file__", str(repo / "shared/lib/fanout/skills.py"))
-    resolver = _resolver(_root("managed", source, 0))
-    resolved = []
-    resolve_from_root = resolver._resolve_from_root
-
-    def observe_resolution(*args):
-        resolved.append(args)
-        return resolve_from_root(*args)
-
-    monkeypatch.setattr(resolver, "_resolve_from_root", observe_resolution)
-    with pytest.raises(SkillAdmissionError, match="historical"):
-        resolver.resolve((name,))
-    assert resolved == []
 
 
 def test_target_skill_evidence_loader_binds_receipt_without_granting_delivery(tmp_path):

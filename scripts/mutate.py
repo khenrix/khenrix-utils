@@ -60,9 +60,9 @@ and a re-run; guessing the other way costs a covered row over a hole, which is t
 the top of this file is about. Print a summary line after the traceback and the run scores
 normally.
 
-    scripts/mutate.py --file shared/lib/forge/verify.py \
-        --old 'VERIFIER_NAME = "verify"' --new 'VERIFIER_NAME = "claude"' \
-        -- uvx pytest tests/test_forge_seams.py -q
+    scripts/mutate.py --file shared/lib/fanout/plan.py \
+        --old 'SCHEMA_VERSION = "v1"' --new 'SCHEMA_VERSION = "v0"' \
+        -- uvx pytest tests/test_fanout_plan_schema.py -q
 
 Exit 0 when the mutant is CAUGHT (a green suite went red), 1 when it SURVIVED, 2 on a usage
 or application error — including a baseline that was not green, and a mutated run whose exit

@@ -188,7 +188,7 @@ def _question_draft(source: bytes, skills: tuple[str, ...], none_reason: str | N
         "source_sha256": hashlib.sha256(source).hexdigest(),
         "defaults": {"executor_ids": list(executors), "rounds": 2,
                      "timeout": 900 if tier == "normal" else None,
-                     "retries": 0, "minimum_success": 2,
+                     "retries": 0, "minimum_success": len(executors),
                      "quality_tier": "standard" if tier == "normal" else "deep"},
         "tasks": [{
             "id": "answer", "kind": "work", "parent_id": None,

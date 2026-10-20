@@ -1,12 +1,8 @@
-"""Maka-only, tool-free blind-ballot boundary for arbitrary quality cases.
-
-This is a transport adapter, not an executor or a Maka CLI command builder.
-The live transport must be independently characterized to enforce zero tools;
-the adapter refuses missing characterization and checks each result against it.
-"""
+"""Maka blind ballots bound to actual native sessions and read-tool evidence."""
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol
 
@@ -38,7 +34,6 @@ class JudgeRequest:
     auth_route: str = ""
     order: str = "candidate-first"
     target_id: str = field(default="maka", init=False)
-    tools: tuple[()] = field(default=(), init=False)
 
     def __post_init__(self) -> None:
         for label in ("case_id", "criterion", "candidate_answer", "baseline_answer",
@@ -52,8 +47,9 @@ class JudgeRequest:
                 raise JudgeTransportError(f"judge {label} is not UTF-8 text") from error
         profiles = {
             "interactive": ("api-key-relay", "gpt-6.1-sol", "xhigh"),
-            "harbor": ("harbor-lab", "gpt-6.1-sol", "xhigh"),
         }
+        if self.panel_id == "interactive" and self.auth_route == "chatgpt-subscription":
+            profiles["interactive"] = ("chatgpt-subscription", "gpt-6.1-sol", "xhigh")
         if self.panel_id not in profiles or (
             self.auth_route, self.requested_model, self.effort
         ) != profiles[self.panel_id]:
@@ -64,7 +60,7 @@ class JudgeRequest:
 
 @dataclass(frozen=True, slots=True)
 class PresentedJudgeRequest:
-    """Tool-free transport payload with no candidate label or presentation order."""
+    """Blind transport payload with no candidate label or presentation order."""
 
     case_id: str
     panel_id: str
@@ -75,66 +71,36 @@ class PresentedJudgeRequest:
     effort: str = ""
     auth_route: str = ""
     target_id: str = field(default="maka", init=False)
-    tools: tuple[()] = field(default=(), init=False)
 
 
-class ToolFreeMakaTransport(Protocol):
-    """Live binding supplied by a separately characterized Maka route."""
+class NativeJudgeTransport(Protocol):
+    """Normal native CLI binding with retained owned session evidence."""
 
     target_id: str
-    no_tools_characterization_sha256: str
+    native_session_capture: bool
 
     def judge(self, request: PresentedJudgeRequest) -> Mapping[str, object]: ...
 
 
 def _presentation(request: JudgeRequest) -> tuple[str, str]:
-    if not isinstance(request, JudgeRequest) or request.tools or request.target_id != "maka":
-        raise JudgeTransportError("Maka judge request must have no tools")
+    if not isinstance(request, JudgeRequest) or request.target_id != "maka":
+        raise JudgeTransportError("Maka judge request is invalid")
     return ((request.candidate_answer, request.baseline_answer)
             if request.order == "candidate-first"
             else (request.baseline_answer, request.candidate_answer))
 
 
-def validate_maka_ballot(request: JudgeRequest, ballot: Mapping[str, object], *,
-                         boundary_sha256: str) -> dict[str, object]:
-    """Validate a complete live or stored ballot without invoking a transport."""
-    first, second = _presentation(request)
-    identity = {
-        "case_id": request.case_id, "panel_id": request.panel_id,
-        "judge": "maka", "family": "openai", "order": request.order,
-        "presented_a_sha256": hashlib.sha256(first.encode("utf-8")).hexdigest(),
-        "presented_b_sha256": hashlib.sha256(second.encode("utf-8")).hexdigest(),
-    }
-    response_fields = {"winner", "auth_route", "requested_model", "observed_model",
-                       "effort", "tool_calls", "tool_boundary_sha256"}
-    if (not isinstance(ballot, Mapping) or set(ballot) != set(identity) | response_fields
-            or any(ballot[name] != value for name, value in identity.items())):
-        raise JudgeTransportError("Maka judge returned an incomplete or misbound structured ballot")
-    if not isinstance(ballot["winner"], str) or ballot["winner"] not in {"A", "B", "tie", "abstain"}:
-        raise JudgeTransportError("Maka judge returned an invalid A/B winner")
-    if (ballot["auth_route"] != request.auth_route
-            or ballot["requested_model"] != request.requested_model
-            or ballot["observed_model"] != request.requested_model
-            or ballot["effort"] != request.effort):
-        raise JudgeTransportError("Maka judge model, effort, or auth route was not observed")
-    if (not _digest(boundary_sha256) or type(ballot["tool_calls"]) is not int
-            or ballot["tool_calls"] != 0 or ballot["tool_boundary_sha256"] != boundary_sha256):
-        raise JudgeTransportError("Maka judge no-tools boundary was not witnessed")
-    return dict(ballot)
-
-
 class MakaJudgeAdapter:
-    """Reject uncharacterized transports and retain only a structured ballot."""
+    """Bind blind ballots only to actual native session evidence."""
 
     target_id = "maka"
 
-    def __init__(self, transport: ToolFreeMakaTransport) -> None:
+    def __init__(self, transport: NativeJudgeTransport) -> None:
         if transport.target_id != "maka" or "maka" not in RoutingTargetRegistry.default().target_ids:
             raise JudgeTransportError("quality judgment must use the Maka routing target")
-        if not _digest(transport.no_tools_characterization_sha256):
-            raise JudgeTransportError("Maka no-tools transport is not characterized")
+        if getattr(transport, "native_session_capture", False) is not True:
+            raise JudgeTransportError("Maka judgment requires native session capture")
         self._transport = transport
-        self._boundary_sha256 = transport.no_tools_characterization_sha256
 
     def judge(self, request: JudgeRequest) -> dict[str, object]:
         first, second = _presentation(request)
@@ -146,21 +112,46 @@ class MakaJudgeAdapter:
             response = self._transport.judge(presented)
         except Exception as error:
             raise JudgeTransportError("Maka judge transport failed") from error
-        if not isinstance(response, Mapping) or set(response) != {
-            "winner", "auth_route", "requested_model", "observed_model",
-            "effort", "tool_calls", "tool_boundary_sha256",
-        }:
-            raise JudgeTransportError("Maka judge returned an incomplete structured ballot")
-        if self._transport.no_tools_characterization_sha256 != self._boundary_sha256:
-            raise JudgeTransportError("Maka judge no-tools boundary was not witnessed")
-        return validate_maka_ballot(request, {
-            "case_id": request.case_id, "panel_id": request.panel_id,
-            "judge": "maka", "family": "openai", "order": request.order,
-            "winner": response["winner"], "auth_route": response["auth_route"],
-            "requested_model": response["requested_model"],
-            "observed_model": response["observed_model"], "effort": response["effort"],
-            "tool_boundary_sha256": response["tool_boundary_sha256"],
-            "tool_calls": response["tool_calls"],
-            "presented_a_sha256": hashlib.sha256(first.encode("utf-8")).hexdigest(),
-            "presented_b_sha256": hashlib.sha256(second.encode("utf-8")).hexdigest(),
-        }, boundary_sha256=self._boundary_sha256)
+        return validate_native_maka_ballot(request, response)
+
+
+def native_tool_is_write(name: str, arguments: object = None) -> bool:
+    """Reject known mutations in completed evidence, not a pre-execution fence."""
+    from .providers import _MCP_WRITE_TOOLS
+
+    if name.rsplit("__", 1)[-1] in {tool for tools in _MCP_WRITE_TOOLS.values() for tool in tools}:
+        return True
+    if name in {"Write", "Edit", "apply_patch", "patch", "ScheduledTask", "GoalSet", "GoalClear"}:
+        return True
+    mutation = r"(?:^|__|_)(?:send|post|reply|forward|delete|create|update|edit|write|publish|deploy|restart|merge|push|invite|remove)(?:_|$)"
+    if re.search(mutation, name, re.I):
+        return True
+    return isinstance(arguments, Mapping) and any(
+        isinstance(arguments.get(key), str) and re.search(mutation, arguments[key], re.I)
+        for key in ("action", "operation", "method", "command_name"))
+
+
+def validate_native_maka_ballot(request: JudgeRequest, response: Mapping[str, object]) -> dict[str, object]:
+    """Bind a native result; unavailable provider telemetry remains unavailable."""
+    first, second = _presentation(request)
+    required = {"winner", "auth_route", "requested_model", "observed_model", "effort", "session_id",
+                "run_id", "turn_id", "invocation_id", "tool_records", "tool_results", "tool_dispatches", "tool_calls", "capture_sha256"}
+    if not isinstance(response, Mapping) or set(response) != required:
+        raise JudgeTransportError("Maka native structured ballot is incomplete")
+    if (response["winner"] not in {"A", "B", "tie", "abstain"}
+            or response["auth_route"] != request.auth_route or response["requested_model"] != request.requested_model
+            or response["effort"] != request.effort or response["observed_model"] is not None
+            or not _digest(response["capture_sha256"]) or type(response["tool_calls"]) is not int
+            or not isinstance(response["tool_records"], list)
+            or not isinstance(response["tool_results"], list)
+            or not isinstance(response["tool_dispatches"], list)
+            or len(response["tool_results"]) != len(response["tool_records"])
+            or len(response["tool_dispatches"]) != len(response["tool_records"])
+            or response["tool_calls"] != len(response["tool_records"])):
+        raise JudgeTransportError("Maka native evidence does not match")
+    if any(not isinstance(response[name], str) or not response[name] for name in
+           ("session_id", "run_id", "turn_id", "invocation_id")):
+        raise JudgeTransportError("Maka native identity is unavailable")
+    return {"case_id": request.case_id, "panel_id": request.panel_id, "judge": "maka", "family": "openai",
+            "order": request.order, "presented_a_sha256": hashlib.sha256(first.encode()).hexdigest(),
+            "presented_b_sha256": hashlib.sha256(second.encode()).hexdigest(), **response}

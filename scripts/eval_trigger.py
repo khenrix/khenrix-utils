@@ -7,7 +7,7 @@ ONLY the skill's name+description, would the agent pick it for a prompt? Reads
 evals/<skill>/triggers.json {should_trigger:[…], near_miss:[…]}, asks the judge
 per prompt, and scores correct fires + correct abstains.
 
-Stdlib only; reuses the behavior harness's isolated, no-tools provider runner.
+Stdlib only; reuses the behavior harness's native read-role provider runner.
   eval_trigger.py --skill <name> [--judge claude] [--mode normal]
   eval_trigger.py --self-test     # hermetic logic, no tokens
 """
@@ -16,10 +16,8 @@ import argparse, json, re, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
-sys.path.insert(0, str(FANOUT_DIR))
-import fanout  # noqa: E402
 import eval_harness  # noqa: E402
+fanout = eval_harness.eval_runtime
 
 EVALS_ROOT = ROOT / "evals"
 DEFAULT_JUDGE = "claude"
@@ -163,14 +161,17 @@ def score(cases: list) -> dict:
 
 def run_isolated_judge(judge: str, prompt: str, cfg: dict, workdir: Path,
                        timeout: int) -> tuple[str, dict]:
-    """Run a compact routing verdict through the shared no-tools boundary.
+    """Judge supplied routing metadata with normal native read capabilities.
 
-    Trigger evals intentionally expose only the supplied names and descriptions. Using
-    the behavior harness's runner also hides ambient skills, rules, plugins, MCPs, and
-    provider tools, so an installed copy of the skill cannot answer on its own behalf.
+    This measures a supplied-description verdict, not isolated skill discovery.
     """
+    profile = fanout.ProviderRegistry.default().select(judge, "read-only", "standard",
+                                                       role="evaluator")
+    cfg = {**cfg, judge: {"model": profile.requested_model, **cfg.get(judge, {}),
+                         "thinking": profile.requested_effort}}
     return eval_harness.run_text(
-        judge, prompt, cfg, workdir, timeout=timeout, retries=1, readonly=False
+        judge, prompt, cfg, workdir, timeout=timeout, retries=0, readonly=True,
+        role="evaluator"
     )
 
 
@@ -382,11 +383,11 @@ def _self_test() -> int:
         eval_harness.run_text = fake_run_text
         raw, rec = run_isolated_judge("claude", "route this", {"claude": {}},
                                       Path("/tmp/routing-eval"), 17)
-        ok.append(("routing verdicts use the shared isolated no-tools runner",
+        ok.append(("routing verdicts use the shared native evaluator runner",
                    raw == '{"activate": true}' and rec["valid"]
                    and seen.get("provider") == "claude"
                    and seen.get("kwargs") == {
-                       "timeout": 17, "retries": 1, "readonly": False
+                       "timeout": 17, "retries": 0, "readonly": True, "role": "evaluator"
                    }))
     finally:
         eval_harness.run_text = original_run_text
@@ -516,22 +517,9 @@ def _self_test() -> int:
     ok.append(("arena: a capitalised competitor still resolves to its roster spelling",
                parse_arena_verdict('{"winner": "Khenrix-Audit"}',
                                    ["khenrix-audit", "none"]) == "khenrix-audit"))
-    # --- min_chars regression (2026-07-31): a real judge verdict is short compact JSON
-    # (~100-200 chars), well under fanout's council-answer floor. Pins the exact failure
-    # this override fixes — without spec_.min_chars = 0 in run()/run_arena(), fanout scores
-    # every correct verdict "non_substantive" and eval_trigger reads "" for every case
-    # (observed live: accuracy 0.4545, should_trigger 0/6, near_miss 5/5 — every "false"
-    # verdict was spuriously right and every "true" one spuriously wrong).
+    # Compact verdicts are substantive when they satisfy the routing schema.
     short_verdict = '{"activate": true, "why": "matches the description directly"}'
-    default_spec = fanout.build_real_spec("claude", "prompt", 60, {}, Path("/tmp"))
-    ok.append(("build_real_spec defaults to the council floor (why the override is needed)",
-               default_spec.min_chars == fanout.MIN_SUBSTANTIVE_CHARS
-               and len(short_verdict) < fanout.MIN_SUBSTANTIVE_CHARS))
-    ok.append(("judge verdict scores non_substantive at the default floor",
-               fanout.score_seat(short_verdict, None, fanout.MIN_SUBSTANTIVE_CHARS)["cause"]
-               == "non_substantive"))
-    ok.append(("judge verdict scores ok once min_chars=0 (the fix)",
-               fanout.score_seat(short_verdict, None, 0)["status"] == "ok"))
+    ok.append(("short valid routing verdict is readable", parse_verdict(short_verdict) is True))
     # THE THREE STATES, PINNED. `bool(...)` read "false" as True and `null` as False —
     # measured before the fix — so a judge answering in a string was scored backwards, and a
     # judge DECLINING to answer was scored as a real "do not activate", which every near_miss

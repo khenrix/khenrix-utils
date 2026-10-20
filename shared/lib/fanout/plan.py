@@ -94,22 +94,32 @@ class ProviderPolicyV1:
     rounds: int = 2
     timeout: int | float | None = None
     retries: int = 0
-    minimum_success: int = 2
+    minimum_success: int | None = None
     quality_tier: str = "standard"
     timeout_override_reason: str | None = None
     timeout_override_review_sha256: str | None = None
+    iteration_limits: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         ids = _string_tuple(self.executor_ids, "executor_ids", nonempty=True)
         if "maka" in ids:
             raise PlanValidationError("maka is a routing/evaluation target, not an executor")
-        if len(ids) < 2 or len(ids) != len(set(ids)):
-            raise PlanValidationError("executor_ids must contain at least two unique executors")
-        _int_in_range(self.rounds, "rounds", 1, 3)
+        if len(ids) != len(set(ids)):
+            raise PlanValidationError("executor_ids must contain unique executors")
+        _int_in_range(self.rounds, "rounds", 1, 10)
         if self.timeout is not None:
             _positive_number(self.timeout, "timeout", maximum=3600)
-        _int_in_range(self.retries, "retries", 0, 3)
-        _int_in_range(self.minimum_success, "minimum_success", 2, len(ids))
+        _int_in_range(self.retries, "retries", 0, 0)
+        minimum = len(ids) if self.minimum_success is None else self.minimum_success
+        if type(minimum) is not int or minimum != len(ids):
+            raise PlanValidationError("minimum_success must require all configured identities")
+        if not isinstance(self.iteration_limits, Mapping):
+            raise PlanValidationError("iteration_limits must be a seat-cap mapping")
+        limits = dict(self.iteration_limits)
+        for seat_id, cap in limits.items():
+            if seat_id not in ids:
+                raise PlanValidationError("iteration_limits contains an unknown seat identity")
+            _int_in_range(cap, f"iteration_limits.{seat_id}", 1, 10)
         if self.quality_tier not in {"standard", "deep"}:
             raise PlanValidationError("quality_tier must be standard or deep")
         if self.timeout_override_reason is not None and (
@@ -122,6 +132,21 @@ class ProviderPolicyV1:
         if (self.timeout_override_reason is None) != (self.timeout_override_review_sha256 is None):
             raise PlanValidationError("timeout override requires both reason and review evidence")
         object.__setattr__(self, "executor_ids", ids)
+        object.__setattr__(self, "minimum_success", minimum)
+        object.__setattr__(self, "iteration_limits", MappingProxyType(limits))
+
+    def iteration_cap(self, seat_id: str) -> int:
+        if seat_id not in self.executor_ids:
+            raise PlanValidationError("unknown configured seat identity")
+        return self.iteration_limits.get(seat_id, self.rounds)
+
+    @property
+    def max_iterations(self) -> int:
+        return max(self.iteration_cap(seat_id) for seat_id in self.executor_ids)
+
+    @property
+    def projected_turns(self) -> int:
+        return sum(self.iteration_cap(seat_id) for seat_id in self.executor_ids)
 
     def effective_timeout(self, profile: object) -> int | float:
         """Apply a selected profile's default and ceiling to this task policy."""
@@ -148,20 +173,22 @@ class ProviderPolicyV1:
         values = _object(data, where, {
             "executor_ids", "rounds", "timeout", "retries", "minimum_success",
             "quality_tier", "timeout_override_reason", "timeout_override_review_sha256",
-        }, required={"executor_ids", "rounds", "retries", "minimum_success"})
+            "iteration_limits",
+        }, required={"executor_ids", "retries"})
         return cls(
             executor_ids=tuple(_list(values["executor_ids"], f"{where}.executor_ids")),
-            rounds=values["rounds"],
+            rounds=values.get("rounds", 2),
             timeout=values.get("timeout"),
             retries=values["retries"],
-            minimum_success=values["minimum_success"],
+            minimum_success=values.get("minimum_success"),
+            iteration_limits=values.get("iteration_limits", {}),
             quality_tier=values.get("quality_tier", "standard"),
             timeout_override_reason=values.get("timeout_override_reason"),
             timeout_override_review_sha256=values.get("timeout_override_review_sha256"),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value = {
             "executor_ids": list(self.executor_ids),
             "rounds": self.rounds,
             "timeout": self.timeout,
@@ -171,6 +198,9 @@ class ProviderPolicyV1:
             "timeout_override_reason": self.timeout_override_reason,
             "timeout_override_review_sha256": self.timeout_override_review_sha256,
         }
+        if self.iteration_limits:
+            value["iteration_limits"] = dict(self.iteration_limits)
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,7 +313,7 @@ class PlanTaskV1:
             if not acceptance:
                 raise PlanValidationError("work tasks require acceptance statements")
             if self.execution_class == "orchestrator-action":
-                if skills or self.provider_policy is not None or checks or paths or self.reconciliation_policy is not None:
+                if skills or self.provider_policy is not None or self.reconciliation_policy is not None:
                     raise PlanValidationError("orchestrator-action tasks cannot carry executor work")
                 if reason is None:
                     raise PlanValidationError("orchestrator-action tasks require a none_reason")
@@ -502,7 +532,11 @@ class FanoutPlanV2(FanoutPlanV1):
                 continue
             for predecessor_id, mode in task.dependency_modes.items():
                 predecessor = task_index.get(predecessor_id)
-                if mode == "handover" and (predecessor is None or predecessor.execution_class != "repo-write"):
+                writer = (predecessor is not None and
+                          (predecessor.execution_class == "repo-write" or
+                           (predecessor.execution_class == "orchestrator-action"
+                            and predecessor.owned_paths and predecessor.checks)))
+                if mode == "handover" and not writer:
                     raise PlanValidationError(f"task {task.id} handover requires a repository writer predecessor")
         object.__setattr__(self, "targets", targets)
         object.__setattr__(self, "source_steps", steps)

@@ -1,43 +1,1758 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "skill": "khenrix-upgrade",
-  "source_hash": "1301f9896f5492034553c82e23ca3e7c007e47bce70cb794456da839293be0a2",
-  "eval_set_hash": "c5e268f7f0ff36e4a1bba7212c0daf40a970a1f759b838913b7159c804c2b204",
+  "source_hash": "734464bbeb638080746b90e049455278547b94844b8f389d44068538b631ddea",
+  "eval_set_hash": "2c952517f60275808a86cf57379bc45c2f176ed277f75d1be32c1928e77e06af",
   "providers": [
     "claude",
     "codex",
     "agy"
   ],
   "mode": "normal",
-  "judge": "claude",
-  "delta_pass_rate": 0.7,
+  "judge": "codex",
+  "delta_pass_rate": 0.6796,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.7223,
+      "delta": 0.6722,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.7223,
+      "delta": 0.7389,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.6556,
+      "delta": 0.6278,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-sonnet-4-6",
-    "codex": "gpt-6-sol",
-    "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-sonnet-4-6"
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
+    "judge": "gpt-6.1-sol"
+  },
+  "judge_config": {
+    "model": "gpt-6.1-sol",
+    "thinking": "xhigh"
+  },
+  "source_manifest": [
+    [
+      "capabilities.toml",
+      "8b64bbb907c9b801a72760359f41124d0ccc7323b775fc417760473243b92759"
+    ],
+    [
+      "house-style.md",
+      "6a1da322b7d78481b8ab97271d003255ba62bde12035da791100b891513f80c2"
+    ],
+    [
+      "overlays/claude.md",
+      "7891206a373b92c982958518fd5266376ff2d78cde2d952c51593202e39ed38e"
+    ],
+    [
+      "scripts/lib/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "scripts/lib/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "shared/skill-templates/khenrix-upgrade/SKILL.md.tmpl",
+      "a0ba20b43bbbde998173ffb0ba71b78d056d411d653373fba54ca8f5574867c9"
+    ],
+    [
+      "skill_facts:khenrix-upgrade",
+      "d014b6f2ea328e8bb3481b2897666503b7c28dd371ecddd8630c0132a61e4e95"
+    ]
+  ],
+  "criteria_manifest": [
+    [
+      "evals/khenrix-upgrade/evals.json",
+      "2c952517f60275808a86cf57379bc45c2f176ed277f75d1be32c1928e77e06af"
+    ]
+  ],
+  "instrument_manifest": [
+    [
+      "Makefile",
+      "89847c4563a2bcb8bff2f406f62d6c2b15890ef44d9eef8c5c0a628a4b28974b"
+    ],
+    [
+      "scripts/eval_harness.py",
+      "726c0851689d5f1465426c9c1532255c37f4019419d35b7e8ab7ccaa0c99ba05"
+    ],
+    [
+      "scripts/lib/checks.py",
+      "2a61514bbddd57262172340ea9101c443029cd841775993a46dc9384e9809b56"
+    ],
+    [
+      "scripts/lib/portability.py",
+      "4f53d7a9668b07b6c1f733c0f750f1f1536a3e4a9dab34e64c9106f11bc67437"
+    ],
+    [
+      "scripts/render.py",
+      "98e9d6f4b581027121431fc7799b6edb4285f47dab18c9d2c858cf41177fd4d8"
+    ],
+    [
+      "shared/lib/fanout/__init__.py",
+      "0307efd7a8b2aa54a12cce49a04d7732e0827e395bb4ef1adc080efafcea0e2e"
+    ],
+    [
+      "shared/lib/fanout/artifacts.py",
+      "920fe65ca7f42417e2b8227011998447bda71d62caf7e8323a649e0860269bd9"
+    ],
+    [
+      "shared/lib/fanout/branch_handover.py",
+      "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
+    ],
+    [
+      "shared/lib/fanout/collaboration.py",
+      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+    ],
+    [
+      "shared/lib/fanout/compiler.py",
+      "8fff7727eecae58b45c6b52c727fdcae5617f559e9395872aed5de1e95aed1ae"
+    ],
+    [
+      "shared/lib/fanout/context_view.py",
+      "e249652b46b3f4c76cffe73db4d859df5ac5b46daa6257a7c6fa01cf7571f3df"
+    ],
+    [
+      "shared/lib/fanout/controller.py",
+      "a839354834065e64f5a5ce54385617144b620bc702a68d9dec24b9fa593fab66"
+    ],
+    [
+      "shared/lib/fanout/diagnostic.py",
+      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+    ],
+    [
+      "shared/lib/fanout/durable_io.py",
+      "571c045a1ec2ba711ec693c7d1e5d82213d4d753b0c8ca3b2f2cf98113c1e1f4"
+    ],
+    [
+      "shared/lib/fanout/errors.py",
+      "ca865c3cbee33ee3937d9c49fc2e282333c12673c1a9e99f90f07ab81c569d9d"
+    ],
+    [
+      "shared/lib/fanout/eval_provider.py",
+      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+    ],
+    [
+      "shared/lib/fanout/evaluation.py",
+      "f62a6e14851d9c7c33eb4a9861f11059837518b2826afa7e1dbb979832c59883"
+    ],
+    [
+      "shared/lib/fanout/execute.py",
+      "53914524078019edd94435d82a7f6af53e22e6818e7fabc46ba5f6c74dea48d7"
+    ],
+    [
+      "shared/lib/fanout/lifecycle.py",
+      "a90a56ac7da93c19d8db5c1fe697726eb8332f18051ea4cd0790dc4ff369ea27"
+    ],
+    [
+      "shared/lib/fanout/maka_native_session.mjs",
+      "1932bead31bc89e4d808397071533a1ef3b49cf92824aabd154c5532339742d0"
+    ],
+    [
+      "shared/lib/fanout/maka_transport.py",
+      "295ebffbb03bc7b73871c2f17ed080289c6b59a6cc4d9a5f8b8ead5259470f84"
+    ],
+    [
+      "shared/lib/fanout/memory.py",
+      "46bcebe5633dad9d2060ffa12dc3754ff401d4636683f835a24074c508565429"
+    ],
+    [
+      "shared/lib/fanout/native_trace.py",
+      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+    ],
+    [
+      "shared/lib/fanout/plan.py",
+      "d7c912f7d365d5babe23d35282f79541de072393780f7824b5c59b05b34fc3da"
+    ],
+    [
+      "shared/lib/fanout/process.py",
+      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+    ],
+    [
+      "shared/lib/fanout/providers.py",
+      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+    ],
+    [
+      "shared/lib/fanout/repo.py",
+      "f733a2936d5ad8f38ffc143df65bfa4a39642579edb035211ef61752fad84ea0"
+    ],
+    [
+      "shared/lib/fanout/runstate.py",
+      "915b35b6a913d45abf704c57be5e148cbe9228ed06f27c505cf37521559aec40"
+    ],
+    [
+      "shared/lib/fanout/scheduler.py",
+      "ff27c6487463cd4cbac13c7e8e061ac0378e3c1ed4e8a83c8b06cf269e6afd18"
+    ],
+    [
+      "shared/lib/fanout/scheduler_authority.py",
+      "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
+    ],
+    [
+      "shared/lib/fanout/skills.py",
+      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+    ],
+    [
+      "shared/lib/fanout/storage.py",
+      "4e3ee7dd8b341d32122c51c7655d0ee8341b47a6505962cb18a7acabe7f0d963"
+    ],
+    [
+      "shared/lib/fanout/targets.py",
+      "f1f7f35bc8034844a92cf9eb0c67b3fd2d39e1659826757cf7ad227afbfe22f1"
+    ],
+    [
+      "shared/lib/fanout/verification.py",
+      "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/wikisync/tests/__init__.py",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "shared/lib/wikisync/tests/chrome_profile_smoke.py",
+      "40019026c804a69271513f4d5fdc38cee5dbdde59a6ed3c13be893161b8994a1"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/Bookmarks",
+      "ceb38149d7614cd7a77fcbf6426017155a46c1e555d3ac48fc696500113e2a1b"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/ig_live.json",
+      "74f60d0765aa7d00f2f28eab348fa47f8fe40ed5dc5cead79b6e29847d9a8ad7"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/saved_posts.json",
+      "6df764e9e1dd1797384c8dda5834bab72bf20337bc64023a6c905ce698288c99"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_bookmarks.py",
+      "5d38afeade7598c46e07b1d0d4aeb6d39bebb0a792ddcfe377f87fbde8427f63"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_canonurl.py",
+      "dc93f98cf2579a2e5f1cdf3d77808b1da2b032497337a4953164f9cd70edcb1a"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_capture.py",
+      "84d6fd0ea27fe805999b7c8d9065750f78f9b3716f97c3591723b1d8d5f415ca"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_cli.py",
+      "0bafa8aae96e908a547d7c74c4b17ef279f735574937f33eb2dd318121ae6e8e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_instagram.py",
+      "b11e6adbd292dcdb18231cfe0caf8056e2f3a835b01631066ccb4aa6fa097ed2"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_ledger.py",
+      "e4b3a24151603bfa6b27ee77058872377373cd6ea193eccda8970929a3149d5e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_render.py",
+      "b996048993a040d31deaab1010f52d0bc338fbd4354a288cfe4373c0623d8066"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_vocab.py",
+      "a8f3f7e93d022d280d224ccad8cd7bb9b0ea75f1fd9efa088bb3acb0d1062a31"
+    ],
+    [
+      "tests/bats-fallback.sh",
+      "38ed9f03a33cd2fa8ddec12f3f6c4c29722c3c57a18b25ff5c8cb5bfcfab9cf2"
+    ],
+    [
+      "tests/fixtures/context_efficiency/README.md",
+      "bfe1869f2b5401bb963fdf57002cc314d27ac16836b47fcf568707d8868f3917"
+    ],
+    [
+      "tests/fixtures/context_efficiency/gold.json",
+      "e9632384e8f7e7262fab73bee895b098eeec091498a44e3c588b748e33e92d51"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/manifest.json",
+      "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/birch-attempts.py",
+      "298cee8e7e41e6bf12f54a7ec3926ea8acaf5babaf56c01ed70b33312dd64257"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/cache-exception.md",
+      "ef3fa6667725b6615caf8aac8793dba7783685d3dc5470104256bede21f352a6"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/crate-attempts.py",
+      "1a0779f78d5afc424ebae73df098b3c56e10b3062f10464e2b83f5a952e5da93"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/earlier-test.md",
+      "b9295e3b26dda3e934ab724a76a03b9d71c59c2a5f4b45e241aac91c3a86477f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/late-correction.md",
+      "6283e72f1493210e3186fe71a3b59f6b8069d8229b5cc112f4f5f8c79b8db66f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/later-correction.md",
+      "b2fdb8e7bc15362bf26abf4e672832cfee993bdd9296489577d52ab50ba658ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-amber.json",
+      "a4b3640012ed6e3528c1958f9c4f1f81c9c1c20a5e0d53770ed67b5b0f84a37d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-blue.json",
+      "3ea9b92d069d67dc3f8e0855cf1c013ff06ebbc69cab33aff1c39bcf6d9b6ec8"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-coral.json",
+      "4b2632c21f680be957a1c2b951cf3bf78c226f2e0deb5127b19ae5353c2af9ea"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/original-decision.md",
+      "ea67468e364aed4d6e7fc61e85a6face8e30f8edd86ff24e50447adc075ff83b"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/overlap.log",
+      "1b5b908b74987a4a7b590d21d775bcab8bc3f128db2878d3e70fb3e457918e1c"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/profiles.json",
+      "2d9dcc5f2d9dd82e8a8a65a4931dd00591b296052d6be9c0ef005eb105bb8458"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/quoted-example.md",
+      "fe736a4e84e4518c28225cbb328dc784d334c20adce8db43a29b3b00dd8a3b24"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-new.md",
+      "bfa7ba36446e92cd5c977b91cb6301d7f28ec850f256ae4ccefbeb8d200b753d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-old.md",
+      "daddbc8388125b2eeac8dc54e1048e3af1206d3785a544346ce3b89face71cc5"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/separate-operations.log",
+      "87f1285b113dec4a3035608a64e8379916e9561340b5d97cdd6d9b72138a6091"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/slot-decision.md",
+      "74ffd596595f3718167879b52df25db99d09067f97fae3b5a2279a9e64e4c6bf"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/spruce-attempts.py",
+      "c416de20f738871cdf1859fbb4754a7428f95fc4855553f9138e7c1b0ddfaab9"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-amber.json",
+      "0535f3044495f89d38b9c191f8112ed192f34fd761d98c2b11cc947c84fb75dc"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-blue.json",
+      "21b18e42d2ca77e12bd811b1343bb9bc1fed8417b8ca89ef1b3a8c91689fa7ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-decision.md",
+      "ce8eaa491e69218783fc3d9bd3bba4ba23589a3c8a825c76321509dcddfb581a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-replay.md",
+      "37ca4e8b07eea4e5eba9a7b7790a9b828cd00417ec7b3a6ba0d1fc5f8d111d11"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-new.json",
+      "1ee1ebee9a88c5f050e3861d94a08c2766953dcf5b8d2e5534e273a2fba5c6d3"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-old.json",
+      "85b9d0096dd9939fef4592c883963cfe83d3c8c0e4d8c27d794a4fc85acfbcba"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/uncertain-ack.md",
+      "fa8eae6977c27267224537a5dae79314afb8cbf1ca152cf5f0ecd2f523a37398"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-agent.md",
+      "fc85520188dea90225008f1758d093a0a16e5ce255c9f8c7193715f80c788a33"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-human.md",
+      "4e6f18132e4d34e99161968cd77c6cee19200051a473fbc18edad6687037c879"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-test.md",
+      "64132d32006005c06b402d551d438acabdf0340bba70a66ce6f0309fa7750ca1"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-aster.md",
+      "928d56ca92218b906a7e3609a9d3ebe7f3bf041ff901eaffff0ff423bee8cb68"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-bryn.md",
+      "ac7c826213bc5d5c7b150e86ff04413ec1f9a8794e0f911edc2e292bf589708a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/zones.json",
+      "3d4a40c2562c8b525e93039ccb59e2e3f0483e6e3181c0a1a54f7470893e5521"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/README.md",
+      "ba8cd8cb4039cd85c9ea2745d6a11f69db848cae951ed0794addfcd94848dbfd"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/descriptor.json",
+      "da5ede0b0f5af33f119287b6382d3837022cb05a041401eb099d72bf024b109e"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/events.jsonl",
+      "b788a3fad8c739f5304b7560d212d4b75f5b6a947bed5435294e43c5f2f502eb"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/generate.py",
+      "55340a72da844675ddf230ccb6ad799b7e5b327434c20f3275b3bab203c8fb31"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/inputs.json",
+      "0ec53c0613592346b41a8006578223d99a29b0653e7b0d7d9e350d19a6f643e4"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/manifest.json",
+      "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/owner.json",
+      "8a8690fecb1d966d3af540ffa93f99faeb28e76018b43e0cc2c3b33d801c4428"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-meta.json",
+      "3e30e3d242e030079c33f7910f35806a084b202468ed55b31bd59e6b8e1f028c"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-record.json",
+      "cca7f0e62d5ab255020fd51259bd2ff4b626828bda816b7a1645f29105cb7366"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/snapshot.json",
+      "83ebf490f03ed7df416f12c156471b9d14e5de0dfb78a4fe3edd3aa32fb05f1a"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-error.json",
+      "821e598806c48b2b91ec10c4929206c227c91916dec7a2cdcdac6df7e1767ec1"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-success.json",
+      "fa69a34a01105bd501d11d0fa67d1aae40fe003cb61ff93fc918319fa9ad7a58"
+    ],
+    [
+      "tests/fixtures/fanout_providers/claude-success.json",
+      "fc0393d0312453c115db00c61d7428d79929f8aabdeb55d0071aa87a8f8e5b93"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-error.ndjson",
+      "050a62511a60087f2ffe12cb2695a02c7da847fbcc681df8538364029645d277"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-success.ndjson",
+      "735107f037e9e188f40bd20d8cbc1c6b1a8797fad5b712243813dcf49d9762f8"
+    ],
+    [
+      "tests/skill_verbatim_cases.py",
+      "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
+    ],
+    [
+      "tests/test_bootstrap_machine.bats",
+      "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
+    ],
+    [
+      "tests/test_bootstrap_tier0.bats",
+      "678c491ad0eb1f912bdf1a49f5bfea39522b5f49bca6da628026dc7f5431282e"
+    ],
+    [
+      "tests/test_bootstrap_tier0_host_smoke.bats",
+      "0b58e407a8f8ee7fc68e806a4f02e96b400a6f8390005b518bb8450e69f1e28d"
+    ],
+    [
+      "tests/test_checks_secrets.py",
+      "4c1e970c82ff7ce9abd73af4ca03847ddb57243e65fcf9937b883a29fcdf8c98"
+    ],
+    [
+      "tests/test_context_efficiency_corpus.py",
+      "7b0177a8a8ba026d785c81b171071201fd0351633a4e25f289fbbc711e60ac6c"
+    ],
+    [
+      "tests/test_context_efficiency_pilot.py",
+      "7787a41df248f6250922d43abb82253711ef9db0ebc0a08032c510087aa17f8c"
+    ],
+    [
+      "tests/test_doctor.py",
+      "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
+    ],
+    [
+      "tests/test_eval_harness_receipt.py",
+      "4e92740886e2bfa171b8130ba78ba74e8d16fff5272492b378728feecad9fb5d"
+    ],
+    [
+      "tests/test_eval_native_consumers.py",
+      "ec515d96a978bfd79c03a6baa1c8212ad619bd38cc41b65ddd6a2eacca9587ab"
+    ],
+    [
+      "tests/test_eval_provider.py",
+      "7e322acfa591726aa9ddacee046241e9953987ca2e50b90f9db0faef505c6b16"
+    ],
+    [
+      "tests/test_eval_receipt_v3.py",
+      "f16b39068eea7c0c22637c4afa2d292007640de104d968e92ac775102e41a07b"
+    ],
+    [
+      "tests/test_fanout_artifacts.py",
+      "dc07415db0eb0aa3f9fcaec52b7bd82f98af28f3f598ff2b9c28ae55cb86ef8f"
+    ],
+    [
+      "tests/test_fanout_benchmark.py",
+      "d88b89e61d2b0ba31d997f502dfd256a8f2ab519551430246e0501f6984bab86"
+    ],
+    [
+      "tests/test_fanout_bootstrap_packages.py",
+      "19744e368077b50f01855c5148d179195c771871a316d964518b6e124403de8a"
+    ],
+    [
+      "tests/test_fanout_branch_handover.py",
+      "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
+    ],
+    [
+      "tests/test_fanout_cold_recovery.py",
+      "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
+    ],
+    [
+      "tests/test_fanout_collaboration.py",
+      "1c7df80b125f1c308ae1a4b532293c393ddc950b2af672714d4fd9dbe987d509"
+    ],
+    [
+      "tests/test_fanout_compiler.py",
+      "662ad6d87a7be97b2f5c2d96c7cda7af930803b0e7902e3b8bcf82d7907c3442"
+    ],
+    [
+      "tests/test_fanout_context_view.py",
+      "cd6695751689339c30847321cf655c21f996ff5e21d60d109eb5da650c848184"
+    ],
+    [
+      "tests/test_fanout_controller.py",
+      "0c28c87fff7321f0a5e9888c35e75a7aa89856c833f123d88902c9e7ddf17943"
+    ],
+    [
+      "tests/test_fanout_execute.py",
+      "5e18acda9b70ca6338deec59738b0b8476ee7a4cdf93f742783d3eb1c5a12316"
+    ],
+    [
+      "tests/test_fanout_execute_skill.py",
+      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+    ],
+    [
+      "tests/test_fanout_lifecycle.py",
+      "fbd5b11a328354dafd4f6e84cb6edc838969c88a369927be1f43dbb3375f130d"
+    ],
+    [
+      "tests/test_fanout_local_authority.py",
+      "c7ae473e39bde7a9e42d2acabf6120a42fc2b51609b8466bb1b39099e8a14dac"
+    ],
+    [
+      "tests/test_fanout_maka_native.py",
+      "aa6ee48e660d17a94829c89d8d542e131f32f145bfc7d22509f31aae5d44bef8"
+    ],
+    [
+      "tests/test_fanout_maka_native_session.mjs",
+      "5b0559bc0751ab3b4fe0864c1669175156d813feeb53c88adf7a862f1ef77ecd"
+    ],
+    [
+      "tests/test_fanout_memory.py",
+      "d5f92c90809dc3f194b1142614dddd830e5728b7c8c4e49ee7c81e0762bef56c"
+    ],
+    [
+      "tests/test_fanout_multirepo_integration.py",
+      "89e709440321c0b5edbedca00826153cbe89c926e478a537d947b57bd966c965"
+    ],
+    [
+      "tests/test_fanout_native_profiles.py",
+      "bbab1f6dc681c6a83dc6c8f1c6cda8c5e4aae636f5eb778adb801b8e6899c504"
+    ],
+    [
+      "tests/test_fanout_native_write_policy.py",
+      "7b6420452829426410689621a7e2f58681c944454662ec64de1f58ec361192aa"
+    ],
+    [
+      "tests/test_fanout_owner_actions.py",
+      "b5dccdd7bbc3af5b33c244c1f9cc57eda717484ccbafc0f4493b4bef6e96c899"
+    ],
+    [
+      "tests/test_fanout_owner_reconciliation.py",
+      "f2beab4d49f8bc353bb63fd6c1eb7725e9cc3e0555e2e82b9d8b7fa6b1f57e01"
+    ],
+    [
+      "tests/test_fanout_plan_schema.py",
+      "40b624f991c3c441084b0e77fe4d041f0a9129d7ef66b7abe615eb8e261d3045"
+    ],
+    [
+      "tests/test_fanout_plan_skill.py",
+      "3af1c030c1d98f3664745c01b13d256d7d562df9421aefdf15476ad1972cb68b"
+    ],
+    [
+      "tests/test_fanout_process.py",
+      "69a30ebe39b9374d61da16672c13626351f378e1b6b6f7638bfd263115f406ab"
+    ],
+    [
+      "tests/test_fanout_profiles.py",
+      "8cb3d5dd527c8a5c4d38c3623f770e950efa35a0ad1ba6c0fadf06e63ea33a77"
+    ],
+    [
+      "tests/test_fanout_providers.py",
+      "96e95b46fe482a72009a5fa5c694ae9f73c72802d79c6541c0c010182150d693"
+    ],
+    [
+      "tests/test_fanout_recorded_cli.py",
+      "af63ea99d350fa223cf3865e1cf76368d4e0f21849b49724d230c6a79f805c59"
+    ],
+    [
+      "tests/test_fanout_repo.py",
+      "dc7b411ea8ec602d72b50c146a96240d5b1a8a4887278c36fdc7bbf6471d496a"
+    ],
+    [
+      "tests/test_fanout_runstate.py",
+      "86e0646c576d231e52d036cb39d9b0dffc7b14e619a4bcf3d4bd12e8bbcbfcf3"
+    ],
+    [
+      "tests/test_fanout_scheduler.py",
+      "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
+    ],
+    [
+      "tests/test_fanout_skills.py",
+      "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
+    ],
+    [
+      "tests/test_fanout_smoke.py",
+      "64f5c0647d2844686f03150e03a0ba9581041ba3b682be772f448b4de0333107"
+    ],
+    [
+      "tests/test_fanout_storage.py",
+      "be38f24a4e6ec2c69d5d49448d3eaf6acb4dea96c12747e578764ba4b8e47a99"
+    ],
+    [
+      "tests/test_fanout_targets.py",
+      "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_verification.py",
+      "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
+    ],
+    [
+      "tests/test_maka_colima_mount_migration.py",
+      "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
+    ],
+    [
+      "tests/test_maka_skill_smoke.py",
+      "1d0c2077c4f3aca3c2d232ad7241833b70fb9a75c37ded0395e9ceb3546b2abc"
+    ],
+    [
+      "tests/test_memory_exchange.py",
+      "578e1bc7bc9165a53b645aeaabfe2a564e0a680cc026238e5b8463b9c0b7e423"
+    ],
+    [
+      "tests/test_memory_ingress.py",
+      "43fdfbdaa5bd4c7b9c19d994006a360c44c318689aaea4e2b58121d1351527c2"
+    ],
+    [
+      "tests/test_memory_runtime.py",
+      "4c69ad098fb37077ccf305823f1755822536bc5bf494e00d4b4aec2cdafa7374"
+    ],
+    [
+      "tests/test_model_policy.py",
+      "4a95f529736f0b1943ba80762787cf9dad1e718ceb1b960c82437a11ae153e6c"
+    ],
+    [
+      "tests/test_mutate.py",
+      "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
+    ],
+    [
+      "tests/test_reconcile_apply.bats",
+      "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
+    ],
+    [
+      "tests/test_reconcile_defaults.py",
+      "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
+    ],
+    [
+      "tests/test_refresh.py",
+      "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
+    ],
+    [
+      "tests/test_render_packaging.py",
+      "d6e32a97a4b3117ca1537d5bb5de9f05c3fbaffc3563912259c9f6bc9c7d0821"
+    ],
+    [
+      "tests/test_repo_sweep.bats",
+      "08b8cc4a229c4af406b6bb99b6db1df5eba7aaa4d816911de7aa856d6cf86b11"
+    ],
+    [
+      "tests/test_setup_audit.py",
+      "43a4798870afe5a98637983e9eb20f0750a334bf45d75fc2edd79caa6a3c4809"
+    ],
+    [
+      "tests/test_skill_delivery.py",
+      "bc3e9b54e2ad72b8b867a8d9aceed4696ddc76630d2c419f58c7bcb3dae6c2cd"
+    ],
+    [
+      "tests/test_skill_upstreams.py",
+      "c9bf886aa5c8d85870631fa7a84b14a5a208bc6637e3b443a1b7c477eafdac22"
+    ],
+    [
+      "tests/test_statusline.py",
+      "d1c2b35c3ae583001b4571551b3d270129d9b5420440065d187774dcb179ba54"
+    ],
+    [
+      "tests/test_statusline_reconcile.py",
+      "7df1d88e3d92998b4b22cada045dae644167b70d960c43caee6e5883347bb197"
+    ],
+    [
+      "tests/test_tuneup_fanout.py",
+      "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
+    ]
+  ],
+  "selected_input_manifest": [
+    [
+      "agy:SKILL.md",
+      "dc64a5a3d77757af50efdea7af4f81d51ce6d8dc0aec80093fe60cffd0ecc902"
+    ],
+    [
+      "agy:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "agy:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "claude:SKILL.md",
+      "2fb6f3f59b2e5ea53b4b71def4fbd0695058985cf9cb1e6d8b8691f281ee0a09"
+    ],
+    [
+      "claude:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "claude:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ],
+    [
+      "codex:SKILL.md",
+      "8193f26e99d7c08f3cfadc1ed0736b49f93de02243b5168d3662b2587b358fd7"
+    ],
+    [
+      "codex:scripts/inventory.py",
+      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+    ],
+    [
+      "codex:scripts/reconcile.py",
+      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+    ]
+  ],
+  "selected_input_hash": "fe471af20dd2cc0a782616dc0194d8323f3c7b30c9bfd0fb6e4d0f1bc8788b66",
+  "criteria_hash": "f90f76bab3b66e8da3fae3b483da6d800f296d95c627e5ee78f26cf10fb72ab5",
+  "instrument_hash": "3133207cc4cbfc7c7a505242d555b59ad0541b8ddc37c1911a2e0d1ac7d1a20f",
+  "raw_refs": [
+    {
+      "path": "workspace/iteration-5/benchmark.json",
+      "sha256": "8e2e8c746a63557805e0e2b06af3a8ce7a6d0ca1ccf0bc5c6bcfb50663c597a4"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.result.txt",
+      "sha256": "d5c0fcfe0a4c316d08b52e7f914460ea4adae151bb5d373a66495505a53c5479"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "2b2f404c4d3cf8420dc1c29f0bf88b1fff0e2969a32997058e89b08d82ca92b7"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/answer.md",
+      "sha256": "d5c0fcfe0a4c316d08b52e7f914460ea4adae151bb5d373a66495505a53c5479"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/grading.json",
+      "sha256": "1cc19dd75504cd81c626d6b0b97ccbc6b7689fe28033142cc0febf5055d21875"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.result.txt",
+      "sha256": "7ad5012ba00f0a9b454fcbdd955b8cd26b2c9caeceadd31feb143d0997814aad"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "f2fbb54ad002b0a0b0980c3a6b6dd0caa5ac0487e9ddd56400333f6d93beb4ae"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/manifest.json",
+      "sha256": "be49879ccf0b25bfe29f55ec92eef6d85acd678582abe9d678c8064841e3f659"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/manifest.json",
+      "sha256": "d71bfda8ffbb5da9c41e48df79955f7befaed587de15361f3c114e53891bd169"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/prompt.txt",
+      "sha256": "2fdb29542c98d5f5f1925d42c7ebaefa4977a8b57e2daf08c5fd84834bb55e61"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.result.txt",
+      "sha256": "cb0c3af707c8759f7979becaaeea79937e3e51491899cd369d81aa65816f26fb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "08815fbf86ad9b98954e087c3f8a2b94b84c999a9da5edcb9df9a0bd4d566570"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/answer.md",
+      "sha256": "cb0c3af707c8759f7979becaaeea79937e3e51491899cd369d81aa65816f26fb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/grading.json",
+      "sha256": "9c199985a47a4e081e2777e25d94d27878e2e0f0a378c58612546e9331c11d60"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.result.txt",
+      "sha256": "e07d0a234752a1d1791ba6218230c61e0f80f226eb3c033bf0e88a131b19a4c9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "df42b073543f0242241938f3a1fe860cab26bcae9def15318ad7eca028292ac9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/manifest.json",
+      "sha256": "f63ce51748f50667694d9fa80c31760717a40b42aea769b950269012e86b98bc"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/manifest.json",
+      "sha256": "5ec2f591ce8ca6edc84541f2481805b36397af51628a5e66414cfccf39d64114"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/prompt.txt",
+      "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/answer.md",
+      "sha256": "d765197cb6581e8333c4ce75098d521ddc0abb40c4e89800f56e243e53af5c91"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.result.txt",
+      "sha256": "d765197cb6581e8333c4ce75098d521ddc0abb40c4e89800f56e243e53af5c91"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "95e91e52decfc1e33c10e4179b9ad267e17fcf4c56616432a47b962a9d3aa4ef"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/grading.json",
+      "sha256": "3556529040a0498a23663bad342bd24b7fb092b21ecc898e437c51ba1a3fdd15"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.result.txt",
+      "sha256": "9859320c3d80902f1305adb661690392af7aef7e4dad2fc6f54f2ba689a24416"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "e920a7a296e742a6d94fedcf49affbaa19c7e404b984fa70404ce0aa6fd50088"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/manifest.json",
+      "sha256": "c367f57feed4b0bc72fde004793f6a0799f7adcc67cec50e6e97dd5cce740432"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/manifest.json",
+      "sha256": "e9846eb1a855a3393c51f73b7bd96046badf225cb50c334dfb6cfb826f5b6b45"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/prompt.txt",
+      "sha256": "711e1fb56bb48280ef8bd8526f0e3b795d26ff11002e5877dfdb53b01dd7d6cd"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/answer.md",
+      "sha256": "b04a2bfc9b77f972209234d5e9b7cc35f99b738a643b04542496d5ac7e76eb27"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.result.txt",
+      "sha256": "b04a2bfc9b77f972209234d5e9b7cc35f99b738a643b04542496d5ac7e76eb27"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "97da0dc66e6b9ebcb9fa0c2b729e1182df3ef6c341b7809fa59844f1058da21d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/grading.json",
+      "sha256": "790296102e56840b019f4d908462fcc23c557506ad3386c9eb63b95436bdae9d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.result.txt",
+      "sha256": "bd0ef2ea9680357b733741e32f878b2463f978fe3eea09bcd475d56ce862d370"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "6f937c9adcf53b16266f0b3ef08f97fe9480c3250b05c85de03cb94c363c1ad3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/manifest.json",
+      "sha256": "c65865df30f2efe7e469a0b4d85a1e66b513ba2767ab68eb4a70601287cbefb1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/manifest.json",
+      "sha256": "5fae80c9203e58f64a81a3f26aaf67295521751d611728ada17f2dc9fd6807d5"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/prompt.txt",
+      "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/answer.md",
+      "sha256": "30f44c2b06c4d852a637ed0ae4196f9405a19ebb88dbbbbf76f6140bee40d8b1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.result.txt",
+      "sha256": "30f44c2b06c4d852a637ed0ae4196f9405a19ebb88dbbbbf76f6140bee40d8b1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "212da36a89456491a93e90e855738992847de15f3724a690d18a13c1ec9182a3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/grading.json",
+      "sha256": "24c697fe54250120ab9bdb0029af9e70e750df65cc977937a1a561046cb98205"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.result.txt",
+      "sha256": "584cdeaf22792f669013d4ea5eb815459f5b1cbdf0df9ad4ae4c62cc9d481863"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "8730b48e48013f669570bc9ff3f9d35aac999f718d91ed94a841ceb5f2b82fd9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/manifest.json",
+      "sha256": "6818e2f249b608b7129c48f556e8b5c478a5a6cba1301bbc1ada2fa49f50c958"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/manifest.json",
+      "sha256": "3a520f3ec470d6b1cad6618f2060ebac62d0a2cf31d6debc80e224be05cf98d6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/prompt.txt",
+      "sha256": "61817d8688a2c20f22a2343728629c654a4654bf2672336f92a09104210bc2e1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/answer.md",
+      "sha256": "8129c6ffe6dea9d97d35c8a17cb6afc0d8c4b3d6d45aa58d1f91a0669eb3c970"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.result.txt",
+      "sha256": "8129c6ffe6dea9d97d35c8a17cb6afc0d8c4b3d6d45aa58d1f91a0669eb3c970"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "983fdfec23989e1ac9e3fe2708f05981d2483c1cd3db2e18fa5d4a1b545dea07"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/grading.json",
+      "sha256": "c36803aff8de046efb5166ff5671a1cbfd88318af957bded79e2ea3f84fbb922"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.result.txt",
+      "sha256": "743f83ec07c51b3a09ea4ad4dfa1729475c45e9da62d5cacb2c23121687bc852"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "5d00609c36d9a39a5ed24968ab7a72b27abb2dfa0d54451693a915a7e16b4857"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/manifest.json",
+      "sha256": "96d638cd7d461684f57d2f604747db3c5d5b2073da2a49617e012946a8294b3c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/manifest.json",
+      "sha256": "0c5171d3b1592894b45aee7e8e7d09ff5721b623d5648ce0b940f6dfaae2316b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/prompt.txt",
+      "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.result.txt",
+      "sha256": "dd4a58604070911a984a3efe01fca0df7a66edff76adce6d2309424ce13d812a"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.stdout.attempt-1.txt",
+      "sha256": "58445734696bedcd6de5ca1ef93d54e6ec02b7c325136ff4e68bd85d98c8d416"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/manifest.json",
+      "sha256": "ac48ad0dc0249cadfe789a8b71ddfbee83d97b9de62979d7286a22cf538e9cb9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.result.txt",
+      "sha256": "95430e266811c0293083d2f21e97431a719d82425d0e402df4dd3ad9075210a8"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.stdout.attempt-1.txt",
+      "sha256": "9d248d1f7417b64e8f2bbcf027ed00ccf5ec3f223f53d63fef81812de36f7f1b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/manifest.json",
+      "sha256": "d5717473810f4c356677aecb36918944f5e3244dc7264e0162ba3af9c3c76754"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.result.txt",
+      "sha256": "04400c509c7cff0d31b05771bbc0fc2d2eeadaeae5f8d60720f06668c8e99686"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.stdout.attempt-1.txt",
+      "sha256": "1aea20ddcdbb0da6688d7c49909caf64aff58e0f07f98836548e1cc73c3e2b10"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/manifest.json",
+      "sha256": "e6389aa37a5c7a7ec6570e65c620919fccb3b329a05f8ed3c2c32b52a8d327d9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.agy.json",
+      "sha256": "8fdc762071f25fdda740df84cc7b7392940881085d84e420809fc4baf8b58b91"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.claude.json",
+      "sha256": "000f3647c059a787debb0e7dbb21d7f2b8630e783bed369576a703a1008d1008"
+    },
+    {
+      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.codex.json",
+      "sha256": "417da1c6e986f6d612678447edda37f0a8bf98e23ae1e3b69bcc1308837f06e8"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.result.txt",
+      "sha256": "667847a7a2079a209e28c1e152db201cac8b116547302bcc5375e5e4e826c0c7"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "eb717e54dfab7a9c8401b8906d7d6e4af8c4691dee91132c5760844571026a68"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/answer.md",
+      "sha256": "667847a7a2079a209e28c1e152db201cac8b116547302bcc5375e5e4e826c0c7"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/grading.json",
+      "sha256": "e76b72c44a8a2700b1b9aa6b254f970d3bc7cc15823e2390fcb1fa346ba0b76e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.result.txt",
+      "sha256": "4ef4234f2f5a5f70dad6f4025f7659583e299ef088660e9a0731cb6f7b3fb9e3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "4b9ec05be40b0704330d531096607431b4a5644b615e642a00ae64e49e295293"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/manifest.json",
+      "sha256": "d809d1d414cf9f8b205a28c62e2ab68e81ae99f397ffc7b675516c73a128019c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/manifest.json",
+      "sha256": "4cac53e2b1764eb037cbe172d05256aabe8f601e064e7a61cfe04f3508dfb119"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/prompt.txt",
+      "sha256": "feffc136e96606f2c716f18d088909b57e99ca5a944b69a6a48a2663cd067ba8"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.result.txt",
+      "sha256": "299dfcf725594f6b7923ae7b9e4cb35cad6d1de6a876b7f76a0829bf6ebb5f71"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "74538a073c6f8efbbecd42d3aa7282f4359571ac8758eb6b0b19f4f5c178c979"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/answer.md",
+      "sha256": "299dfcf725594f6b7923ae7b9e4cb35cad6d1de6a876b7f76a0829bf6ebb5f71"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/grading.json",
+      "sha256": "25845ef6b1e40e9092a1bf308617a6d3d0f4fbdb6205a898dea386273f55126a"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.result.txt",
+      "sha256": "e991c500752a08e19cdcae8cff63a06d32417cdcdea1c393fb6da271f929c098"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "18ef6ccc7884ffdd4d5fcb038e62481e880ffae6c432e1ea5e0d136f71c9b366"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/manifest.json",
+      "sha256": "1d090f455917a17d2c74646cace1849dd02c5984bfb42448ec720e4e763a0336"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/manifest.json",
+      "sha256": "fbd48269aece1fccc55aa5ec9853e48cec4f902cf8a3bdbadec4c3d4bae64f62"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/prompt.txt",
+      "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/answer.md",
+      "sha256": "0ece5f66ddc7813df9411b6db4a38a94fd56a162e2f873e18f8583d08082671c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.result.txt",
+      "sha256": "0ece5f66ddc7813df9411b6db4a38a94fd56a162e2f873e18f8583d08082671c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "5bfb068c2bd7e925ef6772f00c027810a03a656d2217e984e772115e89bccfd1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/grading.json",
+      "sha256": "ff385d7314de42708528b4e9b8c98a7f8adccb40b4ccfb103284514ee7b770a9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.result.txt",
+      "sha256": "460c490a5445056224dbe3765ebe9ad984ee24c8a18c553a537f3475c54d7eab"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "ee61fc497eca308074e8cd19b529721b7b9343bbf89b024a5c7581ac5f3d1127"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/manifest.json",
+      "sha256": "94e5dc5a57f459281655d961abfc7b45a5b1a0773b322616cd80629539d1d598"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/manifest.json",
+      "sha256": "e8da26156400867403257071b23cc271dac315c3e41445663edec21d48272f87"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/prompt.txt",
+      "sha256": "55744cc4a1170884667bc79a8dfe693940acaf3592b85b4f2b532c3058c203e6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/answer.md",
+      "sha256": "efab904c267517341dc0a15d1946617545e469559f130f869122fb1e1f265b1d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.result.txt",
+      "sha256": "efab904c267517341dc0a15d1946617545e469559f130f869122fb1e1f265b1d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "f7677f07c1050c52b706bd8a16bcf54623515c2e0e07eb0e2f98c372a08c9556"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/grading.json",
+      "sha256": "144db713a0d282f76f48bf3437f44a8b0043a3129ebb6c6f23dd45604c038149"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.result.txt",
+      "sha256": "f8e14814154421c5fe18e82acb0e6dd179f84114fb5876a348d58687cb453738"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "06af3a9cc04cced1d5b4da5548c1f5cf5fb75a2a629c306cb5250fb92ae3ede8"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/manifest.json",
+      "sha256": "a8b287d1fd0388f4e386a35ce7f5d6c96da0e2a384ca27d66d68e039e9fcc6d0"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/manifest.json",
+      "sha256": "20e54588756e85007afcc16b085b7c4b0823a10e6714bd594347433a5409b8fb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/prompt.txt",
+      "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/answer.md",
+      "sha256": "725b8ab592593f2b2d31085266cff384e933c6b1bdd0fd373e72b33f245da2f5"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.result.txt",
+      "sha256": "725b8ab592593f2b2d31085266cff384e933c6b1bdd0fd373e72b33f245da2f5"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "0cf35adec7888bc286898d5f82611e9d1c3c215a9e6f495038a13792f0a63979"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/grading.json",
+      "sha256": "91cc1ec91efaa2f3086b155d5ba06e18cf8dfaff6d8faeb9139b128b3535fc4c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.result.txt",
+      "sha256": "bb8ac8d871f5253fab66b69b86203e4ebfb583e1bc1b457f953409e3437c11f6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "e4d1848a788e1ce5d06ee23f92d758da889e9c307dc593688d513a5b2c1d135a"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/manifest.json",
+      "sha256": "42a126de28357a29e41839f49f540b6703b27cfdfcfd856fb3e78da3b3677b5f"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/manifest.json",
+      "sha256": "0359e2ad986ecb57bc12aa956c2d5656549e9aeee3e971bb8032f92c2308c656"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/prompt.txt",
+      "sha256": "087e424f93d38f859923cb5a06bebfdd069bd0ce046a17de62e7c1b278c52b9a"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/answer.md",
+      "sha256": "b114a158a4950d4e07aa21e77ce4dd0cfb29a948bdafaddae638b1ffbc48a9fa"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.result.txt",
+      "sha256": "b114a158a4950d4e07aa21e77ce4dd0cfb29a948bdafaddae638b1ffbc48a9fa"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "046182f3593074f1a64a3f073a6a52c6c3c6db2480cbed03bff847498511f067"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/grading.json",
+      "sha256": "c3cd6deb9ae7b0abc7ea422c8c0316417b784e88fc137939fa7b50dcbe61187e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.result.txt",
+      "sha256": "7a9a152eb0db4e7d68bc1bde1762f2ee9b10d89d6fd0dbbffa7ec974bd9cf1f7"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "28d5b4af6fb57741eb1927979a8e25f571fde9cec3a895fd37f3a566f19de0d9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/manifest.json",
+      "sha256": "c9f64bf55f240a1f38b2a19a014ca2ff6a1280ff6e06c9ba1f70be975fbc6335"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/manifest.json",
+      "sha256": "548441c42bf25a38c8122fb6a40c3400fa4a57e67c449e9c5f34cfc7c3c5d0a6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/prompt.txt",
+      "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.result.txt",
+      "sha256": "709b42000f175f154107046d084532b9e2f28b507ce30a272ae365083108fec3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.stdout.attempt-1.txt",
+      "sha256": "271bb9a42ab466ee07854f76421a0e8c24c97e58d82495a59b42d9cd953f72d6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/manifest.json",
+      "sha256": "bbf7da5dd9344a1f0bbe06cc883781cbb65ad1a457236cd2a3f831ef04951e1e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.result.txt",
+      "sha256": "ff4a8ca14e771cbca7c8df11fb3517c49280c3d315b7d56ae254b37ab7fb3ee4"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.stdout.attempt-1.txt",
+      "sha256": "92573601a26447148e1783e577c69f5390b32a1a6d422986a14c50d9a2b6958e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/manifest.json",
+      "sha256": "e9c8d79d875fa4f97ecce56204a2c000f6367512c23e9f597b04f430f4cb2b52"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.result.txt",
+      "sha256": "85ea2b05066e1565a1b580f687ed1e8defaf225d4298619b657f9871af87361f"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.stdout.attempt-1.txt",
+      "sha256": "049e9821e6c8e68d4faae35cc3908e9b33cca44019bdba63412032e6dacdb920"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/manifest.json",
+      "sha256": "cbb1b6d70571a8c76f848181249acf00c887488a9ce66de19ef187b9d21684c2"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.agy.json",
+      "sha256": "969a8f3a29f9714ca803c5cedb3c618d42a0460864b4bd1bf0e61160a9bb1562"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.claude.json",
+      "sha256": "61a9b13e34708ce4370731e5e6d40d7c2335b91e6d88ba647c3a7c13db18cfe2"
+    },
+    {
+      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.codex.json",
+      "sha256": "6209d11e712407d21127f4ae95cc3e88b9395085dfa33d8a20eb5d230079d3b7"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.result.txt",
+      "sha256": "34e63e9e571dafdcf63fae20daed118295c7e8f18087b04f7d7d368a7f299cde"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "5277c884b2336407518e67010db35ff906bcb62f82f72a6813a992ef76da09aa"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/answer.md",
+      "sha256": "34e63e9e571dafdcf63fae20daed118295c7e8f18087b04f7d7d368a7f299cde"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/grading.json",
+      "sha256": "1b5901b1418cf793e38b4cd5f2564a8bbb7e0b2f7367176f2cf2fd12e211cfa0"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.result.txt",
+      "sha256": "ea46639f1cbb6e9a78aa966f73a93b07c91ea9dbfb0dc67b73c689e11bd23c76"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "d2366db83362e8a5752f494f6aaf2ff6afdb2046010998e3920b91f079378d5d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/manifest.json",
+      "sha256": "9bbf5d749b41fc18f81d1e5f6d0bb4f415b6f1ff24b74ac10f3846f2f56e6f16"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/manifest.json",
+      "sha256": "bdabac9271b02972b9d2aad92d5a87407f85fea0ae38abeb50a335412a738047"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/prompt.txt",
+      "sha256": "b478b2993534f1a7503ff63218a53011dd69fc773df9a570b626614da3f5c2b1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.result.txt",
+      "sha256": "acb913ca81a12cad71ee4a66ec1152d69b13a77592053b774f04bf15bca6f1a1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "3c22b29346d7ddd73bc88512d54bb3f3fadf805f7135f7668bc0f3edffd051a3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/answer.md",
+      "sha256": "acb913ca81a12cad71ee4a66ec1152d69b13a77592053b774f04bf15bca6f1a1"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/grading.json",
+      "sha256": "36fa8c798c2d2c63b39783c44fff804585f4b217b5834b8e89d0b8f621ac6e2e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.result.txt",
+      "sha256": "a26eeaffe3ce8e986f608e85b4ee5342e5c8a1038ef884f0493dba9df8fc0960"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "f215c0cd54f9e570447353a7ba70cd6e0d4b4a532c88c3df67fda310dd9b8a73"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/manifest.json",
+      "sha256": "ac4302dc1e1e0a8a28a76decfed9234c1d7f27da867e45a5cfb7f2a533c9c0ae"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/manifest.json",
+      "sha256": "9d57c4a2bb4fb8819c43fd0fe51eaae587d253e85f7a6f0e3e2793e0c980a4c2"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/prompt.txt",
+      "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/answer.md",
+      "sha256": "bb38c2711acaf078ec42438afed1bbf3efc21ce499582c4d869bc7947a6f1cbc"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.result.txt",
+      "sha256": "bb38c2711acaf078ec42438afed1bbf3efc21ce499582c4d869bc7947a6f1cbc"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "4658e3492dcaf815d220dcd27c53eb8da23ad3fb9d6fa11ff3682d3bb91ef289"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/grading.json",
+      "sha256": "a3bac417076bd7dc82039ec976fc89e15796d1e4c0a69385a632fed6ba4e2cf9"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.result.txt",
+      "sha256": "02018d4db2043fcdb2f401e45bf9fe76d78759f9c7fff9798ea137f787545105"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "c2e81431aa8f73286c81bb65fe8946ef1272f05d15b5c7632ba33e29dd4688bb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/manifest.json",
+      "sha256": "ccbcf2fbc2d8065f200f12cfe8e94ebf5acd647bb19b97c949e9ee0b640fbf0f"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/manifest.json",
+      "sha256": "3b78575af5bab126c00b6ceafa9bacb5d6f052dcff29b25af6e1710cc7d02be3"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/prompt.txt",
+      "sha256": "4e40695cca27b8e92a7b1b739eab4425badffd1195f8070d06c4b06ddb5971ca"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/answer.md",
+      "sha256": "2f36f090c6eac39d489664be6cb4ddef2a80a7ebaac25e2000f199ada0f37a5b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.result.txt",
+      "sha256": "2f36f090c6eac39d489664be6cb4ddef2a80a7ebaac25e2000f199ada0f37a5b"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "4b7219edb3e3f02a235ddc63b9c344cb68fa2d28693a02407a78bb83e4ab2cca"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/grading.json",
+      "sha256": "7bf77d5115c7d5913807fedef7d0069177162f4bf941b8cebac19575c2782b38"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.result.txt",
+      "sha256": "96762b69a360c940b63fbae6a078cb519cf57d356c01eb8164410e5c5ad6a2ba"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "d742ffc638ed9b47036fcfb39ac4fd7ea9412c60f1484ce097aaa0a1dc860b61"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/manifest.json",
+      "sha256": "ad37afafa5017fb3926f25b25a205b06e23a8f728a14d9ce84018837c0ed5384"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/manifest.json",
+      "sha256": "6b76ee069e05615b88fa5623ee556ed013312ac0d527c8514e9ce097caf26ca6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/prompt.txt",
+      "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/answer.md",
+      "sha256": "ef3287ca911716f9227c9f648d1d7cfe5f95431e4b0f42c6fae27da106a88748"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.result.txt",
+      "sha256": "ef3287ca911716f9227c9f648d1d7cfe5f95431e4b0f42c6fae27da106a88748"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "e159b1d4664fdcf871121276a990a5a293e4e3a042d48795692212f7b7113c8f"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/grading.json",
+      "sha256": "08089097e83e0eb47a216c2393dde0e655f904334be6612f2b2be0a465f362ea"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.result.txt",
+      "sha256": "505c479c2102bc91cee6e5042ae4a2045be44072fce39a600d1e88f5c8b8a425"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "4fb356a8f9c083a6c5b0f8bc9c2740866a9fa15d856728e57af78cc5df0774fc"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/manifest.json",
+      "sha256": "0f7364aff9ecb60fc7e602e0adc73fc2121a86e877c58dd7bb18568c62aab03f"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/manifest.json",
+      "sha256": "6ed2a475525a5e81c9b6d481c8ad7a71915d36e9668f8f6e52d4a9e5d8c28ee2"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/prompt.txt",
+      "sha256": "52596c2459deedd5a78d4d5d9947024539b49dc5a62e9d1baa65c8e86e9c232c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/answer.md",
+      "sha256": "157210e9a06a73793db72ebffedd832e90ce7fa5510b0ff1363ad6f70f2b766c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.result.txt",
+      "sha256": "157210e9a06a73793db72ebffedd832e90ce7fa5510b0ff1363ad6f70f2b766c"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "f3bf311688d69142223873635c0c99ee9bfef1f9a58a5f1d7a1232f69fad87ec"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/grading.json",
+      "sha256": "f178c091c1709f051e378dd5307fdda13716defa5816a2f357f47ee7a61dcb61"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.result.txt",
+      "sha256": "05975f778454246aca3cf50011e3d0b75cfff5a88fcfb2d2926e23aa4ed4e33e"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.stdout.attempt-1.txt",
+      "sha256": "88cede93fce3c6cb4485e7622e4767542c214fc7b794a67b69d3cc2e50489665"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/manifest.json",
+      "sha256": "b7a88ab90f946310d366a57c6cbe7844608768646f7cf881a2251a9c6b71b425"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/manifest.json",
+      "sha256": "5c62534b1a751db33f72c72c58c2806a637c0460703b113adc747d308d9f09e6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/prompt.txt",
+      "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.result.txt",
+      "sha256": "e87467eb3a0f5e474b93c3719a6f4282dc5553d7e34ee714b1ae174a92edc9b6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.stdout.attempt-1.txt",
+      "sha256": "eb003987049f1a97a9938ec4f3e49daa4557094f077fc1507329028fe3dc3cc6"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/manifest.json",
+      "sha256": "c81072b958ef24447989ba58fc458cbb1b8fdcc6533f2a0390e16c2b54280283"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.result.txt",
+      "sha256": "4f6e51b300c082363df02d4f87108f942acf9254ba7706a23a83756c1d7cbf15"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.stdout.attempt-1.txt",
+      "sha256": "a8499418547e732704e9b03be9a9e801d67518902ceaa6d2da2f1aa87d406eb8"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/manifest.json",
+      "sha256": "9132dde3fdc2ffab2b857420d0dc502b8750625f9c4e7a7554b044dc1e556f33"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.result.txt",
+      "sha256": "0cd4d1accab8ce4d74c2429a7eb62113e6552d68b94d49c86b207cf0071db959"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.stdout.attempt-1.txt",
+      "sha256": "3bd878403f62e8958380676c4aa447f5bf9a21d76174d2471a00e3a432b1398a"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/manifest.json",
+      "sha256": "3d37aebf74ef4ae7e9f3a1bbd8e1d65dc731536ff974e243c5719a0caa740537"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.agy.json",
+      "sha256": "c11edbdfa07faf977ee26991b4fb043612500ffdff50242afb507110d9cfebfe"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.claude.json",
+      "sha256": "886a1bdcfb234fe91bf35891cf6effd07de3ae147d01ec0872c5493ca376d12d"
+    },
+    {
+      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.codex.json",
+      "sha256": "d2e98aa02d4ef2ae4b135f7708956aabe6e0aaf5c0fa24880c9830a5d0f3871d"
+    }
+  ],
+  "native_counts": null,
+  "cli_versions": {
+    "agy": "1.4.2",
+    "claude": "2.1.302",
+    "codex": "0.163.0"
   },
   "certified_by": "delta-gate"
 }

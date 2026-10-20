@@ -5,16 +5,14 @@ durable run state, and peer-round policy live in later layers.
 """
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import math
 import os
 import re
-import stat
 import subprocess
-import sys
 import time
+import tomllib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -23,7 +21,6 @@ from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .artifacts import ArtifactLimits, ArtifactRef, ArtifactStore, canonical_json
-from .agy_guard import AgyReadOnlyGuard, _BINARY as _AGY_DIRECT_BINARY, validate_agy_readonly_guard
 from .errors import (
     ArtifactError,
     ProviderProtocolError,
@@ -32,7 +29,7 @@ from .errors import (
 )
 from .process import (
     DEFAULT_EXECUTOR_SLOTS, ProcessCommand, ProcessResult, ProcessStatus,
-    build_child_environment, default_claude_adc_path, default_claude_vertex_route,
+    build_child_environment, default_claude_adc_path,
     run_command,
 )
 from .skills import SkillAdmission
@@ -41,22 +38,25 @@ from .skills import SkillAdmission
 _READ_ONLY = "read-only"
 _REPO_WRITE = "repo-write"
 _EXECUTION_CLASSES = frozenset({_READ_ONLY, _REPO_WRITE})
+_ROLES = frozenset({"executor", "evaluator", "owner"})
+_MCP_WRITE_TOOLS = {
+    "slack": ("conversations_add_message", "slack_send_message", "slack_reply_to_thread", "slack_update_message", "slack_delete_message"),
+    "jira": ("jira_create_issue", "jira_update_issue", "jira_add_comment", "jira_transition_issue", "jira_delete_issue"),
+    "github": ("create_pull_request", "merge_pull_request", "create_issue", "add_issue_comment", "push_files", "create_or_update_file", "delete_file"),
+    "n8n": (
+        "add_data_table_column", "add_data_table_rows", "archive_workflow", "call_agent",
+        "create_agent", "create_data_table", "create_folder", "create_workflow_from_code",
+        "delete_agent", "delete_data_table_column", "execute_workflow", "move_workflows_to_folder",
+        "mutate_agent", "publish_agent", "publish_workflow", "rename_data_table",
+        "rename_data_table_column", "restore_workflow_version", "revert_agent", "test_workflow",
+        "unpublish_agent", "unpublish_workflow", "update_agent_integration", "update_folder", "update_workflow",
+    ),
+}
 _CLAUDE_READ_ONLY_FLAGS = (
-    "--restricted", "--strict-mcp-config", "--tools", "Read,Glob,Grep",
-    "--permission-mode", "plan", "--permission-prompts", "none",
-    "--disallowedTools", "ExitPlanMode",
-)
-_CODEX_READ_ONLY_FLAGS = (
-    "--ignore-user-config", "--disable", "apps", "--disable", "plugins",
-    "--disable", "remote_plugin", "--disable", "hooks",
-    "-c", 'cli_auth_credentials_store="keyring"',
-)
-_CODEX_PROJECT_TRUST = "{codex_project_trust}"
-_CODEX_HOST_PLATFORM = sys.platform
-_CODEX_SYSTEM_CONFIG_PATHS = tuple(
-    Path("/etc/codex") / name for name in (
-        "config.toml", "managed_config.toml", "requirements.toml",
-    )
+    "--dangerously-skip-permissions", "--permission-prompts", "none",
+    "--disallowedTools", ",".join(("Edit", "Write", "NotebookEdit", "ExitPlanMode") + tuple(
+        f"mcp__{server}__{tool}" for server, tools in _MCP_WRITE_TOOLS.items() for tool in tools
+    )),
 )
 
 
@@ -88,9 +88,12 @@ class ExecutorProfile:
     timeout_ceiling: int | float
     characterized: bool = True
     profile_sha256: str | None = None
+    role: str = "executor"
 
     def __post_init__(self) -> None:
         profile_binding_key(self.executor_id, self.execution_class, self.quality_tier)
+        if self.role not in _ROLES:
+            raise ProviderRequestError("profile role must be executor, evaluator or owner")
         derived = self.digest
         if self.profile_sha256 is not None and self.profile_sha256 != derived:
             raise ProviderRequestError("executor profile digest differs from its descriptor")
@@ -129,7 +132,8 @@ class ExecutorProfile:
             "default_timeout": self.default_timeout,
             "timeout_ceiling": self.timeout_ceiling,
             "characterized": self.characterized,
-            "schema_version": "fanout-executor-profile-v2",
+            "schema_version": "fanout-executor-profile-v3",
+            "role": self.role,
         }
 
     @classmethod
@@ -139,7 +143,7 @@ class ExecutorProfile:
             "adapter_class", "capabilities", "executor_id", "execution_class",
             "quality_tier", "requested_model", "requested_effort", "cli_version",
             "initial_argv", "resume_argv", "default_timeout", "timeout_ceiling",
-            "characterized", "schema_version",
+            "characterized", "schema_version", "role",
         }
         if not isinstance(value, Mapping) or set(value) != fields:
             raise ProviderRequestError("executor profile descriptor fields are invalid")
@@ -165,6 +169,7 @@ class ExecutorProfile:
                 default_timeout=value["default_timeout"],
                 timeout_ceiling=value["timeout_ceiling"],
                 characterized=value["characterized"],
+                role=value["role"],
             )
         except (TypeError, ValueError, ProviderRequestError) as error:
             raise ProviderRequestError("executor profile descriptor is invalid") from error
@@ -234,18 +239,12 @@ class ProviderRequest:
     staged_skill_admission: SkillAdmission | None = field(default=None, repr=False, compare=False)
     skill_delivery_sha256: str = ""
     skill_delivery_ref: ArtifactRef | None = None
-    agy_guard: AgyReadOnlyGuard | None = field(default=None, repr=False, compare=False)
     run_id: str | None = None
     task_id: str | None = None
     target_id: str | None = None
     inputs_digest: str | None = None
     seat_id: str | None = None
-    native_boundary: object | None = field(default=None, repr=False, compare=False)
-    native_controller: object | None = field(default=None, repr=False, compare=False)
-    native_verification: object | None = field(default=None, repr=False, compare=False)
-    container_boundary: object | None = field(default=None, repr=False, compare=False)
-    certificate_roots: tuple[Path, ...] = ()
-    canary_capture: object | None = field(default=None, repr=False, compare=False)
+    role: str = "executor"
 
     def __post_init__(self) -> None:
         if not isinstance(self.executor_id, str) or not self.executor_id or "\x00" in self.executor_id:
@@ -254,6 +253,8 @@ class ProviderRequest:
             raise ProviderRequestError("prompt must be text or bytes")
         if self.execution_class not in _EXECUTION_CLASSES:
             raise ProviderRequestError("execution_class must be read-only or repo-write")
+        if self.role not in _ROLES:
+            raise ProviderRequestError("request role must be executor, evaluator or owner")
         if self.session_id is not None and (
             not isinstance(self.session_id, str) or not self.session_id or "\x00" in self.session_id
         ):
@@ -273,6 +274,7 @@ class ProviderRequest:
             not isinstance(self.profile, ExecutorProfile)
             or self.profile.executor_id != self.executor_id
             or self.profile.execution_class != self.execution_class
+            or self.profile.role != self.role
         ):
             raise ProviderRequestError("request profile differs from executor or execution class")
         if (self.timeout_override_reason is None) != (self.timeout_override_review_sha256 is None):
@@ -291,9 +293,6 @@ class ProviderRequest:
             raise ProviderRequestError("over-ceiling timeout needs a reviewed override")
         if not Path(self.cwd).is_dir():
             raise ProviderRequestError("cwd must name an existing directory")
-        if (not isinstance(self.certificate_roots, tuple)
-                or any(not isinstance(root, Path) or not root.is_absolute() for root in self.certificate_roots)):
-            raise ProviderRequestError("certificate roots must be exact absolute paths")
         for name in ("context_sha256", "skill_bundle_sha256", "skill_delivery_sha256"):
             value = getattr(self, name)
             if value and (len(value) != 64 or any(char not in "0123456789abcdef" for char in value)):
@@ -313,14 +312,6 @@ class ProviderRequest:
                 or self.skill_delivery_ref.digest != self.skill_delivery_sha256
             ):
                 raise ProviderRequestError("skill delivery artifact reference is invalid")
-        if self.agy_guard is not None and not isinstance(self.agy_guard, AgyReadOnlyGuard):
-            raise ProviderRequestError("agy guard must be a controller-issued read-only guard")
-        if any(value is not None for value in (
-            self.native_boundary, self.native_controller, self.native_verification,
-        )) and not all(value is not None for value in (
-            self.native_boundary, self.native_controller, self.native_verification,
-        )):
-            raise ProviderRequestError("native seat boundary requires controller verification context")
         _artifact_parts(self.artifact_prefix)
 
     @property
@@ -351,8 +342,7 @@ class ProviderResult:
     stderr_digest: str = ""
     requested_model: str | None = None
     observed_model: str | None = None
-    candidate_export: object | None = field(default=None, repr=False, compare=False)
-    container_completion: tuple[str, str] | None = field(default=None, repr=False, compare=False)
+    launch_metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Copy the supported scalar usage surface behind an immutable mapping."""
@@ -379,6 +369,7 @@ class _Parsed:
     error: str | None = None
     observed_model: str | None = None
     successful_file_change: bool = False
+    observed_tools: tuple[str, ...] = ()
 
 
 class ProviderAdapter:
@@ -405,6 +396,7 @@ class ProviderAdapter:
             slot_timeout=request.slot_timeout,
             slot_root=request.slot_root,
             max_output_bytes=ArtifactLimits().max_file_bytes,
+            trusted_native=True,
         )
 
 
@@ -412,8 +404,7 @@ class ClaudeAdapter(ProviderAdapter):
     executor_id = "claude"
     capabilities = ProviderCapabilities(True, True, True)
 
-    def build_command(self, request: ProviderRequest, *,
-                      brokered_diagnostic: bool = False) -> ProcessCommand:
+    def build_command(self, request: ProviderRequest) -> ProcessCommand:
         session_id = request.session_id or str(uuid.uuid4())
         try:
             parsed_id = uuid.UUID(session_id)
@@ -434,23 +425,6 @@ class ClaudeAdapter(ProviderAdapter):
             else:
                 argv.append("--dangerously-skip-permissions")
         command = self._command(request, argv)
-        if brokered_diagnostic:
-            return command
-        if request.execution_class == _READ_ONLY:
-            if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
-                raise ProviderRequestError("Claude read-only credential route has a parent override")
-            if os.environ.get("AGY_ADC_AUTH") != "true":
-                return command
-            try:
-                adc = default_claude_adc_path()
-                route = default_claude_vertex_route()
-            except Exception as error:
-                raise ProviderRequestError("Claude read-only Vertex route is unsafe") from error
-            if adc is None or route is None:
-                raise ProviderRequestError("Claude read-only Vertex route is unavailable")
-            return replace(command, environment={
-                "GOOGLE_APPLICATION_CREDENTIALS": str(adc), **route,
-            })
         if (os.environ.get("AGY_ADC_AUTH") != "true"
                 or "GOOGLE_APPLICATION_CREDENTIALS" in os.environ):
             return command
@@ -496,19 +470,14 @@ class CodexAdapter(ProviderAdapter):
     def build_command(self, request: ProviderRequest) -> ProcessCommand:
         if request.session_id is not None and not request.resume:
             raise ProviderRequestError("Codex session_id is only valid when resuming")
-        if request.execution_class == _READ_ONLY:
-            _codex_read_only_host_config_preflight()
         if request.profile is not None:
             template = request.profile.resume_argv if request.resume else request.profile.initial_argv
             argv = _render_profile_argv(template, request.session_id)
             if request.execution_class == _READ_ONLY:
-                if argv.count(_CODEX_PROJECT_TRUST) != 1:
-                    raise ProviderRequestError("Codex read-only profile lacks exact project trust")
-                trust = _codex_project_trust_override(request.cwd)
-                argv = tuple(trust if arg == _CODEX_PROJECT_TRUST else arg for arg in argv)
+                argv = (*argv, *_codex_native_mcp_denials(request.cwd))
             return self._command(request, argv)
         sandbox = "read-only" if request.execution_class == _READ_ONLY else "workspace-write"
-        isolation = (_CODEX_READ_ONLY_FLAGS + ("-c", _codex_project_trust_override(request.cwd))
+        isolation = (_codex_native_mcp_denials(request.cwd)
                      if request.execution_class == _READ_ONLY else ())
         if request.resume:
             # `exec resume` does not expose `--sandbox`; Codex's documented config
@@ -531,6 +500,7 @@ class CodexAdapter(ProviderAdapter):
         error: str | None = None
         observed_model: str | None = None
         successful_file_change = False
+        observed_tools: list[str] = []
         for event in events:
             kind = event.get("type")
             if final and kind in {"thread.started", "turn.started", "item.started", "item.updated",
@@ -561,6 +531,12 @@ class CodexAdapter(ProviderAdapter):
                         r"this can degrade performance and cause issues\.", message,
                     ):
                         error = error or message or "Codex reported a structured error item"
+                elif isinstance(item, dict) and item.get("type") == "mcp_tool_call":
+                    server, tool = item.get("server"), item.get("tool")
+                    if isinstance(server, str) and isinstance(tool, str):
+                        observed_tools.append(f"{server}/{tool}")
+                elif isinstance(item, dict) and item.get("type") == "command_execution":
+                    observed_tools.append("shell")
             elif kind == "turn.completed":
                 final = True
                 observed_model = _optional_string(event.get("model"))
@@ -575,15 +551,17 @@ class CodexAdapter(ProviderAdapter):
                 detail = event.get("error")
                 error = _optional_string(detail.get("message")) if isinstance(detail, dict) else _optional_string(event.get("message"))
                 error = error or "Codex reported a structured error"
-        return _Parsed(session_id, answer, usage, final, error, observed_model, successful_file_change)
+        return _Parsed(session_id=session_id, answer=answer, usage=usage, final=final,
+                       error=error, observed_model=observed_model,
+                       successful_file_change=successful_file_change,
+                       observed_tools=tuple(observed_tools))
 
 
 class AgyAdapter(ProviderAdapter):
     executor_id = "agy"
     capabilities = ProviderCapabilities(False, True, True)
 
-    def build_command(self, request: ProviderRequest, *,
-                      brokered_diagnostic: bool = False) -> ProcessCommand:
+    def build_command(self, request: ProviderRequest) -> ProcessCommand:
         if request.session_id is not None and not request.resume:
             raise ProviderRequestError("agy session_id is only valid when resuming")
         if request.profile is not None:
@@ -596,30 +574,13 @@ class AgyAdapter(ProviderAdapter):
                 argv.extend(["--conversation", request.session_id])
             argv.extend(["--mode", mode, "--input-format", "stream-json",
                          "--output-format", "stream-json"])
-        guard = None
-        if request.execution_class == _READ_ONLY:
-            if brokered_diagnostic:
-                argv[0] = str(_AGY_DIRECT_BINARY)
-            else:
-                guard = request.agy_guard
-                if guard is None:
-                    raise ProviderRequestError("agy read-only request lacks a native guard")
-                validate_agy_readonly_guard(guard, request.cwd, request.profile)
-                argv[0] = str(guard.binary)
-            if not request.resume:
-                argv.insert(1, "--new-project")
         try:
             prompt = request.prompt_bytes.decode("utf-8")
             stdin = (json.dumps({"event": "user", "message": {"content": prompt}},
                                 ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         except UnicodeError as error:
             raise ProviderRequestError("agy prompt must be UTF-8 text") from error
-        if brokered_diagnostic:
-            auth_mode = {}
-        elif guard is not None:
-            auth_mode = guard.environment
-        else:
-            auth_mode = {"AGY_ADC_AUTH": "true"} if os.environ.get("AGY_ADC_AUTH") == "true" else {}
+        auth_mode = {"AGY_ADC_AUTH": "true"} if os.environ.get("AGY_ADC_AUTH") == "true" else {}
         return replace(self._command(request, argv), stdin=stdin, environment=auth_mode)
 
     def parse(self, stdout: bytes) -> _Parsed:
@@ -679,104 +640,14 @@ def _render_profile_argv(template: tuple[str, ...], session_id: str | None) -> t
     return tuple(session_id if arg == "{session_id}" else arg for arg in template)
 
 
-def _codex_project_trust_override(cwd: Path | str) -> str:
-    path = Path(cwd)
-    try:
-        canonical = path.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise ProviderRequestError("Codex read-only workspace must be canonical") from error
-    if not path.is_absolute() or path != canonical or not path.is_dir():
-        raise ProviderRequestError("Codex read-only workspace must be an absolute canonical directory")
-    # A whole inline table preserves dots and quotes in the exact project key;
-    # dotted CLI overrides split those characters as TOML key separators.
-    return f'projects={{{json.dumps(str(path), ensure_ascii=False)}={{trust_level="untrusted"}}}}'
-
-
-def _codex_read_only_host_config_preflight() -> None:
-    if os.name != "posix":
-        raise ProviderRequestError("Codex read-only host config preflight needs Unix paths")
-    system_dir = _CODEX_SYSTEM_CONFIG_PATHS[0].parent
-    try:
-        directory = system_dir.lstat()
-    except FileNotFoundError:
-        # With no /etc/codex, a writable parent can create one while a seat
-        # waits for an executor slot. stat follows macOS's /etc -> /private/etc.
-        protected_dir = system_dir.parent
-        try:
-            directory = protected_dir.stat()
-        except OSError as error:
-            raise ProviderRequestError("Codex system config parent cannot be checked") from error
-    except OSError as error:
-        raise ProviderRequestError("Codex system config directory cannot be checked") from error
-    else:
-        protected_dir = system_dir
-    if not stat.S_ISDIR(directory.st_mode):
-        raise ProviderRequestError("Codex system config directory is not a regular directory")
-    for path in _CODEX_SYSTEM_CONFIG_PATHS:
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            raise ProviderRequestError("Codex system host config cannot be checked") from error
-        raise ProviderRequestError("Codex system host config is present")
-    try:
-        mutable = (directory.st_uid == os.geteuid()
-                   or os.access(protected_dir, os.W_OK, effective_ids=True))
-    except (OSError, NotImplementedError) as error:
-        raise ProviderRequestError("Codex system config directory cannot be checked") from error
-    if mutable:
-        raise ProviderRequestError("Codex system config directory is writable by this user")
-    if _CODEX_HOST_PLATFORM == "darwin":
-        try:
-            forced = _codex_macos_forced_preferences_present()
-        except Exception as error:
-            raise ProviderRequestError("Codex managed preferences cannot be checked") from error
-        if forced:
-            raise ProviderRequestError("Codex managed preferences are forced")
-
-
-def _codex_macos_forced_preferences_present() -> bool:
-    core = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
-    create = core.CFStringCreateWithCString
-    create.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32)
-    create.restype = ctypes.c_void_p
-    synchronize = core.CFPreferencesAppSynchronize
-    synchronize.argtypes = (ctypes.c_void_p,)
-    synchronize.restype = ctypes.c_ubyte
-    is_forced = core.CFPreferencesAppValueIsForced
-    is_forced.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
-    is_forced.restype = ctypes.c_ubyte
-    release = core.CFRelease
-    release.argtypes = (ctypes.c_void_p,)
-    release.restype = None
-    refs: list[int] = []
-
-    def cf_string(value: str) -> int:
-        ref = create(None, value.encode("utf-8"), 0x08000100)
-        if not ref:
-            raise OSError("CoreFoundation could not create a preference key")
-        refs.append(ref)
-        return ref
-
-    try:
-        application = cf_string("com.openai.codex")
-        if not synchronize(application):
-            raise OSError("CoreFoundation could not synchronize managed preferences")
-        forced = []
-        for name in ("config_toml_base64", "requirements_toml_base64"):
-            forced.append(bool(is_forced(cf_string(name), application)))
-        return any(forced)
-    finally:
-        for ref in reversed(refs):
-            release(ref)
 
 
 class ProviderRegistry:
     """The executor-only registry; routing/evaluation targets are deliberately separate."""
 
     def __init__(self, profiles: Iterable[ExecutorProfile] = (), *,
-                 version_probe: Callable[[str], str] | None = None) -> None:
+                 version_probe: Callable[[str], str] | None = None,
+                 contract_probe: Callable[[ExecutorProfile], None] | None = None) -> None:
         registered: dict[tuple[str, str, str], ExecutorProfile] = {}
         adapters: dict[str, ProviderAdapter] = {}
         digests: dict[str, str] = {}
@@ -829,14 +700,16 @@ class ProviderRegistry:
         self._adapters = adapters
         self._profile_digests = MappingProxyType(digests)
         self._version_probe = _installed_cli_version if version_probe is None else version_probe
+        self._contract_probe = _installed_cli_contract if contract_probe is None else contract_probe
 
     @classmethod
-    def default(cls, *, version_probe: Callable[[str], str] | None = None) -> "ProviderRegistry":
+    def default(cls, *, version_probe: Callable[[str], str] | None = None,
+                contract_probe: Callable[[ExecutorProfile], None] | None = None) -> "ProviderRegistry":
         adapters = (ClaudeAdapter(), CodexAdapter(), AgyAdapter())
         versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
         models = {
-            "claude": ("claude-opus-5-5", "medium", "medium", "xhigh"),
-            "codex": ("gpt-6.1-sol", "medium", "medium", "xhigh"),
+            "claude": ("claude-opus-5-5", "medium", "medium", "medium"),
+            "codex": ("gpt-6.1-sol", "medium", "medium", "medium"),
             "agy": ("gemini-3.8-flash-high", "high", "high", "high"),
         }
         profiles = []
@@ -854,13 +727,14 @@ class ProviderRegistry:
                     initial, resume, timeout, timeout,
                     characterized=execution_class == _READ_ONLY and adapter.executor_id != "codex",
                 ))
-        return cls(profiles, version_probe=version_probe)
+        return cls(profiles, version_probe=version_probe, contract_probe=contract_probe)
 
     @classmethod
     def for_installed(cls, executor_ids: Iterable[str], *,
-                      version_probe: Callable[[str], str] | None = None) -> "ProviderRegistry":
+                      version_probe: Callable[[str], str] | None = None,
+                      contract_probe: Callable[[ExecutorProfile], None] | None = None) -> "ProviderRegistry":
         """Bind fresh native read-only profiles to the selected installed CLIs."""
-        base = cls.default(version_probe=version_probe)
+        base = cls.default(version_probe=version_probe, contract_probe=contract_probe)
         selected = tuple(executor_ids)
         if (not selected or any(not isinstance(executor, str) for executor in selected)
                 or len(set(selected)) != len(selected)):
@@ -877,7 +751,7 @@ class ProviderRegistry:
             if profile.execution_class == _READ_ONLY and profile.executor_id in observed
             else profile for profile in base._profiles.values()
         )
-        return cls(profiles, version_probe=base._version_probe)
+        return cls(profiles, version_probe=base._version_probe, contract_probe=base._contract_probe)
 
     @property
     def executor_ids(self) -> tuple[str, ...]:
@@ -895,15 +769,24 @@ class ProviderRegistry:
             raise UnsupportedExecutorError(f"unsupported executor: {executor_id}")
         return adapter
 
-    def select(self, executor_id: str, execution_class: str, quality_tier: str) -> ExecutorProfile:
+    def select(self, executor_id: str, execution_class: str, quality_tier: str, *,
+               role: str = "executor") -> ExecutorProfile:
+        if role not in _ROLES:
+            raise ProviderRequestError("profile role must be executor, evaluator or owner")
         key = profile_binding_key(executor_id, execution_class, quality_tier)
         profile = self._profiles.get((executor_id, execution_class, quality_tier))
         if profile is None:
             raise UnsupportedExecutorError(f"unsupported executor profile: {key}")
+        if role != profile.role:
+            effort = "high" if executor_id == "agy" else "xhigh"
+            initial, resume = _default_argv(executor_id, execution_class, profile.requested_model, effort)
+            profile = replace(profile, role=role, requested_effort=effort,
+                              initial_argv=initial, resume_argv=resume, profile_sha256=None)
         return profile
 
-    def admit(self, executor_id: str, execution_class: str, quality_tier: str) -> ExecutorProfile:
-        profile = self.select(executor_id, execution_class, quality_tier)
+    def admit(self, executor_id: str, execution_class: str, quality_tier: str, *,
+              role: str = "executor") -> ExecutorProfile:
+        profile = self.select(executor_id, execution_class, quality_tier, role=role)
         capabilities = profile.capabilities
         if (not capabilities.explicit_resume or not capabilities.stdin_prompt
                 or not capabilities.structured_output
@@ -915,16 +798,74 @@ class ProviderRegistry:
             raise ProviderRequestError("executor profile needs live CLI characterization")
         return profile
 
-    def assert_installed_version(self, profile: ExecutorProfile) -> None:
-        """Reject a changed licensed CLI before a pinned provider turn starts."""
-        if self.select(*profile.key).digest != profile.digest:
+    def assert_installed_version(self, profile: ExecutorProfile) -> str:
+        """Observe CLI drift and check supported grammar before spending a turn."""
+        if self.select(*profile.key, role=profile.role).digest != profile.digest:
             raise ProviderRequestError("executor profile drifted before provider launch")
         try:
             observed = self._version_probe(profile.executor_id)
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             raise ProviderRequestError("installed CLI version is unavailable") from error
-        if observed != profile.cli_version:
-            raise ProviderRequestError("CLI version drifted from the pinned executor profile")
+        self._contract_probe(profile)
+        return observed
+
+
+def _installed_cli_contract(profile: ExecutorProfile) -> None:
+    """Help is a local, no-model preflight; it cannot prove served identity."""
+    if type(profile.adapter) not in {ClaudeAdapter, CodexAdapter, AgyAdapter}:
+        return
+    argv = [profile.executor_id]
+    if profile.executor_id == "codex":
+        argv.append("exec")
+    try:
+        result = subprocess.run([*argv, "--help"], capture_output=True,
+                                timeout=10, check=False,
+                                env=build_child_environment(trusted_native=True))
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ProviderRequestError("native CLI contract is unavailable") from error
+    help_text = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    required = {"claude": ("--print", "--session-id", "--resume", "--output-format", "--disallowedTools", "--effort", "--dangerously-skip-permissions"),
+                "codex": ("--json", "--sandbox", "--model", "--config"),
+                "agy": ("--conversation", "--input-format", "--output-format", "--effort", "--mode", "--dangerously-skip-permissions")}
+    if profile.executor_id == "codex" and profile.execution_class == _READ_ONLY:
+        required["codex"] += ("--skip-git-repo-check",)
+    if result.returncode or any(flag not in help_text for flag in required[profile.executor_id]):
+        raise ProviderRequestError("native CLI lacks required structured output or invocation flags")
+    if profile.executor_id != "codex" and profile.requested_effort not in help_text:
+        raise ProviderRequestError("native CLI does not support requested role effort")
+
+
+def _codex_native_mcp_denials(cwd: Path | str) -> tuple[str, ...]:
+    """Merge per-tool denials without replacing native MCP transports or reads."""
+    home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    paths = [home / "config.toml"]
+    directory = Path(cwd).resolve()
+    paths.extend(parent / ".codex/config.toml" for parent in reversed((directory, *directory.parents)))
+    servers: dict[str, dict[str, object]] = {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            with path.open("rb") as stream:
+                configured = tomllib.load(stream).get("mcp_servers", {})
+        except (OSError, ValueError) as error:
+            raise ProviderRequestError("native Codex MCP policy cannot be read") from error
+        for name, config in configured.items():
+            if isinstance(config, dict):
+                servers.setdefault(name, {}).update(config)
+    options = []
+    for name, config in servers.items():
+        # CLI override keys are raw dot-separated paths, not TOML keys.
+        # A dotted server name cannot be targeted without replacing its config.
+        if re.fullmatch(r"[A-Za-z0-9_:@/-]+", name) is None:
+            raise ProviderRequestError("native Codex MCP server name cannot be safely addressed")
+        tools = tuple(tool for group in _MCP_WRITE_TOOLS.values() for tool in group)
+        existing = config.get("disabled_tools", [])
+        if not isinstance(existing, list) or any(not isinstance(tool, str) for tool in existing):
+            raise ProviderRequestError("native Codex MCP disabled tools are invalid")
+        denied = sorted(set(existing).union(tools))
+        options.extend(("-c", f"mcp_servers.{name}.disabled_tools={json.dumps(denied)}"))
+    return tuple(options)
 
 
 def _installed_cli_version(executor_id: str) -> str:
@@ -958,17 +899,17 @@ def _default_argv(executor_id: str, execution_class: str, model: str,
         return (base + ("--session-id", "{session_id}") + profile,
                 base + ("--resume", "{session_id}") + profile)
     if executor_id == "codex":
-        sandbox = "read-only" if execution_class == _READ_ONLY else "workspace-write"
-        pinned = ("-m", model, "-c", f'model_reasoning_effort="{effort}"')
-        isolation = (_CODEX_READ_ONLY_FLAGS + ("-c", _CODEX_PROJECT_TRUST)
-                     if execution_class == _READ_ONLY else ())
+        sandbox = "danger-full-access"
+        pinned = ("-m", model, "-c", f'model_reasoning_effort="{effort}"',
+                  "-c", 'approval_policy="never"')
+        isolation = ("--skip-git-repo-check",) if execution_class == _READ_ONLY else ()
         return (("codex", "exec") + isolation + ("-", "--json", "--sandbox", sandbox) + pinned,
                 ("codex", "exec", "resume") + isolation
                 + ("-c", f'sandbox_mode="{sandbox}"') + pinned
                 + ("--json", "{session_id}", "-"))
     if executor_id == "agy":
         mode = "plan" if execution_class == _READ_ONLY else "accept-edits"
-        approval = () if execution_class == _READ_ONLY else ("--dangerously-skip-permissions",)
+        approval = ("--dangerously-skip-permissions",)
         profile = approval + ("--mode", mode,
                    "--input-format", "stream-json", "--output-format", "stream-json",
                    "--model", model, "--effort", effort)
@@ -997,67 +938,37 @@ class RoutingTargetRegistry:
         return self._targets
 
 
-def _require_native_seat_boundary(request: ProviderRequest) -> None:
+def _require_native_read_request(request: ProviderRequest) -> None:
     if not isinstance(request, ProviderRequest):
         raise ProviderRequestError("request must be a ProviderRequest")
-    if (request.execution_class == _REPO_WRITE or request.target_id is not None
-            or request.inputs_digest is not None or request.native_boundary is not None
-            or request.container_boundary is not None):
-        if request.container_boundary is not None:
-            raise ProviderRequestError(
-                "public v2 or repo-write provider launch requires a release-certified container boundary"
-            )
-        if request.native_boundary is None:
-            raise ProviderRequestError(
-                "v2 or repo-write provider launch requires a validated native seat boundary"
-            )
-        from .native_boundary import validate_native_boundary
-        if request.profile is None:
-            raise ProviderRequestError("native seat boundary requires a pinned profile")
-        # Authenticate the descriptor before refusal, without constructing an
-        # adapter command. Task 12 must validate the exact built command.
-        validate_native_boundary(
-            request.native_boundary, request, None,
-            request.native_controller, request.native_verification,
-        )
-        raise ProviderRequestError(
-            "v2 or repo-write provider launch requires a live-certified credential-blind native seat boundary"
-        )
+    if request.role == "owner" or request.execution_class == _REPO_WRITE:
+        raise ProviderRequestError("shared-repository writes belong to the invoking owner CLI")
+    if request.retries:
+        raise ProviderRequestError("native automatic retries must be zero")
 
 
 def run_provider(request: ProviderRequest, *, registry: ProviderRegistry | None = None) -> ProviderResult:
-    """Execute v1 read-only turns; v2 and repo-write await live certification."""
-    if request.container_boundary is not None:
-        from .container_certification import require_owner_held_release_certificate
-        from .container_boundary import run_container_turn
-        require_owner_held_release_certificate(request)
-        return run_container_turn(request, request.container_boundary)
-    _require_native_seat_boundary(request)
-    return _run_provider_with_runner(request, registry=registry, runner=run_command)
+    """Run a trusted native read turn; owner actions stay with the invoking CLI."""
+    _require_native_read_request(request)
+    return _run_provider_with_runner(request, registry=registry, runner=run_command,
+                                     capture_native=True)
 
 
 def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderRegistry | None = None,
-                              runner: Callable[[ProcessCommand], ProcessResult]) -> ProviderResult:
+                              runner: Callable[[ProcessCommand], ProcessResult],
+                              capture_native: bool = False) -> ProviderResult:
     """Hermetic transport seam for tests; production callers use run_provider."""
     if not isinstance(request, ProviderRequest):
         raise ProviderRequestError("request must be a ProviderRequest")
-    if request.container_boundary is not None:
-        raise ProviderRequestError("container dispatch requires an owner-held release certificate")
     if request.profile is None:
         raise ProviderRequestError("provider request requires a pinned profile")
     selected_registry = registry or ProviderRegistry.default()
     profile = selected_registry.admit(
         request.executor_id, request.execution_class,
-        request.profile.quality_tier,
+        request.profile.quality_tier, role=request.role,
     )
     if request.profile.digest != profile.digest:
         raise ProviderRequestError("request executor profile changed before provider launch")
-    capture = request.canary_capture
-    if capture is not None:
-        from .canary_proof import CanaryTurn
-        if type(capture) is not CanaryTurn:
-            raise ProviderRequestError("Codex canary capture lacks authenticated authority")
-        capture.validate(request)
     request = replace(request, profile=profile)
     adapter = selected_registry.require(request.executor_id)
     # Claude makes the initial ID caller-owned. Establish it once before the
@@ -1069,13 +980,14 @@ def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderReg
     parsed: _Parsed | None = None
     attempts = 0
     for attempts in range(1, request.retries + 2):
-        selected_registry.assert_installed_version(profile)
+        observed_version = selected_registry.assert_installed_version(profile)
+        if ((request.run_id is not None or request.inputs_digest is not None)
+                and observed_version != profile.cli_version):
+            raise ProviderRequestError(
+                "recorded CLI version changed before launch; use a reviewed transition or fresh admission"
+            )
         command = adapter.build_command(request)
-        if capture is None:
-            last_process = runner(command)
-        else:
-            with capture.launch(request, command) as broker_command:
-                last_process = runner(broker_command)
+        last_process = runner(command)
         if last_process.status == ProcessStatus.SPAWN_ERROR and attempts <= request.retries:
             continue
         if last_process.status != ProcessStatus.SPAWN_ERROR and last_process.stdout:
@@ -1087,8 +999,18 @@ def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderReg
     assert last_process is not None
     duration = time.monotonic() - started
     result = _make_result(request, adapter, last_process, parsed, attempts, duration)
-    if capture is not None:
-        capture.finish(request, last_process, result)
+    from .diagnostic import describe_native_launch
+    result = replace(result, launch_metadata=describe_native_launch(
+        profile, command, observed_cli_version=observed_version,
+        observed_tools=parsed.observed_tools if parsed else (),
+    ))
+    if capture_native:
+        from .native_trace import capture_native_trace
+        trace = capture_native_trace(request, result)
+        result = replace(result, launch_metadata={**result.launch_metadata, "native_tool_trace": trace})
+        if request.run_id is not None and result.valid and trace["coverage"] != "complete":
+            result = replace(result, valid=False, reason="read-trace-unqualified",
+                             hint="native tool evidence lacks exact complete turn coverage")
     return result
 
 
@@ -1098,13 +1020,15 @@ def run_many(requests: Sequence[ProviderRequest], *, max_workers: int = DEFAULT_
     if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
         raise ProviderRequestError("max_workers must be a positive integer")
     for request in requests:
-        _require_native_seat_boundary(request)
-    return _run_many_with_runner(requests, max_workers=max_workers, registry=registry, runner=run_command)
+        _require_native_read_request(request)
+    return _run_many_with_runner(requests, max_workers=max_workers, registry=registry, runner=run_command,
+                                 capture_native=True)
 
 
 def _run_many_with_runner(requests: Sequence[ProviderRequest], *, max_workers: int,
                           registry: ProviderRegistry | None = None,
-                          runner: Callable[[ProcessCommand], ProcessResult]) -> tuple[ProviderResult, ...]:
+                          runner: Callable[[ProcessCommand], ProcessResult],
+                          capture_native: bool = False) -> tuple[ProviderResult, ...]:
     """Hermetic bounded-batch seam for fake process tests."""
     if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
         raise ProviderRequestError("max_workers must be a positive integer")
@@ -1112,7 +1036,8 @@ def _run_many_with_runner(requests: Sequence[ProviderRequest], *, max_workers: i
         return ()
     workers = min(max_workers, DEFAULT_EXECUTOR_SLOTS, len(requests))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_run_provider_with_runner, request, registry=registry, runner=runner)
+        futures = [pool.submit(_run_provider_with_runner, request, registry=registry, runner=runner,
+                               capture_native=capture_native)
                    for request in requests]
         return tuple(future.result() for future in futures)
 
@@ -1133,7 +1058,7 @@ def _make_result(request: ProviderRequest, adapter: ProviderAdapter, process: Pr
         valid, reason, hint = False, "process-error", process.error or "provider process evidence is incomplete or unsuccessful"
     elif parsed and parsed.successful_file_change and request.execution_class == _READ_ONLY:
         valid, reason, hint = False, "protocol-error", "read-only provider reported a successful file change"
-    elif parsed is None or not parsed.final or not session_id or not answer:
+    elif parsed is None or not parsed.final or not session_id or not answer.strip():
         valid, reason, hint = False, "protocol-error", "provider output lacks a final answer and exact session identity"
     elif request.session_id is not None and session_id != request.session_id:
         valid, reason, hint = False, "protocol-error", "provider returned a different session identity"

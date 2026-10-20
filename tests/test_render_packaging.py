@@ -43,7 +43,7 @@ def _plant(cache_dir: Path) -> tuple[Path, bool]:
 
 
 def test_render_emits_no_bytecode_from_either_path():
-    incoming = ROOT / "shared" / "skills" / "llm-council" / "scripts" / "__pycache__"
+    incoming = ROOT / "shared" / "skills" / "khenrix-wiki-sync" / "scripts" / "__pycache__"
     residue = MARKET / "claude" / "plugins" / "khenrix-utils" / "lib" / "__pycache__"
     planted = [_plant(incoming), _plant(residue)]
     try:
@@ -118,8 +118,6 @@ def test_render_removes_newly_declared_native_copy_but_keeps_ordinary_shared_ski
             f"---\nname: {name}\ndescription: test\n---\nbody\n"
         )
     (tmp_path / "capabilities.toml").write_text(
-        '[historical_only]\nskills = ["llm-council", "llm-forge"]\n'
-        'libraries = ["council", "forge"]\n'
         '[skill_delivery]\nskills = ["direct-copy", "external"]\n'
     )
     plugin = tmp_path / "marketplaces/claude/plugins/khenrix-utils"

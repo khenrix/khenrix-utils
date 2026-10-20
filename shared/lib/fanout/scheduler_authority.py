@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol, runtime_checkable
 
@@ -41,6 +41,11 @@ _MAX_ACTIVE_TASKS = 2
 _MAX_ACTIVE_SEATS = 6
 _MAX_AUTHORITY_BYTES = 256 * 1024
 _BLOCKED_HANDOVER_REASON = "blocked handover dependency"
+
+
+def _repository_writer(task: PlanTaskV1 | None) -> bool:
+    return task is not None and (task.execution_class == "repo-write" or
+        task.execution_class == "orchestrator-action" and bool(task.owned_paths) and bool(task.checks))
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +638,7 @@ class Scheduler:
         task = self._plan_tasks().get(task_id)
         if (not isinstance(self.plan, FanoutPlanV2)
                 or not isinstance(state, SchedulerTaskStateV2)
-                or task is None or task.execution_class != "repo-write"
+                or not _repository_writer(task)
                 or state.phase != "completed" or state.result is None
                 or state.handover_terminal is not None):
             raise SchedulerStateError("handover source is absent, amended, or unsettled")
@@ -801,7 +806,7 @@ class Scheduler:
         state = self._states().get(task_id)
         task = self._plan_tasks().get(task_id)
         if (not isinstance(state, SchedulerTaskStateV2) or state.phase != "completed"
-                or task is None or task.execution_class != "repo-write"
+                or not _repository_writer(task)
                 or state.result is None or not isinstance(terminal, HandoverTerminalV2)):
             raise SchedulerStateError("handover requires a completed repository writer")
         try:
@@ -831,7 +836,7 @@ class Scheduler:
         state = self._states().get(task_id)
         task = self._plan_tasks().get(task_id)
         if (not isinstance(state, SchedulerTaskStateV2) or state.phase != "completed"
-                or task is None or task.execution_class != "repo-write" or state.result is None
+                or not _repository_writer(task) or state.result is None
                 or self._lifecycle_controller is None):
             raise SchedulerStateError("handover requires a completed repository writer")
         binding = self._inputs.targets.get(task.target_id) if self._inputs.targets is not None else None
@@ -1057,6 +1062,43 @@ class Scheduler:
                 results.append(state.result)
         return tuple(results)
 
+    def _verify_owner_result(self, task: PlanTaskV1, state: SchedulerTaskState, result: ReconciledResult) -> None:
+        from .verification import (
+            CandidateReconciliationBinding, load_candidate_verification, validate_candidate_task_scope,
+        )
+        try:
+            original_baseline = self._repository_baselines.get(getattr(task, "target_id", ""))
+            verified = load_candidate_verification(
+                self._lifecycle_controller, self._artifacts, task_id=task.id, candidate_ref=result.artifact,
+                baseline=original_baseline,
+            )
+            validate_candidate_task_scope(verified.candidate, task.owned_paths, baseline=original_baseline)
+            baseline = (self._inputs.repo_baseline_sha256 if self._inputs.targets is None else
+                        self._inputs.targets[task.target_id].baseline_sha256)
+            sources = [self._plan_tasks()[task_id] for task_id in task.depends_on]
+            if (not any(source.execution_class == "read-only" and (
+                    self._inputs.targets is None or source.target_id == task.target_id) for source in sources)
+                    or any(source.execution_class == "repo-write" for source in sources)):
+                raise SchedulerStateError("owner action lacks its target's read-only proposal")
+            payload = canonical_json({
+                "schema_version": "fanout-owner-proposal-inputs-v1", "run_id": self._inputs.run_id,
+                "task_id": task.id, "plan_sha256": state.decision_plan_sha256,
+                "plan_revision": state.plan_revision, "inputs_digest": state.decision_inputs_digest,
+                "target_id": getattr(task, "target_id", None), "baseline_sha256": baseline,
+                "task_sha256": hashlib.sha256(canonical_json(task.to_dict())).hexdigest(),
+                "dependencies": [asdict(self.result_for(task_id)) for task_id in task.depends_on],
+            })
+            digest = hashlib.sha256(payload).hexdigest()
+            ref = ArtifactRef(f"results/owner-inputs/{digest}.json", digest, len(payload))
+            if (not task.checks or not verified.valid or verified.checks != task.checks
+                    or verified.baseline_digest != baseline or verified.candidate.source_candidate_digests
+                    or self._artifacts.read_bytes(ref) != payload
+                    or verified.reconciliation != CandidateReconciliationBinding(
+                        self._inputs.run_id, task.id, state.decision_plan_sha256, state.plan_revision, ref)):
+                raise SchedulerStateError("owner candidate result differs from checked proposal inputs")
+        except (CandidateValidationError, ArtifactError, TypeError, KeyError, AttributeError) as error:
+            raise SchedulerStateError("owner candidate result requires exact verifier evidence") from error
+
     def _verify_receipt(self, receipt: ReconciledResult, state: SchedulerTaskState) -> None:
         if (not isinstance(receipt, ReconciledResult)
                 or receipt.run_id != self._inputs.run_id
@@ -1066,6 +1108,9 @@ class Scheduler:
                 or receipt.inputs_digest != state.decision_inputs_digest):
             raise SchedulerStateError("result receipt is foreign or stale")
         self._verify_artifact(receipt.artifact)
+        task = self._plan_tasks()[state.task_id]
+        if task.execution_class == "orchestrator-action" and task.owned_paths:
+            self._verify_owner_result(task, state, receipt)
 
     def _verify_artifact(self, ref: ArtifactRef) -> None:
         _artifact(ref)
@@ -1390,7 +1435,7 @@ def _validate_task_state(state: SchedulerTaskState, task: PlanTaskV1, plan: Fano
     if isinstance(state, SchedulerTaskStateV2):
         terminal = state.handover_terminal
         if terminal is not None:
-            if state.phase != "completed" or task.execution_class != "repo-write":
+            if state.phase != "completed" or not _repository_writer(task):
                 raise SchedulerStateError("handover terminal belongs to non-completed writer")
             try:
                 artifacts.read_bytes(terminal.evidence)

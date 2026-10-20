@@ -71,6 +71,11 @@ _OBSERVATION_FIELDS = frozenset(
         "type",
     }
 )
+# Additive worker bookkeeping is not checkpoint identity. Retain it in the
+# observation digest while continuing to reject unknown fields and missing keys.
+_OBSERVATION_METADATA_FIELDS = frozenset({
+    "last_reinforced", "occurrence_count", "reinforcement_dates", "title_norm_key",
+})
 
 
 def _digest(data: bytes) -> str:
@@ -1199,7 +1204,9 @@ class MemoryCheckpointExchange:
         observation_id: int,
         observation: Mapping[str, object],
     ) -> tuple[str, str]:
-        if not isinstance(observation, Mapping) or set(observation) != _OBSERVATION_FIELDS:
+        if (not isinstance(observation, Mapping)
+                or not _OBSERVATION_FIELDS <= set(observation)
+                or set(observation) - _OBSERVATION_FIELDS - _OBSERVATION_METADATA_FIELDS):
             raise MemoryIntegrityError("observation schema does not match the pinned worker")
         expected_session = f"manual-{checkpoint.project}-claude"
         fixed = {

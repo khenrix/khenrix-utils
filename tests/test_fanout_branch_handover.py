@@ -529,6 +529,94 @@ def _loose_object_count(root):
                     if line.startswith("count: ")))
 
 
+def _identity_test_environment(tmp_path, monkeypatch):
+    global_config = tmp_path / "global-gitconfig"
+    global_config.write_text("[user]\n\tname = Global Fixture\n\temail = global@example.invalid\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Inherited Fixture")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "inherited@example.invalid")
+    monkeypatch.delenv("EMAIL", raising=False)
+
+
+def _remove_local_identity(root, role, field):
+    cases._git(root, "config", "user.useConfigOnly", "true")
+    if role == "committer":
+        cases._git(root, "config", "author.name", "Local Author")
+        cases._git(root, "config", "author.email", "author@example.invalid")
+    cases._git(root, "config", "--unset", f"user.{field}")
+
+
+def _identity_target_snapshot(root):
+    return tuple(sorted(
+        (str(path.relative_to(root)), path.stat().st_mode & 0o777,
+         path.read_bytes() if path.is_file() else None)
+        for path in root.rglob("*")
+    ))
+
+
+@pytest.mark.parametrize("role", ("author", "committer"))
+@pytest.mark.parametrize("field", ("name", "email"))
+def test_missing_local_identity_refuses_prepare_before_intent_or_mutation(tmp_path, monkeypatch, role, field):
+    fixture = _settled_writer(tmp_path, changed=True, baseline_mode=0o600)
+    scheduler, backend, journal, _controller, _owner, _candidate, _verification = fixture
+    root = scheduler.inputs.targets["address"].root
+    _identity_test_environment(tmp_path, monkeypatch)
+    _remove_local_identity(root, role, field)
+    before = _handover_mutation_snapshot(tmp_path, scheduler, backend, journal)
+    target_before = _identity_target_snapshot(root)
+    with pytest.raises(fanout.HandoverError, match=rf"{role} identity.*repository-local.*user.name.*user.email"):
+        _prepare_join(fixture)
+    assert _identity_target_snapshot(root) == target_before
+    assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == before
+    assert "address" not in journal.state.branch_handovers
+    assert journal.branch_record_for("address", "association") is None
+
+
+@pytest.mark.parametrize("role", ("author", "committer"))
+@pytest.mark.parametrize("field", ("name", "email"))
+def test_identity_drift_after_prepare_blocks_before_target_writes(tmp_path, monkeypatch, role, field):
+    fixture = _settled_writer(tmp_path, changed=True, baseline_mode=0o600)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    _identity_test_environment(tmp_path, monkeypatch)
+    _remove_local_identity(root, role, field)
+    before = _identity_target_snapshot(root)
+    transaction_before = prepared.transaction.journal.read_bytes()
+    with pytest.raises(fanout.HandoverError, match=rf"{role} identity.*repository-local.*user.name.*user.email.*git config --local"):
+        _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert fixture[2].state.branch_blocked["address"] == (prepared.intent.sha256, "delivery-failed")
+    result = handover.BlockedHandover(prepared.intent.sha256, "delivery-failed")
+    assert _identity_target_snapshot(root) == before
+    assert prepared.transaction.journal.read_bytes() == transaction_before
+    assert fixture[2].branch_record_for("address", "prepared-commit") is None
+    assert fixture[0].handover_terminal_for("address") is None
+    assert fixture[0].schedule_ready(owner=fixture[4]) == ()
+    assert _branch_call(handover.recover_branch_handover, prepared.intent, fixture) == result
+    assert _identity_target_snapshot(root) == before
+
+
+@pytest.mark.parametrize("phase", ("prepare", "deliver"))
+def test_identity_preflight_preserves_supported_email_fallback(tmp_path, monkeypatch, phase):
+    fixture = _settled_writer(tmp_path, changed=True)
+    prepared = _prepare_join(fixture)[1] if phase == "deliver" else None
+    root = fixture[0].inputs.targets["address"].root
+    cases._git(root, "config", "--unset", "user.email")
+    cases._git(root, "config", "user.useConfigOnly", "false")
+    monkeypatch.setenv("EMAIL", "fallback@example.invalid")
+    if prepared is None:
+        handover, prepared = _prepare_join(fixture)
+    else:
+        handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    terminal = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert isinstance(terminal, fanout.HandoverTerminalV2)
+    assert cases._git(root, "show", "-s", "--format=%an <%ae>%n%cn <%ce>", "HEAD") == (
+        "Fixture <fallback@example.invalid>\nFixture <fallback@example.invalid>"
+    )
+    handover.verify_git_handover_proof(prepared.intent, terminal, inputs=fixture[0].inputs,
+                                     artifacts=fixture[1].artifacts, controller=fixture[3], journal=fixture[2])
+
+
 def _stage_index_only(root, tmp_path):
     source = tmp_path / "index-only-source.txt"
     source.write_text("index-only bytes\n")

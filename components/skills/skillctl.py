@@ -27,8 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
-from historical_only import contains_historical, historical_only
 
 
 SCHEMA_VERSION = 1
@@ -239,10 +237,6 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
         raise DeliveryError(f"capabilities.toml not found at {manifest}")
     with manifest.open("rb") as handle:
         data = tomllib.load(handle)
-    try:
-        historical_skills, _ = historical_only(data)
-    except ValueError as error:
-        raise DeliveryError(str(error)) from error
     raw = data.get("skill_delivery")
     if not isinstance(raw, dict):
         raise DeliveryError("capabilities.toml has no [skill_delivery] table")
@@ -273,8 +267,6 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
         source_roots.append(root)
     sources: dict[str, Path] = {}
     for skill in skills:
-        if skill in historical_skills:
-            raise DeliveryError(f"historical-only skill cannot be delivered: {skill}")
         if not SKILL_NAME.fullmatch(skill):
             raise DeliveryError(f"invalid delivered skill name: {skill!r}")
         matches = [root / skill for root in source_roots if (root / skill).exists()]
@@ -284,8 +276,6 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
                 f"found {[str(path) for path in matches]}"
             )
         source = matches[0]
-        if contains_historical(data, source.relative_to(repo_root)):
-            raise DeliveryError(f"delivered skill source contains historical-only content: {source}")
         if source.is_symlink() or not source.is_dir():
             raise DeliveryError(f"delivered skill source must be a real directory: {source}")
         entrypoint = source / "SKILL.md"
@@ -341,8 +331,6 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
                 for previous in destinations
             ):
                 raise DeliveryError(f"skill bundle destination collides with another bundle: {destination}")
-            if contains_historical(data, Path(raw_source)):
-                raise DeliveryError(f"skill bundle source contains historical-only content: {raw_source}")
             source = repo_bundle_source(repo_root, raw_source, "skill bundle source")
             destinations[destination] = source
         skill_bundles[skill] = destinations

@@ -10,9 +10,8 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test fanout-test workvault-test forge-test-slow forge-host-smoke forge-proc-host-smoke codex-tokenless-canary tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge smoke-llm-fanout benchmark-llm-fanout eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
+.PHONY: workvault-test help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test core-test fanout-test tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-fanout benchmark-llm-fanout eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
 
-LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
 RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py \
@@ -23,94 +22,57 @@ MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py \
 SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
                         tests/test_refresh.py
 AUDIT_TESTS := tests/test_setup_audit.py
-COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
-                 tests/test_council_seams.py tests/test_council_agy_guard.py \
-                 tests/test_council_facade.py \
-                 tests/test_council_model_policy.py \
-                 tests/test_checks_secrets.py tests/test_mutate.py \
-                 tests/test_eval_harness_receipt.py tests/test_render_packaging.py \
-                 tests/test_historical_policy.py
-FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
-                tests/test_fanout_release_evaluations.py \
-                tests/test_eval_provider.py tests/test_tuneup_fanout.py \
-                tests/test_fanout_native_boundary.py tests/test_fanout_provider_diagnostic.py \
-                tests/test_fanout_quality_predecessor_route.py \
-                tests/test_fanout_quality_predecessor.py \
-                tests/test_fanout_quality_container_predecessor.py \
-                tests/test_fanout_quality_agy_private_agent.py \
-                tests/test_fanout_quality_case.py \
-                tests/test_fanout_quality_placeholder.py \
-                tests/test_fanout_quality_failure.py \
-                tests/test_fanout_quality_delivery_requests.py \
-                tests/test_fanout_quality_container_turn.py \
-                tests/test_fanout_process.py \
-                tests/test_fanout_preparation.py \
-                tests/test_fanout_providers.py tests/test_fanout_broker.py tests/test_fanout_profiles.py \
-                tests/test_codex_canary_model_proof.py \
-                tests/test_fanout_agy_guard.py tests/test_fanout_claude_restricted.py \
-                tests/test_fanout_plan_schema.py tests/test_fanout_skills.py \
-                tests/test_fanout_compiler.py tests/test_fanout_runstate.py \
-                tests/test_fanout_controller.py \
-                tests/test_fanout_local_authority.py tests/test_fanout_storage.py \
-                tests/test_fanout_plan_skill.py tests/test_fanout_execute_skill.py \
+CORE_TESTS := tests/test_checks_secrets.py tests/test_mutate.py \
+              tests/test_eval_harness_receipt.py tests/test_eval_receipt_v3.py \
+              tests/test_eval_native_consumers.py tests/test_render_packaging.py
+FANOUT_TESTS := tests/test_fanout_artifacts.py \
+                tests/test_fanout_benchmark.py \
                 tests/test_fanout_bootstrap_packages.py \
-                tests/test_fanout_scheduler.py tests/test_fanout_multirepo_integration.py \
-                tests/test_fanout_memory.py tests/test_fanout_collaboration.py \
-                tests/test_fanout_repo.py tests/test_fanout_targets.py \
+                tests/test_fanout_branch_handover.py \
+                tests/test_fanout_cold_recovery.py \
+                tests/test_fanout_collaboration.py \
+                tests/test_fanout_compiler.py \
+                tests/test_fanout_context_view.py \
+                tests/test_fanout_controller.py \
+                tests/test_fanout_execute.py \
+                tests/test_fanout_execute_skill.py \
+                tests/test_fanout_lifecycle.py \
+                tests/test_fanout_local_authority.py \
+                tests/test_fanout_maka_native.py \
+                tests/test_fanout_memory.py \
+                tests/test_fanout_multirepo_integration.py \
+                tests/test_fanout_native_profiles.py \
+                tests/test_fanout_native_write_policy.py \
+                tests/test_fanout_owner_actions.py \
+                tests/test_fanout_owner_reconciliation.py \
+                tests/test_fanout_plan_schema.py \
+                tests/test_fanout_plan_skill.py \
+                tests/test_fanout_process.py \
+                tests/test_fanout_profiles.py \
+                tests/test_fanout_providers.py \
+                tests/test_fanout_recorded_cli.py \
+                tests/test_fanout_repo.py \
+                tests/test_fanout_runstate.py \
+                tests/test_fanout_scheduler.py \
+                tests/test_fanout_skills.py \
+                tests/test_fanout_smoke.py \
+                tests/test_fanout_storage.py \
+                tests/test_fanout_targets.py \
                 tests/test_fanout_verification.py \
-                tests/test_fanout_lifecycle.py tests/test_fanout_branch_handover.py tests/test_fanout_execute.py \
-                tests/test_fanout_cold_recovery.py tests/test_fanout_quality.py \
-                tests/test_fanout_council_campaign.py \
-                tests/test_fanout_forge_fixtures.py \
-                tests/test_fanout_forge_selected_inputs.py \
-                tests/test_fanout_forge_campaign.py tests/test_fanout_forge_live.py \
-                tests/test_fanout_maka_transport.py tests/test_fanout_smoke.py \
-                tests/test_fanout_maka_capture.py \
-                tests/test_fanout_maka_capture_selector.py \
-                tests/test_fanout_maka_admission.py \
-                tests/test_fanout_maka_quality.py tests/test_fanout_maka_packaging.py \
-                tests/test_fanout_readonly_canaries.py \
-                tests/test_fanout_benchmark.py tests/test_fanout_certification.py \
-                tests/test_fanout_broker_output_limit.py \
-                tests/test_fanout_container_boundary.py tests/test_fanout_container_broker.py \
-                tests/test_fanout_container_credentials.py tests/test_fanout_container_routes.py \
-                tests/test_fanout_route_doctor.py \
-                tests/test_fanout_container_certify.py tests/test_fanout_container_certification.py \
-                tests/test_fanout_container_coordinator.py \
-                tests/test_fanout_container_startup_diagnostics.py \
-                tests/test_fanout_container_runtime.py \
-                tests/test_fanout_inventory_batches.py \
-                tests/test_fanout_container_image.py \
-                tests/test_fanout_container_source.py tests/test_fanout_container_transfer.py \
-                tests/test_fanout_container_transfer_transport.py \
-                tests/test_fanout_container_upstream.py tests/test_fanout_container_vm.py \
-                tests/test_claude_tokenless_canary.py tests/test_codex_tokenless_canary.py \
-                tests/test_agy_tokenless_canary.py
-# The forge suite, split by weight. The fast subset — schema, state machine,
-# classification, journal parsing — is in `verify` and therefore in `precommit`. The clone-
-# and process-heavy subset is NOT, because `make verify` is the obvious confirmed verify
-# command for this very repository: a forge run would then spawn clone fleets four-plus
-# times inside its own verifier clones, inflating wall clock and manufacturing FLAKY
-# verdicts under contended execution.
-FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
-               tests/test_forge_screen.py tests/test_forge_packaging.py \
-               tests/test_forge_snapshot.py tests/test_forge_seams.py \
-               tests/test_forge_journal.py tests/test_forge_runstate.py \
-               tests/test_forge_preflight.py tests/test_forge_gate.py \
-               tests/test_forge_seat.py tests/test_forge_taskbundle.py \
-               tests/test_forge_ledger.py tests/test_forge_coverage.py \
-               tests/test_forge_fingerprint.py tests/test_forge_launch.py \
-               tests/test_forge_seatrecord.py tests/test_forge_strategy.py \
-               tests/test_forge_progress.py tests/test_forge_rubric.py \
-               tests/test_forge_deepreview.py tests/test_forge_handover.py \
-               tests/test_forge_brief.py tests/test_forge_smoke.py
+                tests/test_eval_provider.py \
+                tests/test_tuneup_fanout.py
 
-FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \
-                    tests/test_forge_harvest.py tests/test_forge_bundle.py \
-                    tests/test_forge_verify.py tests/test_forge_runner.py \
-                    tests/test_forge_review.py tests/test_forge_gc.py \
-                    tests/test_forge_cli.py tests/test_forge_fix.py \
-                    tests/test_forge_resume.py
+# Only these audited executor-gate files may overlap; keep every other member serial.
+FANOUT_PARALLEL_TESTS := tests/test_fanout_execute_skill.py tests/test_fanout_execute.py \
+                         tests/test_fanout_cold_recovery.py tests/test_fanout_storage.py \
+                         tests/test_fanout_memory.py tests/test_fanout_repo.py \
+                         tests/test_fanout_targets.py tests/test_fanout_branch_handover.py \
+                         tests/test_eval_provider.py tests/test_fanout_verification.py
+FANOUT_SERIAL_TESTS := $(filter-out $(FANOUT_PARALLEL_TESTS),$(FANOUT_TESTS))
+PARALLEL_PYTEST := uvx --python 3.12.14 --from pytest==9.1.1 \
+                   --with pytest-xdist==3.8.0 --with execnet==2.1.2 \
+                   pytest -q -n 4 --dist loadfile --max-worker-restart 0
+
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
@@ -162,65 +124,33 @@ khenrix-refresh: ## Re-render + push the latest plugin/skill/engine into all ins
 
 refresh: khenrix-refresh ## Alias for khenrix-refresh
 
-# council-test and eval-test are in the gate DELIBERATELY. Without them,
-# `make verify` went green on a change that removed mcp_merge's same-name
-# collision guard -- i.e. a change that silently overwrites the user's existing
-# MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
-# suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test fanout-test workvault-test eval-test ## Validate manifests, skills, and local CLI canaries without paid model calls
+# Guards for reconciliation, source inputs, secrets and receipt issuance belong in
+# the deterministic gate alongside the native fanout engine.
+verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test core-test fanout-test workvault-test eval-test ## Validate manifests and deterministic behavior without paid model calls
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
-# THE SPLIT MOVES NINE SUITES OUT OF `verify`, AND `precommit` IS WHERE THEY LAND. `verify`
-# is reached by `precommit` and also by whoever picks a confirmed verify command for THIS
-# repository, which is the forge-inside-forge argument above the variables — a forge run
-# would spawn clone fleets inside its own verifier clones. `precommit` is neither: nothing
-# runs it inside a verifier. Without this dependency `baseline`, `fleet`, `harvest`,
-# `bundle`, `verify`, `runner` and `review` sit in no commit-boundary gate at all.
-precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + every changed skill has a fresh eval receipt
+precommit: verify ## Commit-boundary gate: rendered output and evaluation evidence
 	$(PY) scripts/render.py
 	@git diff --quiet -- marketplaces/ || { echo "✗ render drift: regenerate + stage rendered output ('git add marketplaces/')"; exit 1; }
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
-	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
+	@echo "✅ precommit clean"
 
-test: fanout-test council-test workvault-test forge-test-slow ## Run fanout, vault and historical council/forge deterministic suites (no token cost)
-	$(PY) $(LLM_COUNCIL) --self-test
-	$(call RUN_PYTEST,-m slow tests/test_council_characterization.py tests/test_council_facade.py)
+test: fanout-test core-test workvault-test ## Native fanout and shared safety/consumer regression tests
 
-council-test: ## Council engine (seat/characterization/seam/facade) + fast forge suites, sans slow (no token cost)
-	$(call RUN_PYTEST,-m "not slow" $(COUNCIL_TESTS) $(FORGE_TESTS))
+core-test: ## Shared secret, reconciliation, packaging and evaluation guards
+	$(call RUN_PYTEST,$(CORE_TESTS))
 
-fanout-test: ## Fanout engine, local CLI canaries, quality-fixture, smoke, and benchmark tests
-	$(call RUN_PYTEST,$(FANOUT_TESTS))
+fanout-test: ## Native fanout, recovery, owner, memory and evaluation regression tests
+	$(PARALLEL_PYTEST) $(FANOUT_PARALLEL_TESTS)
+	$(call RUN_PYTEST,$(FANOUT_SERIAL_TESTS))
+	mise -C components/maka exec -- node --test ../../tests/test_fanout_maka_native_session.mjs
 
-workvault-test: ## Curated vault collection, publication, coverage and recovery tests (no token cost)
-	$(PY) -B -m unittest discover -s components/workvault
+smoke-llm-fanout: ## Hermetic cold-recovery smoke; live work uses the public plan/execute commands
+	$(PY) scripts/fanout_smoke.py --hermetic
 
-smoke-llm-fanout: ## Opt-in live fanout authority smoke; fails closed until wired
-	$(PY) scripts/fanout_smoke.py --live
-
-benchmark-llm-fanout: ## Opt-in live fanout benchmark; fails closed until wired
-	$(PY) scripts/fanout_benchmark.py --live
-
-# A HEAVY SUITE WITH NO TARGET IS A SUITE THAT ROTS, which is the failure `bats-test`'s own
-# comment is about one gate over: the `-m slow` line in `test` names only the two council
-# files, so a forge test given that marker would be run by nothing. `make test` runs this,
-# the receipt gate runs a subset of it through DETERMINISTIC_GATED, and `make precommit`
-# depends on it — three homes, and none of them is `make verify`.
-forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower)
-	$(call RUN_PYTEST,$(FORGE_SLOW_TESTS))
-
-# Real installed-plugin and Linux /proc witnesses belong outside the certifying suite: their
-# absence says something about this host, not about Forge. Run this explicitly on a suitable
-# machine; DETERMINISTIC_GATED requires zero skips and therefore never names it.
-forge-host-smoke: ## Optional host integration checks for installed CLI plugin caches
-	$(call RUN_PYTEST,tests/forge_host_smoke.py)
-
-codex-tokenless-canary: ## Installed Codex fake-provider capability tests under native Seatbelt
-	$(call RUN_PYTEST,tests/test_codex_tokenless_canary.py)
-
-forge-proc-host-smoke: ## Optional Linux witness for hostile /proc process names
-	$(PY) tests/forge_proc_host_smoke.py
+benchmark-llm-fanout: ## Hermetic operation benchmark (no models or paid calls)
+	$(PY) scripts/fanout_benchmark.py --hermetic
 
 tier0-host-smoke: ## Optional WSL/Windows PowerShell-to-Chrome integration witness
 	bash $(BATS_RUNNER) $(TIER0_HOST_SMOKE_TESTS)
@@ -234,6 +164,9 @@ doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
 
 reconcile-defaults-test: ## Portable default and status-line reconciliation tests (no token cost)
 	$(call RUN_PYTEST,$(RECONCILE_DEFAULTS_TESTS))
+
+workvault-test: ## Curated vault collection, publication, coverage and recovery tests (no token cost)
+	$(PY) -B -m unittest discover -s components/workvault
 
 memory-runtime-test: ## Hermetic portable-memory tests (no network, credentials, or live writes)
 	$(call RUN_PYTEST,$(MEMORY_RUNTIME_TESTS))
@@ -286,18 +219,6 @@ bats-test: ## Behavioural .bats suites: repo-sweep, reconcile --apply, Tier 0/1 
 		else printf '%s\n' "$$out" | sed 's/^/    /'; rc=1; fi; \
 	done; \
 	[ "$$rc" -eq 0 ] || exit 1
-
-smoke-llm-council: ## Historical compatibility smoke vs one real provider (costs tokens, needs auth)
-	$(PY) $(LLM_COUNCIL) --smoke --providers claude --timeout 60
-
-# §18's live three-provider WRITE smoke. THE DELIBERATE MONEY EXCEPTION, and it is opt-in for
-# that reason: it appears in no gate target, because `verify` and `precommit` run on every
-# commit and must stay free. `smoke-llm-council` above is one provider and read-only, which
-# proves nothing about three write-enabled seats — and `launch.py` and `runner.py` both say
-# in words that nothing in the forge suite invokes a real provider.
-# Three provider calls, roughly 15% of one default forge run.
-smoke-llm-forge: ## Live 3-provider WRITE smoke through the real forge adapter (costs tokens, needs auth)
-	$(PY) scripts/forge_smoke.py
 
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test

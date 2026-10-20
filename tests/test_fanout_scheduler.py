@@ -57,7 +57,7 @@ def _work(task_id: str, *, depends_on: tuple[str, ...] = (), parent_id: str | No
         policy = {
             "executor_ids": executors[:seats],
             "rounds": 2, "timeout": 120, "retries": 0,
-            "minimum_success": 2,
+            "minimum_success": seats,
         }
     return {
         "id": task_id, "kind": "work", "parent_id": parent_id,
@@ -89,7 +89,7 @@ def _plan(*tasks: dict[str, object]):
         },
         "defaults": {
             "executor_ids": ["claude", "codex", "agy"], "rounds": 2,
-            "timeout": 120, "retries": 0, "minimum_success": 2,
+            "timeout": 120, "retries": 0, "minimum_success": 3,
         },
         "source_steps": [],
         "tasks": copy.deepcopy(list(tasks)),
@@ -983,6 +983,7 @@ def test_scheduler_rejects_a_single_task_above_the_six_seat_cap(owner):
     data["tasks"][0]["provider_policy"]["executor_ids"] = [  # type: ignore[index]
         f"executor-{index}" for index in range(7)
     ]
+    data["tasks"][0]["provider_policy"]["minimum_success"] = 7
     wide = fanout.FanoutPlanV1.from_dict(data)
 
     with pytest.raises(SchedulerStateError, match="six-seat cap"):

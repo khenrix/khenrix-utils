@@ -36,10 +36,9 @@ committed runtime cannot meet the review contract, retain the failure and stop. 
 alternative requires an explicitly user-selected independent reviewer, separately
 admitted and disclosed; never quietly fall back or lower quorum.
 
-For a historical llm-council target, current fanout is already a different runtime; keep
-the historical engine's deterministic/security checks. Current default smoke is
-`make smoke-llm-fanout`, with separate spend authorization. A smoke proves transport
-behavior, not independent review quality or the final skill receipt.
+Current native smoke and read probes need their existing spend authorization. A smoke
+proves the observed transport/read behavior, not independent review quality or the final
+skill receipt. Retired tools have no active tuneup or receipt path.
 
 ## Target = skill-tuneup (this skill)
 

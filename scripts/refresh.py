@@ -25,8 +25,6 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "shared/lib/fanout"))
-from historical_only import read_historical
 HOME = Path.home()
 CLIS = ("claude", "codex", "agy")
 
@@ -77,9 +75,9 @@ def installed_dirs(cli: str) -> list[Path]:
 
 def sync(cli: str) -> list[str]:
     src = ROOT / "marketplaces" / cli / "plugins" / "khenrix-utils"
-    historical_skills, historical_libs = read_historical(ROOT)
-    retired = tuple(Path("skills") / name for name in sorted(historical_skills)) + tuple(
-        Path("lib") / name for name in sorted(historical_libs))
+    # Exact one-time migration of previously owned plugin content, not user config.
+    retired = tuple(map(Path, ("skills/llm-council", "skills/llm-forge",
+                              "lib/council", "lib/forge", "lib/historical_only.py")))
     notes = []
     dests = installed_dirs(cli)
     if not dests:
@@ -91,28 +89,20 @@ def sync(cli: str) -> list[str]:
         for relative in retired:
             path = d / relative
             if path.parent.is_symlink() or path.is_symlink():
-                raise ValueError(f"historical plugin path must not be a symlink: {path}")
+                raise ValueError(f"retired plugin path must not be a symlink: {path}")
             if path.exists():
                 stale.append(relative)
         if stale:
             # Cached version globs admit every child directory, including hidden backups.
             backup_parent = d.parent.parent if any("*" in g for g in INSTALL_GLOBS[cli]) else d.parent
-            backup = Path(tempfile.mkdtemp(prefix=".khenrix-historical-backup-", dir=backup_parent))
+            backup = Path(tempfile.mkdtemp(prefix=".khenrix-retired-backup-", dir=backup_parent))
             for relative in stale:
                 target = backup / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(d / relative, target)
-            notes.append(f"{cli}: historical plugin copies backed up → {backup}")
+            notes.append(f"{cli}: retired plugin copies backed up → {backup}")
 
-        def ignore_historical(directory, names):
-            relative = Path(directory).relative_to(src)
-            if relative == Path("skills"):
-                return set(names) & historical_skills
-            if relative == Path("lib"):
-                return set(names) & historical_libs
-            return set()
-
-        shutil.copytree(src, d, dirs_exist_ok=True, ignore=ignore_historical)
+        shutil.copytree(src, d, dirs_exist_ok=True)
         for name in NATIVE_ONLY_SKILLS:
             shutil.rmtree(d / "skills" / name, ignore_errors=True)
         # `dirs_exist_ok=True` merges and never deletes, so a clean source cannot remove

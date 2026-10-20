@@ -49,6 +49,333 @@ run_provider = fanout.run_provider
 providers = sys.modules[f"{SPEC.name}.providers"]
 
 
+def _trace_bytes(events):
+    return b"".join(json.dumps(event).encode() + b"\n" for event in events)
+
+
+def _claude_skill_companion_rows():
+    # Native Skill expansion is a separate user event after its tool result.
+    return [
+        {"type": "user", "sessionId": "exact", "promptId": "prompt-1",
+         "message": {"content": "task\n"}},
+        {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_use", "id": "skill-1", "name": "Skill", "input": {"skill": "using-superpowers"}}]}},
+        {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_use", "id": "read-before", "name": "Read", "input": {"file_path": "/safe/SKILL.md"}}]}},
+        {"type": "user", "sessionId": "exact", "promptId": "prompt-1", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "skill-1", "content": "Launching skill: using-superpowers"}]}},
+        {"type": "user", "sessionId": "exact", "promptId": "prompt-1", "isMeta": True,
+         "turnCompanion": True, "sourceToolUseID": "skill-1", "message": {"content": [
+             {"type": "text", "text": "Base directory for this skill: /safe/using-superpowers\nSkill instructions"}]}},
+        {"type": "user", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "read-before", "content": "guidance"}]}},
+        {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_use", "id": "read-after", "name": "Read", "input": {"file_path": "/run/sibling/answer.txt"}}]}},
+        {"type": "user", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "read-after", "content": "private text"}]}},
+        {"type": "assistant", "sessionId": "exact", "message": {"stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "answer"}]}},
+    ]
+
+
+@pytest.mark.parametrize("string_content", [False, True])
+def test_claude_skill_companion_preserves_complete_turn_and_real_next_input(tmp_path, string_content):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    if string_content:
+        rows[4]["message"]["content"] = "Skill instructions"
+    rows.extend([
+        {"type": "user", "sessionId": "exact", "promptId": "prompt-2", "message": {"content": "next task"}},
+        {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_use", "id": "next-read", "name": "Read", "input": {"file_path": "/run/next.txt"}}]}},
+    ])
+    raw = _trace_bytes(rows)
+    trace = native.project_native_trace("claude", raw, prompt=b"task\n", session_id="exact",
+        cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "complete", trace
+    assert trace["bounds"] == [0, 8]
+    assert trace["prompt_sha256"] == hashlib.sha256(b"task\n").hexdigest()
+    assert trace["source_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert [call["id"] for call in trace["calls"]] == ["skill-1", "read-before", "read-after"]
+    assert all(call["status"] == "completed" for call in trace["calls"])
+    assert native.read_boundary_violation(trace, cwd=tmp_path, forbidden=(Path("/run"),),
+        allowed_trees=(tmp_path,), allowed_files=()) == "read-after"
+    assert "Skill instructions" not in json.dumps(trace)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("isMeta", False), ("isMeta", "true"), ("turnCompanion", False), ("turnCompanion", "true"),
+    ("sessionId", "foreign"), ("sessionId", None), ("promptId", "foreign"), ("promptId", None),
+    ("sourceToolUseID", "unknown"), ("sourceToolUseID", "read-before"), ("sourceToolUseID", None),
+    ("sourceToolUseID", []),
+])
+def test_claude_invalid_skill_companion_cannot_qualify_a_truncated_read_interval(tmp_path, field, value):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    rows[4][field] = value
+    # A prior matching answer must not let malformed metadata hide later access.
+    rows = rows[:4] + [rows[5], rows[-1], rows[4]] + rows[6:]
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "incomplete", trace
+
+
+def test_claude_skill_companion_needs_a_preceding_skill_in_this_turn(tmp_path):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    rows.insert(1, rows.pop(4))
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "incomplete"
+
+
+def test_claude_skill_companion_does_not_suppress_embedded_tool_calls(tmp_path):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    rows[4]["message"]["content"].append({"type": "tool_use", "id": "embedded-read", "name": "Read",
+        "input": {"file_path": "/run/embedded.txt"}})
+    rows.insert(5, {"type": "user", "sessionId": "exact", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "embedded-read", "content": "private text"}]}})
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "complete", trace
+    assert [call["id"] for call in trace["calls"]] == ["skill-1", "read-before", "embedded-read", "read-after"]
+    assert native.read_boundary_violation(trace, cwd=tmp_path, forbidden=(Path("/run"),),
+        allowed_trees=(tmp_path,), allowed_files=()) == "embedded-read"
+
+
+def test_claude_api_request_blobs_do_not_replay_calls_or_results(tmp_path):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    # Native request diagnostics copy prior assistant calls and user results.
+    rows[6:6] = [
+        {"type": "api-request-blob", "sessionId": "exact", "hash": "assistant-context",
+         "message": {"role": "assistant", "content": rows[1]["message"]["content"] + rows[2]["message"]["content"]}},
+        {"type": "api-request-blob", "sessionId": "exact", "hash": "user-context",
+         "message": {"role": "user", "content": rows[3]["message"]["content"] + rows[5]["message"]["content"]}},
+    ]
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "complete", trace
+    assert [call["id"] for call in trace["calls"]] == ["skill-1", "read-before", "read-after"]
+    assert native.read_boundary_violation(trace, cwd=tmp_path, forbidden=(Path("/run"),),
+        allowed_trees=(tmp_path,), allowed_files=()) == "read-after"
+
+
+@pytest.mark.parametrize("failure", ["snapshot-terminal", "foreign-snapshot", "actual-duplicate",
+                                    "actual-unmatched-result", "actual-unsupported-block"])
+def test_claude_request_diagnostics_keep_actual_message_and_session_validation(tmp_path, failure):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    if failure == "snapshot-terminal":
+        rows[-1]["type"] = "api-request-blob"
+    elif failure == "foreign-snapshot":
+        rows.append({"type": "api-request-blob", "sessionId": "foreign", "message": {}})
+    elif failure == "actual-duplicate":
+        rows.insert(6, rows[1])
+    elif failure == "actual-unmatched-result":
+        rows.insert(6, {"type": "user", "sessionId": "exact", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "unmatched", "content": "text"}]}})
+    else:
+        rows.insert(6, {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "unknown_tool_use", "arguments": {"path": "/run/answer.txt"}}]}})
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "incomplete", trace
+
+
+@pytest.mark.parametrize("failure", ["changed-prompt", "duplicate-user", "duplicate-companion", "missing-prompt-id",
+                                    "wrong-answer", "missing-terminal", "pending-skill"])
+def test_claude_skill_companion_keeps_exact_input_and_completion_requirements(tmp_path, failure):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    rows = _claude_skill_companion_rows()
+    if failure == "changed-prompt":
+        rows[0]["message"]["content"] = "task"
+    elif failure == "duplicate-user":
+        rows.append({**rows[0], "promptId": "prompt-2"})
+    elif failure == "duplicate-companion":
+        rows[4]["message"]["content"] = "task\n"
+    elif failure == "missing-prompt-id":
+        rows[0].pop("promptId")
+        rows[4].pop("promptId")
+    elif failure == "wrong-answer":
+        rows[-1]["message"]["content"][0]["text"] = "other answer"
+    elif failure == "missing-terminal":
+        rows.pop()
+    else:
+        rows.pop(3)
+    trace = native.project_native_trace("claude", _trace_bytes(rows), prompt=b"task\n",
+        session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "incomplete", trace
+
+
+@pytest.mark.parametrize("separator", ["", "\n"])
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("literal_closer", [False, True])
+def test_agy_exact_prompt_frame_preserves_task_lf_and_turn_bounds(tmp_path, separator, resume, literal_closer):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    quoted = " with literal\n</USER_REQUEST>\nin task 雪" if literal_closer else ""
+    prompts = [f"initial task{quoted}\n", f"resumed task{quoted}\n"]
+    rows = []
+    for index, prompt in enumerate(prompts):
+        rows.extend([
+            {"type": "USER_INPUT", "step_index": index * 3, "content":
+                "<USER_REQUEST>\n/plan " + prompt + separator + "</USER_REQUEST>\n<ADDITIONAL_METADATA>native</ADDITIONAL_METADATA>"},
+            {"type": "PLANNER_RESPONSE", "step_index": index * 3 + 1, "status": "DONE",
+             "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": f"/workspace/turn-{index}.txt"}}]},
+            {"type": "PLANNER_RESPONSE", "step_index": index * 3 + 2, "status": "DONE", "content": f"answer-{index}"},
+        ])
+    selected = int(resume)
+    prompt = prompts[selected].encode()
+    trace = native.project_native_trace("agy", _trace_bytes(rows), prompt=prompt,
+        session_id="exact-session", cwd=tmp_path, answer=f"answer-{selected}")
+    assert trace["coverage"] == "complete"
+    assert trace["prompt_sha256"] == hashlib.sha256(prompt).hexdigest()
+    assert trace["bounds"] == ([3, 5] if resume else [0, 2])
+    assert [call["arguments"] for call in trace["calls"]] == [{"AbsolutePath": f"/workspace/turn-{selected}.txt"}]
+
+
+@pytest.mark.parametrize("failure", ["changed", "foreign", "ambiguous", "extra-separator", "foreign-plan-prefix"])
+def test_agy_exact_prompt_frame_rejects_changed_foreign_or_ambiguous_input(tmp_path, failure):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    prompt = "task\n"
+    observed = {"changed": "task", "foreign": "another task\n"}.get(failure, prompt)
+    prefix = "/other " if failure == "foreign-plan-prefix" else "/plan "
+    separator = "\n\n" if failure == "extra-separator" else ""
+    row = {"type": "USER_INPUT", "step_index": 0, "content":
+           "<USER_REQUEST>\n" + prefix + observed + separator + "</USER_REQUEST>\n"}
+    rows = [row, {"type": "PLANNER_RESPONSE", "step_index": 1, "status": "DONE", "content": "answer"}]
+    if failure == "ambiguous":
+        rows.extend([{**row, "step_index": 2}, {**rows[1], "step_index": 3}])
+    trace = native.project_native_trace("agy", _trace_bytes(rows), prompt=prompt.encode(),
+        session_id="exact-session", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] == "incomplete"
+    assert trace["calls"] == []
+
+
+@pytest.mark.parametrize("executor", ["claude", "codex", "agy"])
+def test_native_trace_projects_only_exact_turn_arguments(executor, tmp_path):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    prompt, session, answer = b"assigned task", "exact-session", "answer"
+    arguments = {"AbsolutePath": "/run/artifacts/sibling/answer.txt"}
+    if executor == "claude":
+        events = [
+            {"type": "user", "sessionId": session, "message": {"content": prompt.decode()}},
+            {"type": "assistant", "sessionId": session, "message": {"content": [
+                {"type": "thinking", "thinking": "DO NOT COPY"},
+                {"type": "tool_use", "id": "call-1", "name": "Read", "input": arguments}]}},
+            {"type": "user", "sessionId": session, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "call-1", "content": "DO NOT COPY"}]}},
+            {"type": "assistant", "sessionId": session, "message": {"stop_reason": "end_turn",
+                "content": [{"type": "text", "text": answer}]}},
+            {"type": "user", "sessionId": session, "message": {"content": "later turn"}},
+        ]
+    elif executor == "agy":
+        events = [
+            {"type": "USER_INPUT", "step_index": 0, "status": "DONE", "content":
+                "<USER_REQUEST>\n/plan assigned task\n</USER_REQUEST>\n<ADDITIONAL_METADATA>native</ADDITIONAL_METADATA>"},
+            {"type": "PLANNER_RESPONSE", "step_index": 1, "status": "DONE", "thinking": "DO NOT COPY",
+                "tool_calls": [{"name": "view_file", "args": arguments}]},
+            {"type": "GENERIC", "step_index": 2, "status": "DONE", "content": "DO NOT COPY"},
+            {"type": "PLANNER_RESPONSE", "step_index": 3, "status": "DONE", "content": answer},
+            {"type": "USER_INPUT", "step_index": 4, "content": "later turn"},
+        ]
+    else:
+        events = [{"type": "thread.started", "thread_id": session}, {"type": "turn.started"},
+            {"type": "item.completed", "item": {"id": "call-1", "type": "mcp_tool_call",
+                "server": "filesystem", "tool": "read", "arguments": arguments,
+                "status": "completed", "result": "DO NOT COPY"}},
+            {"type": "item.completed", "item": {"id": "answer", "type": "agent_message", "text": answer}},
+            {"type": "turn.completed"}]
+    raw = _trace_bytes(events)
+    trace = native.project_native_trace(executor, raw, prompt=prompt,
+        session_id=session, cwd=tmp_path, answer=answer)
+    assert trace["coverage"] == "complete"
+    assert trace["source_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert [call["arguments"] for call in trace["calls"]] == [arguments]
+    assert "DO NOT COPY" not in json.dumps(trace)
+    assert native.read_boundary_violation(trace, cwd=tmp_path, forbidden=(Path("/run"),),
+        allowed_trees=(tmp_path,), allowed_files=())
+
+
+@pytest.mark.parametrize("failure", ["foreign-session", "foreign-prompt", "missing-terminal", "truncated-arguments"])
+def test_native_trace_never_qualifies_missing_or_foreign_evidence(tmp_path, failure):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    events = [{"type": "thread.started", "thread_id": "other" if failure == "foreign-session" else "exact"},
+        {"type": "turn.started"}, {"type": "item.completed", "item": {
+            "id": "call", "type": "command_execution", "status": "completed",
+            "command": "cat /safe/…" if failure == "truncated-arguments" else "pwd"}},
+        {"type": "turn.completed"}]
+    if failure == "missing-terminal":
+        events.pop()
+    if failure == "foreign-prompt":
+        trace = native.project_native_trace("agy", _trace_bytes([
+            {"type": "USER_INPUT", "step_index": 0, "content": "foreign"},
+            {"type": "PLANNER_RESPONSE", "step_index": 1, "content": "answer", "status": "DONE"}]),
+            prompt=b"task", session_id="exact", cwd=tmp_path, answer="answer")
+    else:
+        trace = native.project_native_trace("codex", _trace_bytes(events), prompt=b"task",
+            session_id="exact", cwd=tmp_path, answer="answer")
+    assert trace["coverage"] != "complete"
+
+
+def test_agy_capture_uses_full_exact_native_args_when_stdout_is_truncated(tmp_path, monkeypatch):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    session = "exact-session"
+    transcript = tmp_path / ".gemini/antigravity-cli/brain" / session / ".system_generated/logs/transcript_full.jsonl"
+    transcript.parent.mkdir(parents=True)
+    command = "printf harmless " + "x" * 2200 + "; cat /run/artifacts/sibling/answer.txt"
+    transcript.write_bytes(_trace_bytes([
+        {"type": "USER_INPUT", "step_index": 0, "content": "task"},
+        {"type": "PLANNER_RESPONSE", "step_index": 1, "status": "DONE", "tool_calls": [
+            {"name": "run_command", "args": {"CommandLine": command, "Cwd": str(tmp_path)}}]},
+        {"type": "PLANNER_RESPONSE", "step_index": 2, "status": "DONE", "content": "answer"}]))
+    request = _request("agy", tmp_path, prompt="task")
+    from types import SimpleNamespace
+    result = SimpleNamespace(session_id=session, answer="answer", valid=True,
+        stdout=b'{"tool_info":{"parameters":"printf harmless xxx...\xe2\x80\xa6"}}')
+    trace = native.capture_native_trace(request, result)
+    assert trace["coverage"] == "complete"
+    assert trace["calls"][0]["arguments"]["CommandLine"] == command
+    assert native.read_boundary_violation(trace, cwd=tmp_path, forbidden=(Path("/run"),),
+        allowed_trees=(tmp_path,), allowed_files=()) == "1:0"
+    result.session_id = "foreign-session"
+    assert native.capture_native_trace(request, result)["coverage"] == "unavailable"
+
+
+def test_unknown_native_tool_block_is_unqualified(tmp_path):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    raw = _trace_bytes([
+        {"type": "user", "sessionId": "exact", "message": {"content": "task"}},
+        {"type": "assistant", "sessionId": "exact", "message": {"content": [
+            {"type": "unknown_tool_use", "arguments": {"path": "/run/answer.txt"}}]}},
+        {"type": "assistant", "sessionId": "exact", "message": {"stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "answer"}]}},
+    ])
+    assert native.project_native_trace("claude", raw, prompt=b"task", session_id="exact",
+        cwd=tmp_path, answer="answer")["coverage"] == "incomplete"
+
+
+@pytest.mark.parametrize("arguments,denied", [
+    ({"command": "cat /run/artifacts/sibling/answer.txt"}, True),
+    ({"command": "ls /run/artifacts"}, True),
+    ({"command": "rg proposal ../sibling"}, True),
+    ({"Cwd": "/run/seats/sibling", "CommandLine": "pwd"}, True),
+    ({"command": "cat /run/seats/own/README.md"}, False),
+    ({"command": "cat /run/artifacts/dependency.txt"}, False),
+    ({"command": "cat /run/artifacts-similar/README.md"}, False),
+    ({"command": "pwd", "description": "/run/artifacts/sibling/answer.txt"}, False),
+])
+def test_observed_direct_path_boundary(arguments, denied):
+    native = importlib.import_module(f"{SPEC.name}.native_trace")
+    trace = {"calls": [{"id": "call", "arguments": arguments}]}
+    actual = native.read_boundary_violation(trace, cwd=Path("/run/seats/own"),
+        forbidden=(Path("/run/artifacts"), Path("/run/seats")),
+        allowed_trees=(Path("/run/seats/own"),), allowed_files=(Path("/run/artifacts/dependency.txt"),))
+    assert bool(actual) is denied
+
+
 FIXTURES = ROOT / "tests" / "fixtures" / "fanout_providers"
 
 
@@ -57,13 +384,15 @@ def _pin_fixture_cli_versions(monkeypatch):
     # Deterministic provider tests never invoke installed CLIs.
     versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
     monkeypatch.setattr(providers, "_installed_cli_version", lambda executor: versions[executor])
+    monkeypatch.setattr(providers, "_installed_cli_contract", lambda profile: None)
 
 
 @pytest.fixture
-def _mock_clean_codex_host(monkeypatch):
-    # Command/protocol contracts are independent of each runner's managed host.
-    # The dedicated preflight tests below exercise the real check.
-    monkeypatch.setattr(providers, "_codex_read_only_host_config_preflight", lambda: None)
+def _mock_clean_codex_host(tmp_path, monkeypatch):
+    home = tmp_path / "native-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
 
 
 def _result(*, stdout: bytes, stderr: bytes = b"", code: int = 0,
@@ -102,6 +431,18 @@ def _fake_provider(request: ProviderRequest, runner, *, registry=None) -> Provid
         registry = _fixture_certified_agy_write(registry)
         request = replace(request, profile=registry.select("agy", "repo-write", "standard"))
     return providers._run_provider_with_runner(request, registry=registry, runner=runner)
+
+
+def test_public_admitted_turn_without_native_transcript_cannot_be_valid(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    request = _request("claude", tmp_path, run_id="run", session_id="11111111-1111-4111-8111-111111111111")
+    stdout = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+        "session_id": request.session_id, "result": "transport succeeded"}).encode()
+    monkeypatch.setattr(providers, "run_command", lambda _: _result(stdout=stdout))
+    result = run_provider(request)
+    assert not result.valid
+    assert result.reason == "read-trace-unqualified"
+    assert result.launch_metadata["native_tool_trace"]["coverage"] == "unavailable"
 
 
 def _fake_many(requests, runner, *, max_workers: int) -> tuple[ProviderResult, ...]:
@@ -152,7 +493,7 @@ def _fixture_certified_agy_write(registry=None) -> ProviderRegistry:
 
 @pytest.mark.parametrize("executor_id", ("claude", "codex", "agy"))
 @pytest.mark.parametrize("resume", (False, True))
-def test_repo_write_requires_native_seat_boundary_before_any_subprocess(
+def test_repo_write_requires_invoking_owner_before_any_subprocess(
     executor_id: str, resume: bool, tmp_path: Path, monkeypatch,
 ) -> None:
     launched = []
@@ -166,24 +507,11 @@ def test_repo_write_requires_native_seat_boundary_before_any_subprocess(
                     else f"exact-{executor_id}-session") if resume else None,
     )
 
-    with pytest.raises(ProviderRequestError, match="native seat boundary"):
+    with pytest.raises(ProviderRequestError, match="invoking owner"):
         run_provider(request)
     assert launched == []
 
 
-def test_container_descriptor_does_not_open_public_repo_write(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    monkeypatch.setattr(providers, "_installed_cli_version", lambda _executor: pytest.fail(
-        "version probe ran before the public container gate",
-    ))
-    monkeypatch.setattr(providers, "run_command", lambda _command: pytest.fail(
-        "public container descriptor started a provider",
-    ))
-    request = replace(_request("claude", tmp_path, execution_class="repo-write"),
-                      container_boundary=object())
-    with pytest.raises(ProviderRequestError, match="release-certified container boundary"):
-        run_provider(request)
 
 
 def test_run_many_rejects_mixed_repo_write_batch_before_any_subprocess(
@@ -196,7 +524,7 @@ def test_run_many_rejects_mixed_repo_write_batch_before_any_subprocess(
     monkeypatch.setattr(providers, "run_command", launched.append)
     requests = (_request("claude", tmp_path), _request("agy", tmp_path))
 
-    with pytest.raises(ProviderRequestError, match="native seat boundary"):
+    with pytest.raises(ProviderRequestError, match="invoking owner"):
         run_many(requests, max_workers=2)
     assert launched == []
 
@@ -315,14 +643,16 @@ def test_installed_snapshot_rejects_invalid_selection_before_probing(selected):
         )
 
 
-def test_recorded_run_refuses_drift_but_new_run_can_bind_upgrade():
+def test_recorded_run_refuses_drift_but_new_run_can_bind_upgrade(tmp_path, monkeypatch):
     current = {"version": "0.160.0"}
     probe = lambda _executor: current["version"]
     old = ProviderRegistry.for_installed(("codex",), version_probe=probe)
     recorded = old.select("codex", "read-only", "deep")
     current["version"] = "0.161.0"
-    with pytest.raises(ProviderRequestError, match="drift"):
-        old.assert_installed_version(recorded)
+    with pytest.raises(ProviderRequestError, match="recorded CLI version changed"):
+        run_provider(_request("codex", tmp_path, execution_class="read-only",
+                     profile=recorded, run_id="recorded", inputs_digest="a" * 64),
+                     registry=old)
     new = ProviderRegistry.for_installed(("codex",), version_probe=probe)
     assert new.admit("codex", "read-only", "deep").cli_version == "0.161.0"
     assert recorded.cli_version == "0.160.0"
@@ -347,43 +677,8 @@ def test_uncharacterized_custom_adapter_stays_closed():
         registry.admit("custom", "read-only", "standard")
 
 
-def test_initial_diagnostic_binds_installed_profile_before_broker_authority(tmp_path, monkeypatch):
-    diagnostic = importlib.import_module(f"{SPEC.name}.diagnostic")
-    registry = ProviderRegistry.for_installed(("claude",), version_probe=lambda _executor: "2.2.0")
-    monkeypatch.setattr(providers, "_installed_cli_version", lambda _executor: "2.2.0")
-    request = ProviderRequest(
-        "claude", "diagnostic fixture", cwd=tmp_path,
-        profile=registry.select("claude", "read-only", "standard"),
-        session_id="11111111-1111-4111-8111-111111111111", run_id="run-1",
-        task_id="task-1", target_id="target-1", inputs_digest="a" * 64, seat_id="seat-1",
-    )
-
-    def boundary_gate(*_args, **_kwargs):
-        raise ProviderRequestError("fixture broker authority required")
-
-    monkeypatch.setattr(diagnostic, "issue_broker_admission", boundary_gate)
-    with pytest.raises(ProviderRequestError, match="fixture broker authority"):
-        diagnostic.run_brokered_provider_diagnostic(
-            request, controller=None, verification=None, broker_listener=None,
-            other_target_roots=(), denied_owner_roots=(),
-        )
 
 
-def test_diagnostic_resume_authenticates_before_any_installed_probe(tmp_path, monkeypatch):
-    diagnostic = importlib.import_module(f"{SPEC.name}.diagnostic")
-    monkeypatch.setattr(providers, "_installed_cli_version",
-                        lambda _executor: pytest.fail("unauthenticated resume probed a CLI"))
-    request = ProviderRequest(
-        "claude", "diagnostic fixture", cwd=tmp_path,
-        profile=ProviderRegistry.default().select("claude", "read-only", "standard"),
-        session_id="11111111-1111-4111-8111-111111111111", resume=True, run_id="run-1",
-        task_id="task-1", target_id="target-1", inputs_digest="a" * 64, seat_id="seat-1",
-    )
-    with pytest.raises(ProviderRequestError, match="authenticated initial"):
-        diagnostic.run_brokered_provider_diagnostic(
-            request, controller=None, verification=None, broker_listener=None,
-            other_target_roots=(), denied_owner_roots=(),
-        )
 
 
 @pytest.mark.parametrize("executor_id", ["", 1, None])
@@ -414,437 +709,59 @@ def test_registry_rejects_incompatible_profiles_and_maka_adapter_bypasses():
         ProviderRegistry((_profile("not-maka", maka, capabilities),))
 
 
-@pytest.mark.parametrize(
-    ("executor_id", "execution_class", "session_id", "resume", "expected"),
-    [
-        ("claude", "read-only", "11111111-1111-4111-8111-111111111111", False, ("claude", "--print", "--session-id", "11111111-1111-4111-8111-111111111111", "--output-format", "json", "--restricted", "--strict-mcp-config", "--tools", "Read,Glob,Grep", "--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "ExitPlanMode")),
-        ("claude", "repo-write", "11111111-1111-4111-8111-111111111111", False, ("claude", "--print", "--session-id", "11111111-1111-4111-8111-111111111111", "--output-format", "json", "--dangerously-skip-permissions")),
-        ("claude", "read-only", "11111111-1111-4111-8111-111111111111", True, ("claude", "--print", "--resume", "11111111-1111-4111-8111-111111111111", "--output-format", "json", "--restricted", "--strict-mcp-config", "--tools", "Read,Glob,Grep", "--permission-mode", "plan", "--permission-prompts", "none", "--disallowedTools", "ExitPlanMode")),
-        ("claude", "repo-write", "11111111-1111-4111-8111-111111111111", True, ("claude", "--print", "--resume", "11111111-1111-4111-8111-111111111111", "--output-format", "json", "--dangerously-skip-permissions")),
-        ("codex", "read-only", None, False, ("codex", "exec", "-", "--json", "--sandbox", "read-only")),
-        ("codex", "repo-write", None, False, ("codex", "exec", "-", "--json", "--sandbox", "workspace-write")),
-        ("codex", "read-only", "codex-thread-1", True, ("codex", "exec", "resume", "-c", 'sandbox_mode="read-only"', "--json", "codex-thread-1", "-")),
-        ("codex", "repo-write", "codex-thread-1", True, ("codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"', "--json", "codex-thread-1", "-")),
-        ("agy", "read-only", None, False, ("agy", "--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json")),
-        ("agy", "repo-write", None, False, ("agy", "--mode", "accept-edits", "--input-format", "stream-json", "--output-format", "stream-json")),
-        ("agy", "read-only", "agy-conversation-1", True, ("agy", "--conversation", "agy-conversation-1", "--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json")),
-        ("agy", "repo-write", "agy-conversation-1", True, ("agy", "--conversation", "agy-conversation-1", "--mode", "accept-edits", "--input-format", "stream-json", "--output-format", "stream-json")),
-    ],
-)
-def test_adapter_commands_pin_explicit_sessions_posture_and_stdin_only(
-    executor_id, execution_class, session_id, resume, expected, tmp_path,
-    _mock_clean_codex_host,
+@pytest.mark.parametrize("executor_id", ("claude", "codex", "agy"))
+@pytest.mark.parametrize("resume", (False, True))
+def test_native_commands_pin_explicit_sessions_and_stdin_only(
+    executor_id, resume, tmp_path, _mock_clean_codex_host,
 ):
-    """Moving prompts to argv or implicit continuation would leak data or resume the wrong turn."""
-    request = _request(
-        executor_id, tmp_path, execution_class=execution_class, session_id=session_id, resume=resume,
-        profile=None,
-    )
-
-    if executor_id == "agy" and execution_class == "read-only":
-        with pytest.raises(ProviderRequestError, match="guard"):
-            ProviderRegistry.default().require(executor_id).build_command(request)
-        return
+    session = {"claude": "11111111-1111-4111-8111-111111111111",
+               "codex": "codex-thread-1", "agy": "agy-conversation-1"}[executor_id]
+    request = _request(executor_id, tmp_path, profile=None, resume=resume,
+                       session_id=session if resume or executor_id == "claude" else None)
     command = ProviderRegistry.default().require(executor_id).build_command(request)
-
-    if executor_id == "codex" and execution_class == "read-only":
-        isolation = (
-            "--ignore-user-config", "--disable", "apps", "--disable", "plugins",
-            "--disable", "remote_plugin", "--disable", "hooks",
-            "-c", 'cli_auth_credentials_store="keyring"',
-            "-c", f'projects={{{json.dumps(str(tmp_path))}={{trust_level="untrusted"}}}}',
-        )
-        offset = 3 if resume else 2
-        expected = expected[:offset] + isolation + expected[offset:]
-    assert command.argv == expected
+    if resume:
+        assert session in command.argv
+    elif executor_id == "claude":
+        assert command.argv[command.argv.index("--session-id") + 1] == session
+    assert not {"--continue", "--last", "--ignore-user-config", "--strict-mcp-config"}.intersection(command.argv)
+    assert "secret prompt only in stdin" not in repr(command)
     if executor_id == "agy":
         assert json.loads(command.stdin) == {
-            "event": "user", "message": {"content": "secret prompt only in stdin"},
-        }
-        assert command.stdin.endswith(b"\n")
+            "event": "user", "message": {"content": "secret prompt only in stdin"}}
     else:
         assert command.stdin == b"secret prompt only in stdin"
-    assert "secret prompt only in stdin" not in repr(command)
-    assert not {"--continue", "--last"}.intersection(command.argv)
 
 
-@pytest.mark.parametrize("executor,model,deep_effort,previous_read,previous_write", [
-    ("claude", "claude-opus-5-5", "xhigh", "max", "xhigh"),
-    ("codex", "gpt-6.1-sol", "xhigh", "xhigh", "xhigh"),
-])
-@pytest.mark.parametrize("execution_class", ["read-only", "repo-write"])
-@pytest.mark.parametrize("resume", [False, True])
-def test_standard_workers_use_medium_without_rewriting_saved_profiles(
-    tmp_path, executor, model, deep_effort, previous_read, previous_write,
-    execution_class, resume, _mock_clean_codex_host,
-):
-    registry = ProviderRegistry.default()
-    profile = registry.select(executor, execution_class, "standard")
-    assert profile.requested_model == model
-    assert profile.requested_effort == "medium"
-    session = "8d5b1544-4657-4f42-a041-1f1fe330a4bd" if executor == "claude" else "exact-thread"
-    request = ProviderRequest(
-        executor, "bounded task", cwd=tmp_path, execution_class=execution_class,
-        profile=profile, session_id=session if resume or executor == "claude" else None,
-        resume=resume,
-    )
-    argv = registry.require(executor).build_command(request).argv
-    if executor == "claude":
-        assert argv[argv.index("--effort") + 1] == "medium"
-    else:
-        assert 'model_reasoning_effort="medium"' in argv
-    assert registry.select(executor, "read-only", "deep").requested_effort == deep_effort
-    assert registry.select("agy", execution_class, "standard").requested_effort == "high"
-
-    previous_effort = previous_read if execution_class == "read-only" else previous_write
-    initial, continuation = providers._default_argv(executor, execution_class, model, previous_effort)
-    saved = replace(profile, requested_effort=previous_effort, initial_argv=initial,
-                    resume_argv=continuation, profile_sha256=None)
-    restored = ExecutorProfile.from_dict(saved.to_dict(), adapter=profile.adapter)
-    historical = ProviderRegistry((restored,)).select(executor, execution_class, "standard")
-    assert historical.to_dict() == saved.to_dict()
-    assert historical.digest == saved.digest != profile.digest
-    old_argv = historical.adapter.build_command(replace(request, profile=historical)).argv
-    if executor == "claude":
-        assert old_argv[old_argv.index("--effort") + 1] == previous_effort
-    else:
-        assert f'model_reasoning_effort="{previous_effort}"' in old_argv
 
 
-@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "xhigh")])
-@pytest.mark.parametrize("resume", [False, True])
-def test_codex_read_only_profile_isolates_ambient_tools_on_both_turn_shapes(
-    tmp_path, tier, effort, resume, _mock_clean_codex_host,
-):
-    workspace = tmp_path / 'seat.with.dot"quote'
-    workspace.mkdir()
-    registry = ProviderRegistry.default()
-    profile = registry.select("codex", "read-only", tier)
-    request = ProviderRequest(
-        "codex", "read fixture", cwd=workspace, profile=profile,
-        session_id="exact-codex-thread" if resume else None, resume=resume,
-    )
-
-    argv = registry.require("codex").build_command(request).argv
-    prefix = ("codex", "exec", "resume") if resume else ("codex", "exec")
-    assert argv[:len(prefix)] == prefix
-    assert argv.count("--ignore-user-config") == 1
-    assert [argv[index + 1] for index, arg in enumerate(argv[:-1])
-            if arg == "--disable"] == ["apps", "plugins", "remote_plugin", "hooks"]
-    assert 'cli_auth_credentials_store="keyring"' in argv
-    trust = next(arg.removeprefix("projects=") for arg in argv
-                 if arg.startswith("projects="))
-    assert tomllib.loads(f"override = {trust}") == {
-        "override": {str(workspace): {"trust_level": "untrusted"}},
-    }
-    assert argv[argv.index("-m") + 1] == "gpt-6.1-sol"
-    assert f'model_reasoning_effort="{effort}"' in argv
-    if resume:
-        assert argv[-3:] == ("--json", "exact-codex-thread", "-")
-        assert 'sandbox_mode="read-only"' in argv
-    else:
-        assert argv[argv.index("--sandbox") + 1] == "read-only"
-    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
 
 
-@pytest.mark.parametrize("resume", [False, True])
-def test_codex_read_only_trust_override_accepts_unicode_workspace(
-    tmp_path, resume, _mock_clean_codex_host,
-):
-    workspace = tmp_path / "seat-🧭"
-    workspace.mkdir()
-    registry = ProviderRegistry.default()
-    request = ProviderRequest(
-        "codex", "read fixture", cwd=workspace,
-        profile=registry.select("codex", "read-only", "standard"),
-        session_id="exact-codex-thread" if resume else None, resume=resume,
-    )
-
-    argv = registry.require("codex").build_command(request).argv
-    trust = next(arg.removeprefix("projects=") for arg in argv
-                 if arg.startswith("projects="))
-    assert tomllib.loads(f"override = {trust}") == {
-        "override": {str(workspace): {"trust_level": "untrusted"}},
-    }
 
 
-def _codex_system_paths(tmp_path, monkeypatch):
-    system = tmp_path / "codex-system"
-    system.mkdir()
-    paths = tuple(system / name for name in (
-        "config.toml", "managed_config.toml", "requirements.toml",
-    ))
-    monkeypatch.setattr(providers, "_CODEX_SYSTEM_CONFIG_PATHS", paths, raising=False)
-    monkeypatch.setattr(providers, "_CODEX_HOST_PLATFORM", "linux", raising=False)
-    return paths
 
 
-@pytest.fixture
-def _mock_admin_owned_codex_system_location(monkeypatch):
-    # A tmp_path is owned by the test user; these tests need a protected
-    # synthetic location so they reach the later config and preference checks.
-    monkeypatch.setattr(providers.os, "geteuid", lambda: -1)
-    monkeypatch.setattr(providers.os, "access", lambda *_args, **_kwargs: False)
 
 
-@pytest.mark.parametrize("mode", [0o700, 0o500])
-@pytest.mark.parametrize("resume", [False, True])
-def test_codex_read_only_rejects_owner_mutable_system_config_directory(
-    tmp_path, monkeypatch, resume, mode,
-):
-    _codex_system_paths(tmp_path, monkeypatch)[0].parent.chmod(mode)
-    registry = ProviderRegistry.default()
-
-    with pytest.raises(ProviderRequestError, match="writable|mutable"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-            session_id="exact-thread" if resume else None, resume=resume,
-        ))
 
 
-@pytest.mark.parametrize("through_symlink", [False, True])
-@pytest.mark.parametrize("resume", [False, True])
-def test_codex_read_only_rejects_mutable_system_config_parent_when_directory_absent(
-    tmp_path, monkeypatch, through_symlink, resume,
-):
-    parent = tmp_path
-    if through_symlink:
-        target = tmp_path / "private" / "etc"
-        target.mkdir(parents=True)
-        parent = tmp_path / "etc"
-        parent.symlink_to(target, target_is_directory=True)
-    system = parent / "codex"
-    monkeypatch.setattr(providers, "_CODEX_SYSTEM_CONFIG_PATHS", tuple(
-        system / name for name in (
-            "config.toml", "managed_config.toml", "requirements.toml",
-        )
-    ))
-    monkeypatch.setattr(providers, "_CODEX_HOST_PLATFORM", "linux")
-    registry = ProviderRegistry.default()
-
-    with pytest.raises(ProviderRequestError, match="writable|mutable"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-            session_id="exact-thread" if resume else None, resume=resume,
-        ))
 
 
-@pytest.mark.parametrize("name", [
-    "config.toml", "managed_config.toml", "requirements.toml",
-])
-@pytest.mark.parametrize("resume", [False, True])
-def test_codex_read_only_rejects_present_system_configuration(
-    tmp_path, monkeypatch, name, resume,
-):
-    paths = _codex_system_paths(tmp_path, monkeypatch)
-    next(path for path in paths if path.name == name).write_text("[mcp_servers.extra]\n")
-    registry = ProviderRegistry.default()
-
-    with pytest.raises(ProviderRequestError, match="system|managed|host config"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-            session_id="exact-thread" if resume else None, resume=resume,
-        ))
 
 
-@pytest.mark.parametrize("kind", ["directory", "symlink"])
-def test_codex_read_only_rejects_nonregular_system_configuration(
-    tmp_path, monkeypatch, kind,
-):
-    path = _codex_system_paths(tmp_path, monkeypatch)[0]
-    if kind == "directory":
-        path.mkdir()
-    else:
-        path.symlink_to(tmp_path / "missing-target")
-    registry = ProviderRegistry.default()
-
-    with pytest.raises(ProviderRequestError, match="system|managed|host config"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-        ))
 
 
-def test_codex_read_only_rejects_symlinked_system_config_directory(tmp_path, monkeypatch):
-    paths = _codex_system_paths(tmp_path, monkeypatch)
-    system = paths[0].parent
-    system.rmdir()
-    system.symlink_to(tmp_path / "untrusted-config", target_is_directory=True)
-    registry = ProviderRegistry.default()
-
-    with pytest.raises(ProviderRequestError, match="system|managed|host config"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-        ))
 
 
-def test_codex_read_only_rejects_unreadable_system_configuration(tmp_path, monkeypatch):
-    path = _codex_system_paths(tmp_path, monkeypatch)[0]
-    original_lstat = Path.lstat
-
-    def denied_lstat(candidate):
-        if candidate == path:
-            raise PermissionError("synthetic inaccessible system configuration")
-        return original_lstat(candidate)
-
-    monkeypatch.setattr(Path, "lstat", denied_lstat)
-    registry = ProviderRegistry.default()
-    with pytest.raises(ProviderRequestError, match="system|managed|host config"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-        ))
 
 
-@pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("outcome", ["forced", "probe-error"])
-def test_codex_read_only_rejects_forced_macos_preferences_or_probe_errors(
-    tmp_path, monkeypatch, resume, outcome, _mock_admin_owned_codex_system_location,
-):
-    _codex_system_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr(providers, "_CODEX_HOST_PLATFORM", "darwin", raising=False)
-
-    def probe():
-        if outcome == "probe-error":
-            raise OSError("synthetic CoreFoundation failure")
-        return True
-
-    monkeypatch.setattr(providers, "_codex_macos_forced_preferences_present", probe,
-                        raising=False)
-    registry = ProviderRegistry.default()
-    with pytest.raises(ProviderRequestError, match="managed preferences|host config"):
-        registry.require("codex").build_command(ProviderRequest(
-            "codex", "read", cwd=tmp_path,
-            profile=registry.select("codex", "read-only", "standard"),
-            session_id="exact-thread" if resume else None, resume=resume,
-        ))
 
 
-def test_codex_read_only_host_preflight_rechecks_after_config_insertion(
-    tmp_path, monkeypatch, _mock_admin_owned_codex_system_location,
-):
-    path = _codex_system_paths(tmp_path, monkeypatch)[1]
-    registry = ProviderRegistry.default()
-    adapter = registry.require("codex")
-    profile = registry.select("codex", "read-only", "standard")
-    initial = ProviderRequest("codex", "read", cwd=tmp_path, profile=profile)
-    resumed = ProviderRequest(
-        "codex", "read again", cwd=tmp_path, profile=profile,
-        session_id="exact-thread", resume=True,
-    )
-
-    assert adapter.build_command(initial).argv[0] == "codex"
-    path.write_text("[mcp_servers.extra]\n")
-    with pytest.raises(ProviderRequestError, match="system|managed|host config"):
-        adapter.build_command(resumed)
 
 
-def test_codex_repo_write_does_not_apply_read_only_host_preflight(tmp_path, monkeypatch):
-    path = _codex_system_paths(tmp_path, monkeypatch)[0]
-    path.write_text("[mcp_servers.extra]\n")
-    monkeypatch.setattr(providers, "_CODEX_HOST_PLATFORM", "darwin", raising=False)
-    monkeypatch.setattr(
-        providers, "_codex_macos_forced_preferences_present",
-        lambda: (_ for _ in ()).throw(OSError("should not be probed")), raising=False,
-    )
-    registry = ProviderRegistry.default()
-    profile = registry.select("codex", "repo-write", "standard")
-    adapter = registry.require("codex")
-
-    for resume in (False, True):
-        command = adapter.build_command(ProviderRequest(
-            "codex", "write", cwd=tmp_path, execution_class="repo-write", profile=profile,
-            session_id="exact-thread" if resume else None, resume=resume,
-        ))
-        assert command.argv[0] == "codex"
 
 
-def test_codex_macos_probe_queries_only_forced_status_without_values(monkeypatch):
-    class Function:
-        def __init__(self, operation):
-            self.operation = operation
-
-        def __call__(self, *args):
-            return self.operation(*args)
-
-    class FakeCoreFoundation:
-        def __init__(self):
-            self.names = {}
-            self.queries = []
-            self.released = []
-            self.CFStringCreateWithCString = Function(self.create_string)
-            self.CFPreferencesAppSynchronize = Function(lambda _domain: 1)
-            self.CFPreferencesAppValueIsForced = Function(self.is_forced)
-            self.CFRelease = Function(self.release)
-
-        def create_string(self, _allocator, raw, _encoding):
-            pointer = len(self.names) + 1
-            self.names[pointer] = raw.decode("utf-8")
-            return pointer
-
-        def is_forced(self, key, domain):
-            self.queries.append((self.names[key], self.names[domain]))
-            return self.names[key] == "requirements_toml_base64"
-
-        def release(self, pointer):
-            self.released.append(pointer)
-
-    fake = FakeCoreFoundation()
-    monkeypatch.setattr(providers, "ctypes", ctypes, raising=False)
-    monkeypatch.setattr(ctypes, "CDLL", lambda _path: fake)
-
-    assert providers._codex_macos_forced_preferences_present() is True
-    assert fake.queries == [
-        ("config_toml_base64", "com.openai.codex"),
-        ("requirements_toml_base64", "com.openai.codex"),
-    ]
-    assert len(fake.released) == 3
 
 
-def test_codex_read_only_rechecks_exact_workspace_and_rejects_aliases(
-    tmp_path, monkeypatch, _mock_clean_codex_host,
-):
-    workspace = tmp_path / "seat"
-    workspace.mkdir()
-    alias = tmp_path / "alias"
-    alias.symlink_to(workspace, target_is_directory=True)
-    registry = ProviderRegistry.default()
-    profile = registry.select("codex", "read-only", "standard")
-    adapter = registry.require("codex")
-
-    for cwd in (alias, workspace / ".." / "seat"):
-        with pytest.raises(ProviderRequestError, match="canonical|absolute|workspace"):
-            adapter.build_command(ProviderRequest("codex", "read", cwd=cwd, profile=profile))
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(ProviderRequestError, match="canonical|absolute|workspace"):
-        adapter.build_command(ProviderRequest("codex", "read", cwd="seat", profile=profile))
-
-
-@pytest.mark.parametrize("pinned", (False, True))
-def test_codex_repo_write_argv_is_unchanged_by_read_only_isolation(tmp_path, pinned):
-    registry = ProviderRegistry.default()
-    profile = registry.select("codex", "repo-write", "standard") if pinned else None
-    adapter = registry.require("codex")
-
-    initial = adapter.build_command(ProviderRequest(
-        "codex", "write", cwd=tmp_path, execution_class="repo-write", profile=profile,
-    )).argv
-    resumed = adapter.build_command(ProviderRequest(
-        "codex", "continue", cwd=tmp_path, execution_class="repo-write",
-        profile=profile, session_id="exact-codex-thread", resume=True,
-    )).argv
-    assert initial == (
-        "codex", "exec", "-", "--json", "--sandbox", "workspace-write",
-    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"') if pinned else ())
-    assert resumed == (
-        "codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"',
-    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"') if pinned else ()) + (
-        "--json", "exact-codex-thread", "-",
-    )
 
 
 @pytest.mark.parametrize("execution_class,mode", [
@@ -865,10 +782,6 @@ def test_agy_profile_uses_stream_json_stdin_on_initial_and_exact_resume(
         session_id=session_id, resume=resume, profile=profile,
     )
 
-    if execution_class == "read-only":
-        with pytest.raises(ProviderRequestError, match="guard"):
-            registry.require("agy").build_command(request)
-        return
     command = registry.require("agy").build_command(request)
 
     expected = ("agy",) + (("--conversation", session_id) if resume else ()) + (
@@ -917,52 +830,6 @@ def test_only_agy_commands_enable_the_literal_adc_mode(
         assert "AGY_ADC_AUTH" not in command.environment
 
 
-def test_adapter_auth_mode_reaches_only_agy_child_without_secrets(
-    tmp_path, monkeypatch, _mock_clean_codex_host,
-):
-    """Exercise adapter and process isolation with a local child, not a model CLI."""
-    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
-    monkeypatch.setenv("AGY_ADC_AUTH", "true")
-    registry = ProviderRegistry.default()
-    forbidden = (
-        "CLAUDE_MEM_TOKEN", "GEMINI_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_CLOUD_QUOTA_PROJECT", "HOME",
-    )
-    base = {name: "sentinel" for name in forbidden}
-    base.update({"AGY_ADC_AUTH": "true", "PATH": "/usr/bin:/bin"})
-    probe = (
-        "import json, os; "
-        f"names = {forbidden!r}; "
-        "print(json.dumps({'adc': os.getenv('AGY_ADC_AUTH'), "
-        "'forbidden': [name for name in names if name in os.environ]}))"
-    )
-
-    for executor, session_id, expected_adc in (
-        ("agy", None, "true"),
-        ("codex", None, None),
-    ):
-        command = registry.require(executor).build_command(ProviderRequest(
-            executor, "question", cwd=tmp_path, session_id=session_id,
-            execution_class="repo-write" if executor == "agy" else "read-only",
-            profile=registry.select(
-                executor, "repo-write" if executor == "agy" else "read-only", "standard",
-            ),
-        ))
-        child = replace(command, argv=(sys.executable, "-c", probe), stdin=b"",
-                        slot_root=tmp_path / "slots")
-
-        result = fanout.run_command(child, base_environment=base)
-
-        assert result.status is ProcessStatus.EXIT
-        assert result.returncode == 0
-        assert json.loads(result.stdout) == {"adc": expected_adc, "forbidden": []}
-
-    with pytest.raises(ProviderRequestError, match="Vertex route"):
-        registry.require("claude").build_command(ProviderRequest(
-            "claude", "question", cwd=tmp_path,
-            session_id="11111111-1111-4111-8111-111111111111",
-            profile=registry.select("claude", "read-only", "standard"),
-        ))
 
 
 @pytest.mark.parametrize("value", [None, "false", "TRUE", "key-sentinel"])
@@ -983,8 +850,8 @@ def test_agy_uses_default_auth_when_adc_mode_is_not_literal_true(tmp_path, monke
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_claude_command_passes_only_private_default_vertex_route(tmp_path, monkeypatch, resume):
-    """A literal opt-in passes only the local ADC path and pinned EU route."""
+def test_claude_native_command_passes_private_default_adc_path(tmp_path, monkeypatch, resume):
+    """The installed CLI owns its route; the adapter forwards only eligible ADC."""
     adc = _synthetic_claude_adc(tmp_path, monkeypatch)
     monkeypatch.setenv("AGY_ADC_AUTH", "true")
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
@@ -1001,16 +868,12 @@ def test_claude_command_passes_only_private_default_vertex_route(tmp_path, monke
 
     assert command.environment == {
         "GOOGLE_APPLICATION_CREDENTIALS": str(adc),
-        "CLAUDE_CODE_USE_VERTEX": "1",
-        "ANTHROPIC_VERTEX_PROJECT_ID": "disposable-test-project",
-        "CLOUD_ML_REGION": "eu",
     }
     assert "synthetic credential" not in repr(command)
 
 
 @pytest.mark.parametrize("state", ["missing", "public", "symlink", "directory"])
-def test_claude_command_rejects_ineligible_adc(tmp_path, monkeypatch, state):
-    """An opted-in restricted seat fails before spend if ADC is ineligible."""
+def test_claude_native_command_does_not_inject_ineligible_adc(tmp_path, monkeypatch, state):
     adc = _synthetic_claude_adc(tmp_path, monkeypatch)
     monkeypatch.setenv("AGY_ADC_AUTH", "true")
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
@@ -1033,8 +896,7 @@ def test_claude_command_rejects_ineligible_adc(tmp_path, monkeypatch, state):
         profile=registry.select("claude", "read-only", "standard"),
     )
 
-    with pytest.raises(ProviderRequestError, match="Vertex route"):
-        registry.require("claude").build_command(request)
+    assert registry.require("claude").build_command(request).environment == {}
 
 
 @pytest.mark.parametrize("auth_mode", [None, "false", "TRUE"])
@@ -1059,10 +921,10 @@ def test_claude_default_adc_requires_literal_opt_in(tmp_path, monkeypatch, auth_
 
 @pytest.mark.parametrize("explicit", ["", "/explicit/credentials.json"])
 @pytest.mark.parametrize("resume", [False, True])
-def test_claude_restricted_route_rejects_explicit_parent_choice(
+def test_claude_native_command_does_not_replace_explicit_parent_choice(
     tmp_path, monkeypatch, explicit, resume,
 ):
-    """An explicit parent path cannot be silently replaced or inherited."""
+    """The adapter must not replace the installed CLI's explicit parent choice."""
     _synthetic_claude_adc(tmp_path, monkeypatch)
     monkeypatch.setenv("AGY_ADC_AUTH", "true")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", explicit)
@@ -1073,59 +935,9 @@ def test_claude_restricted_route_rejects_explicit_parent_choice(
         profile=registry.select("claude", "read-only", "standard"),
     )
 
-    with pytest.raises(ProviderRequestError, match="parent override"):
-        registry.require("claude").build_command(request)
+    assert registry.require("claude").build_command(request).environment == {}
 
 
-def test_private_claude_adc_path_reaches_only_claude_child(
-    tmp_path, monkeypatch, _mock_clean_codex_host,
-):
-    """Probe the actual child environment without invoking a provider CLI."""
-    adc = _synthetic_claude_adc(tmp_path, monkeypatch)
-    monkeypatch.setenv("AGY_ADC_AUTH", "true")
-    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
-    registry = ProviderRegistry.default()
-    names = (
-        "GOOGLE_APPLICATION_CREDENTIALS", "HOME", "GOOGLE_CLOUD_QUOTA_PROJECT",
-        "CLAUDE_MEM_TOKEN", "AGY_ADC_AUTH", "CLAUDE_CODE_USE_VERTEX",
-        "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
-    )
-    base = {name: "ambient-sentinel" for name in names}
-    base["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
-    probe = (
-        "import json, os; "
-        f"names = {names!r}; "
-        "print(json.dumps({name: os.getenv(name) for name in names if name in os.environ}))"
-    )
-    for executor, session_id, resume, expected in (
-        ("claude", None, False, {"GOOGLE_APPLICATION_CREDENTIALS": str(adc),
-                                 "CLAUDE_CODE_USE_VERTEX": "1",
-                                 "ANTHROPIC_VERTEX_PROJECT_ID": "disposable-test-project",
-                                 "CLOUD_ML_REGION": "eu"}),
-        ("claude", "11111111-1111-4111-8111-111111111111", True,
-         {"GOOGLE_APPLICATION_CREDENTIALS": str(adc),
-          "CLAUDE_CODE_USE_VERTEX": "1",
-          "ANTHROPIC_VERTEX_PROJECT_ID": "disposable-test-project",
-          "CLOUD_ML_REGION": "eu"}),
-        ("agy", None, False, {"AGY_ADC_AUTH": "true"}),
-        ("codex", None, False, {}),
-    ):
-        request = ProviderRequest(
-            executor, "question", cwd=tmp_path, session_id=session_id, resume=resume,
-            execution_class="repo-write" if executor == "agy" else "read-only",
-            profile=registry.select(
-                executor, "repo-write" if executor == "agy" else "read-only", "standard",
-            ),
-        )
-        command = registry.require(executor).build_command(request)
-        child = replace(command, argv=(sys.executable, "-c", probe), stdin=b"",
-                        slot_root=tmp_path / "slots")
-
-        result = fanout.run_command(child, base_environment=base)
-
-        assert result.status is ProcessStatus.EXIT
-        assert result.returncode == 0
-        assert json.loads(result.stdout) == expected
 
 
 def test_agy_stream_result_preserves_exact_identity_usage_and_unobserved_model(tmp_path):
@@ -1243,8 +1055,9 @@ def test_known_unstarted_retry_rechecks_cli_version_without_second_launch(tmp_pa
         launched.append(command)
         version[0] = "2.2.0"
         return ProcessResult(ProcessStatus.SPAWN_ERROR, None, b"", b"", error="not started")
-    with pytest.raises(ProviderRequestError, match="version drifted"):
-        providers._run_provider_with_runner(_request("claude", tmp_path, retries=1),
+    with pytest.raises(ProviderRequestError, match="recorded CLI version changed"):
+        providers._run_provider_with_runner(_request("claude", tmp_path, retries=1,
+                                            run_id="recorded", inputs_digest="a" * 64),
                                             registry=registry, runner=unstarted)
     assert len(launched) == 1
 

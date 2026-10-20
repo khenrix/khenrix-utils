@@ -49,32 +49,29 @@ receipt under `~/.local/state/khenrix-utils/skills/`. See
 [`docs/skills.md`](docs/skills.md) for the skill overview, routing rules, restore
 command, and upstream update process.
 
-The fanout skills carry the full release control source at its canonical
-repository paths inside each delivered skill, including `shared/lib/fanout`,
-both `shared/skills/llm-fanout-*` controls, `components/memory`,
-`components/fanout-container`, required root files, `scripts/fanout_*.py` and
-the release validator's `scripts/lib/checks.py` dependency. The manifest and
-that dependency are included in the runtime source binding.
-The active helper and metadata must match their attested canonical copies.
-Bundled memory code performs owner-side control checks; the independent memory
-installation, receipt and authenticated worker still provide memory authority.
+Each native fanout skill bundles `lib/fanout` from `shared/lib/fanout` and
+`memory` from `components/memory`. The planner admits a bounded task graph; the
+executor preserves exact native sessions, peer evidence and durable recovery.
+Seats run as trusted same-user processes with their installed skills and read
+tools. These controls are not OS confinement. The invoking owner reconciles all
+configured final results and alone applies approved repository or service writes.
+External messages require approval of their exact content and destination.
 
-Source attestation and normal read-only use work independently of the originating
-checkout. Certified release-evidence reopening additionally needs the retained
-owner-held producer checkout and its original evidence. The installed validator
-authenticates the strict attempt and stored process before using the producer's
-recorded path, requires the same full source binding, and rechecks its current
-gate inputs, original historical subject and raw final receipts. Missing or
-changed producer evidence refuses admission; receipts and evaluation data are
-not delivered with the skills.
+A timed-out turn is not proof that every native tool command stopped. CLI tools
+can launch detached processes outside the supervised process group. Inspect
+unfinished tool activity and clean up only processes positively tied to that run.
 
-Council and Forge are retired from active discovery and delivery first, while
-their source and measured evidence remain historical-only. This retirement does
-not open repository-write execution: exact source, route, image and certificate
-admission and fresh live proof remain required. Current approved Codex profiles
-use `gpt-6.1-sol` with standard `xhigh` and read-only deep `ultra`; the separate
-Harbor quality panel uses `gpt-6.1-sol` at `xhigh`. Approval does not establish an
-observed served model or revalidate an older run.
+Bundled memory code performs owner-side checks; the independent memory
+installation, receipt and authenticated worker provide memory authority.
+Source verification, fresh live behavior, installed discovery and authentication
+are separate evidence states. Approval does not establish the served model or
+revalidate an older run. Executors use medium effort; planning, evaluation and
+merging use xhigh, with Gemini high throughout.
+
+The retired Council/Forge engines and container certificate machinery are removed
+from current source and delivery. Historical source and measured evidence remain
+recoverable from retained Git history and separately held private evidence; they
+do not qualify the native implementation.
 
 The 15 Superpowers directories are a pinned snapshot of
 [`obra/superpowers`](https://github.com/obra/superpowers). Their immutable commit,
@@ -112,8 +109,8 @@ mise run defaults:apply    # backs up config, then aligns only declared leaves
 
 | CLI | Portable defaults |
 |---|---|
-| Claude | provider-neutral `best`, Opus 5.5 `xhigh` per-model, `ultracode=false` by default; use `claude --effort ultracode` for a planning session |
-| Codex | `gpt-6.1-sol`, execution/subagents `xhigh`, planning `ultra`, preferred `service_tier=default` |
+| Claude | provider-neutral `best`, Opus 5.5 `medium` per-model, `ultracode=false`; planning/review/merge explicitly select `xhigh` |
+| Codex | `gpt-6.1-sol`, execution/subagents `medium`, planning/review/merge `xhigh`, preferred `service_tier=default` |
 | agy | `Gemini 3.8 Flash (High)` |
 
 Existing auth, MCP, plugin, skill and machine-specific settings remain intact.
@@ -132,7 +129,7 @@ do not install or move shared skills or plugins:
   Codex, and agy. Maka can search the same loopback-only data without capturing
   a second copy. Choose `claude-subscription`, `codex-subscription`,
   `openai-keychain`, or an owner-only `local-claude` descriptor explicitly.
-- `components/maka` installs the pinned Maka v47 runtime, launcher, auth policy,
+- `components/maka` installs the pinned Maka `0.2.0-dev.70.20261005` runtime, launcher, auth policy,
   provenance, and audit lab. It supports ChatGPT subscription login on macOS and
   Linux/WSL, plus a Keychain-backed API route on macOS.
 
@@ -199,18 +196,15 @@ Read-only inspection without installing:
 mise run skills:plan      # selective skill and house-style diff
 mise run skills:status    # exits non-zero when managed content drifted
 mise run defaults:status # model/effort drift only
-KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise run verify
+mise run verify          # deterministic current-source gate; no paid model calls
 mise exec -- make status  # full config diff for every CLI
 ```
 
-`verify` and `precommit` require an explicit private snapshot of the original
-historical sources. Prepare it once from the pinned original revision with
-`mise exec -- python scripts/fanout_baseline.py prepare-historical --root "$PWD"
---historical-root /absolute/private/owned/snapshot`, under an owned `0700` parent,
-then supply that same root through `KHENRIX_HISTORICAL_BASELINE_ROOT` to both
-gates. The gate fails when the snapshot is missing or changed; it neither skips
-the check nor regenerates the snapshot. See [headless-invocation.md](headless-invocation.md)
-for the original provenance and preparation contract.
+`verify` checks current deterministic behavior and reports receipt status.
+`precommit` additionally requires staged rendered output and valid evaluation
+evidence. Historical receipt adoption remains explicitly unverified and cannot
+satisfy a final live gate. See [headless-invocation.md](headless-invocation.md)
+for the current native invocation and evidence contract.
 
 ## Editing the source of truth
 

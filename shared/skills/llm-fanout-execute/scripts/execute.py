@@ -28,7 +28,6 @@ _MAX_CANDIDATE_MANIFEST_BYTES = 64 * 1024 * 1024
 _UNCERTAIN_STATUS_LIMIT = 64
 _DESCRIPTOR = "run.json"
 _BOOTSTRAP = "startup.json"
-_QUALITY_CASE = "quality-case.json"
 _FROZEN_V1_FIXTURE_MANIFEST_SHA256 = "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
 
 
@@ -355,13 +354,10 @@ def save_private_descriptor(root: Path | str, document: dict[str, object], *,
     root = Path(root)
     _private_dir(root)
     expected_schema = {_DESCRIPTOR: {"fanout-execute-private-v1", "fanout-execute-private-v2"},
-                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"},
-                       _QUALITY_CASE: {"fanout-quality-case-pointer-v1"}}.get(name)
+                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"}}.get(name)
     if (expected_schema is None or not isinstance(document, dict)
             or document.get("schema_version") not in expected_schema):
         raise ValueError("private descriptor schema is invalid")
-    if name == _QUALITY_CASE:
-        _quality_pointer(document)
     raw_document = _canonical(document)
     if len(raw_document) > _MAX_PACKET_BYTES:
         raise ValueError("private descriptor exceeds its byte limit")
@@ -392,8 +388,7 @@ def load_private_descriptor(root: Path | str, *, name: str = _DESCRIPTOR) -> dic
     root = Path(root)
     _private_dir(root)
     expected_schema = {_DESCRIPTOR: {"fanout-execute-private-v1", "fanout-execute-private-v2"},
-                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"},
-                       _QUALITY_CASE: {"fanout-quality-case-pointer-v1"}}.get(name)
+                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"}}.get(name)
     if expected_schema is None:
         raise ValueError("private descriptor name is invalid")
     try:
@@ -419,8 +414,6 @@ def load_private_descriptor(root: Path | str, *, name: str = _DESCRIPTOR) -> dic
                 or envelope["document"].get("schema_version") not in expected_schema
                 or envelope["sha256"] != _sha256(_canonical(envelope["document"]))):
             raise ValueError("private descriptor changed")
-        if name == _QUALITY_CASE:
-            _quality_pointer(envelope["document"])
         return envelope["document"]
     except (UnicodeError, TypeError, ValueError) as error:
         raise ValueError("private descriptor changed") from error
@@ -837,22 +830,9 @@ def _build_preparations(runtime, *, plan, inputs, resolver, bundles, source_mark
                 admission, tuple(runtime.SkillLoadEvidence.engine(skill, admission)
                                  for skill in admission.skills),
             )
-            guard = None
-            guard_digest = None
-            if executor == "agy" and task.execution_class == "read-only":
-                profile = registry.select(executor, "read-only", policy.quality_tier)
-                if require_provider_guards:
-                    guard = runtime.issue_agy_readonly_guard(
-                        controller, verification, profile,
-                    )
-                else:
-                    guard_digest = runtime.agy_readonly_guard_receipt_sha256(
-                        controller, verification, profile,
-                    )
             seat_list.append(runtime.SeatAssignment.from_admission(
                 admission, skill_bundle=bundles[task.id], artifacts=artifacts,
-                workspace_verification=verification, agy_guard=guard,
-                agy_guard_receipt_sha256=guard_digest,
+                workspace_verification=verification,
             ))
         task_bytes = runtime.canonical_json(task.to_dict())
         packet_values = dict(
@@ -898,9 +878,6 @@ class RunContext:
         self.execution_backend = execution_backend
 
     def close(self) -> None:
-        private = getattr(self.service.coordinator, "_container_transcripts", None)
-        if private is not None:
-            private.close()
         self.journal.close()
         self.artifacts.close()
         self.scheduler_backend.close()
@@ -914,9 +891,9 @@ class RunContext:
 
 
 def _require_native_seat_boundary(plan) -> None:
-    if plan.schema_version == "v2" or any(task.kind == "work" and task.execution_class == "repo-write"
+    if any(task.kind == "work" and task.execution_class == "repo-write"
            for task in plan.tasks):
-        raise ValueError("v2 or repo-write execution requires a validated native seat boundary")
+        raise ValueError("repo-write workers are unsupported; use read proposals and an owner action")
 
 
 def _refuse_uncontained_repo_write(plan, provider_runner, runtime) -> None:
@@ -930,7 +907,7 @@ def _refuse_uncontained_repo_write(plan, provider_runner, runtime) -> None:
 def _require_turn_budget(plan, budget: int, runtime) -> None:
     runtime.ExecutionBudget(budget)
     required_turns = sum(
-        len(policy.executor_ids) * policy.rounds * (policy.retries + 1)
+        policy.projected_turns
         for task in plan.tasks
         if task.kind == "work" and task.execution_class != "orchestrator-action"
         for policy in (task.provider_policy or plan.defaults,)
@@ -971,6 +948,19 @@ def _v2_budget_anchor(inputs, budget: int) -> tuple[str, bytes]:
     })
 
 
+def _fresh_v2_registry(runtime, plan, registry, provider_runner):
+    if registry is not None:
+        return registry
+    selected = tuple(sorted({
+        executor for task in plan.tasks
+        if task.kind == "work" and task.execution_class == "read-only"
+        for executor in (task.provider_policy or plan.defaults).executor_ids
+    }))
+    if selected and (provider_runner is None or provider_runner is runtime.run_provider):
+        return runtime.ProviderRegistry.for_installed(selected)
+    return runtime.ProviderRegistry.default()
+
+
 def prepare_v2_run(packet: Mapping[str, object], *, target_roots: Mapping[str, Path],
                    skill_roots, provider_runner=None, runtime=None,
                    registry=None) -> PreparedRunV2:
@@ -992,7 +982,8 @@ def prepare_v2_run(packet: Mapping[str, object], *, target_roots: Mapping[str, P
     except runtime.RepositoryValidationError as error:
         raise ValueError(str(error)) from error
     writable_ids = {task.target_id for task in plan.tasks
-                    if task.kind == "work" and task.execution_class == "repo-write"}
+                    if task.kind == "work" and (task.execution_class == "repo-write" or
+                        task.execution_class == "orchestrator-action" and task.owned_paths)}
     try:
         runtime.validate_target_bindings(bindings, writable_ids=writable_ids)
     except runtime.RepositoryValidationError as error:
@@ -1001,7 +992,7 @@ def prepare_v2_run(packet: Mapping[str, object], *, target_roots: Mapping[str, P
         repo_module.revalidate_target_bindings(bindings, writable_ids=writable_ids)
     except runtime.RepositoryValidationError as error:
         raise ValueError(str(error)) from error
-    registry = registry or runtime.ProviderRegistry.default()
+    registry = _fresh_v2_registry(runtime, plan, registry, provider_runner)
     bundles = {task.id: _task_skill_bundle(runtime, resolver, plan, task.id)
                for task in plan.tasks if task.kind == "work"
                and task.execution_class != "orchestrator-action"}
@@ -1038,14 +1029,15 @@ def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
     if plan.schema_version != "v2":
         raise ValueError("v2 admission is required for target-bound startup")
     _require_turn_budget(plan, budget, runtime)
-    registry = registry or runtime.ProviderRegistry.default()
+    registry = _fresh_v2_registry(runtime, plan, registry, provider_runner)
     prepared = prepare_v2_run(
         packet, target_roots=target_roots, skill_roots=skill_roots,
         provider_runner=provider_runner, runtime=runtime, registry=registry,
     )
     inputs = prepared.inputs
     writable_ids = {task.target_id for task in plan.tasks
-                    if task.kind == "work" and task.execution_class == "repo-write"}
+                    if task.kind == "work" and (task.execution_class == "repo-write" or
+                        task.execution_class == "orchestrator-action" and task.owned_paths)}
     escrow_owner = runtime.OwnerCapability.from_token(secrets.token_urlsafe(32))
     escrow_controller = runtime.LifecycleCapability(secrets.token_urlsafe(32))
     with runtime.ArtifactStore(private / "startup-baseline") as startup_artifacts:
@@ -1191,12 +1183,14 @@ def prepare_run(packet: dict[str, object], *, repo_root: Path | str, run_root: P
         )
         scheduler = runtime.Scheduler.create(
             plan, inputs, scheduler_backend, artifacts, owner=owner, anchor_store=anchor,
+            lifecycle_controller=lifecycle, repository_baselines={"": baseline},
         )
         coordinator = runtime.CollaborationCoordinator(
             artifacts=artifacts, journal=journal, owner=owner, memory=memory,
             registry=registry, provider_runner=provider_runner or runtime.run_provider,
             lifecycle_controller=lifecycle, repository_baseline=baseline,
             slot_root=run / "slots",
+            forbidden_read_roots=(authority, private),
         )
         service = runtime.ExecutionService(
             plan=plan, inputs=inputs, preparations=preparations,
@@ -1348,6 +1342,7 @@ def recover_start(private_root: Path | str, *, runtime=None, registry=None) -> d
                 runtime.resume_scheduler_from_amendments(
                     initial_plan=plan, journal=journal, backend=scheduler_backend,
                     artifacts=artifacts, owner=owner, anchor_store=anchor,
+                    lifecycle_controller=lifecycle, repository_baselines={"": baseline},
                 )
             finally:
                 scheduler_backend.close()
@@ -1384,7 +1379,8 @@ def _recover_v2_start(private: Path, bootstrap: dict[str, object], *, runtime,
     plan = compiled.plan
     specs = {target.id: target for target in plan.targets}
     writable_ids = {task.target_id for task in plan.tasks
-                    if task.kind == "work" and task.execution_class == "repo-write"}
+                    if task.kind == "work" and (task.execution_class == "repo-write" or
+                        task.execution_class == "orchestrator-action" and task.owned_paths)}
     if (plan.schema_version != "v2" or set(inputs.targets) != set(specs)
             or any(binding.spec != specs[target_id]
                    for target_id, binding in inputs.targets.items())
@@ -1495,7 +1491,8 @@ def inspect_v2_status(private_root: Path | str, *, runtime=None, registry=None,
         raise ValueError("v2 status target registry changed")
     plan = _saved_v2_plan(descriptor["admission_packet"], inputs, runtime)
     writable = {task.target_id for task in plan.tasks
-                if task.kind == "work" and task.execution_class == "repo-write"}
+                if task.kind == "work" and (task.execution_class == "repo-write" or
+                    task.execution_class == "orchestrator-action" and task.owned_paths)}
     if (set(inputs.targets) != {target.id for target in plan.targets}
             or any(inputs.targets[target.id].spec != target for target in plan.targets)
             or descriptor["writable_target_ids"] != sorted(writable)):
@@ -1547,7 +1544,8 @@ def inspect_v2_status(private_root: Path | str, *, runtime=None, registry=None,
             handover = inspection.state.branch_handovers.get(_recovery_task_id)
             task = next((item for item in accepted_plan.tasks
                          if item.id == _recovery_task_id and item.kind == "work"
-                         and item.execution_class == "repo-write"), None)
+                         and (item.execution_class == "repo-write" or
+                             item.execution_class == "orchestrator-action" and item.owned_paths)), None)
             records = inspection.state.branch_records.get(_recovery_task_id, {})
             if (handover is None or task is None
                     or handover[0].target_id != task.target_id
@@ -1581,7 +1579,8 @@ def inspect_v2_status(private_root: Path | str, *, runtime=None, registry=None,
                 )
                 proven_delivery = {
                     task.target_id for task in accepted_plan.tasks
-                    if task.kind == "work" and task.execution_class == "repo-write"
+                    if task.kind == "work" and (task.execution_class == "repo-write" or
+                        task.execution_class == "orchestrator-action" and task.owned_paths)
                     and task.id not in inspection.state.branch_blocked
                     and (handover := inspection.state.branch_handovers.get(task.id)) is not None
                     and handover[1] is not None
@@ -1878,10 +1877,13 @@ def _inspect_v1_run(private_root: Path | str, *, runtime, registry=None):
                 raise ValueError("v1 amendment changed immutable run identity, source or baseline")
             if amendment.phase == "plan-amendment-accepted":
                 bindings[number] = (documents.plan, documents.inputs)
+        lifecycle = runtime.resume_lifecycle_controller(
+            run / "lifecycle", runtime.LifecycleCapability(descriptor["controller_token"]),
+        )
         scheduler = runtime.Scheduler._resume_impl(
             plan, inputs, scheduler_backend, artifacts, owner=owner,
             anchor_store=anchor, allow_test=False, journal=inspection,
-            lifecycle_controller=None, allow_repair=False,
+            lifecycle_controller=lifecycle, allow_repair=False, repository_baselines={"": baseline},
         )
         snapshot = scheduler_backend.read().snapshot
         if (snapshot.plan_revision != revision or bindings.get(revision) != (plan, inputs)):
@@ -1893,16 +1895,16 @@ def _inspect_v1_run(private_root: Path | str, *, runtime, registry=None):
                     decision[1].compiled_plan_sha256, decision[1].digest,
                 ):
                     raise ValueError("v1 scheduler decision differs from admitted historical binding")
-        projected = sum(len((task.provider_policy or plan.defaults).executor_ids)
-                        * (task.provider_policy or plan.defaults).rounds
-                        * ((task.provider_policy or plan.defaults).retries + 1)
+        projected = sum((task.provider_policy or plan.defaults).projected_turns
                         for task in plan.tasks if task.kind == "work"
                         and task.execution_class != "orchestrator-action")
         runtime.ExecutionBudget(descriptor["budget"])
         if projected > descriptor["budget"]:
             raise ValueError("v1 status provider budget differs from admitted plan")
         status = runtime.ExecutionStatus(inputs.run_id, revision, scheduler.revision, 0, projected,
-            tuple(runtime.ExecutionTaskStatus(task.task_id, task.phase, 0) for task in snapshot.tasks))
+            tuple(runtime.ExecutionTaskStatus(task.task_id,
+                      "blocked-memory" if inspection.state.task_phases.get(task.task_id) == "blocked-memory"
+                      else task.phase, 0) for task in snapshot.tasks))
         record = execution_backend.read()
         if record is not None:
             _validate_v2_status_execution(record, execution_backend, status, plan, inputs, artifacts, runtime)
@@ -2070,7 +2072,7 @@ def resume_run(private_root: Path | str, **kwargs):
 
 
 def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
-                 memory_preflight, provider_runner, for_dispatch, trial_certificate):
+                 memory_preflight, provider_runner, for_dispatch):
     startup = load_private_descriptor(private_root, name=_BOOTSTRAP)
     if descriptor != {**startup, "schema_version": "fanout-execute-private-v2"}:
         raise ValueError("v2 private descriptor differs from startup authority")
@@ -2090,6 +2092,8 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
     expected = _v2_inputs(runtime, compiled, plan, inputs.run_id, inputs.targets, registry, bundles)
     if expected != inputs:
         raise ValueError("target cold recovery immutable inputs changed")
+    if for_dispatch:
+        inspect_v2_status(private_root, runtime=runtime, registry=registry)
     if for_dispatch and memory_factory is None and provider_runner is not None and provider_runner is not runtime.run_provider:
         _require_native_seat_boundary(plan)
     if memory_factory is None:
@@ -2118,7 +2122,7 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
     try:
         record = {name: descriptor[name] for name in (
             "schema_version", "run_id", "inputs", "baseline_manifest_refs", "writable_target_ids")}
-        baselines = _load_target_baseline_record(runtime, artifacts, record, verify_live=for_dispatch)
+        baselines = _load_target_baseline_record(runtime, artifacts, record, verify_live=False)
         scheduler = (runtime.Scheduler.create(plan, inputs, scheduler_backend, artifacts,
             owner=owner, anchor_store=anchor, journal=journal,
             lifecycle_controller=lifecycle, repository_baselines=baselines) if scheduler_backend.read() is None else
@@ -2129,7 +2133,7 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
         coordinator = runtime.CollaborationCoordinator(artifacts=artifacts, journal=journal, owner=owner,
             memory=memory, registry=registry, provider_runner=provider_runner or runtime.run_provider,
             lifecycle_controller=lifecycle, repository_baselines=baselines, slot_root=run / "slots",
-            dependency_scheduler=scheduler, trial_certificate=trial_certificate)
+            dependency_scheduler=scheduler, forbidden_read_roots=(authority, private))
         if for_dispatch:
             for task in plan.tasks:
                 if task.kind == "work" and task.execution_class != "orchestrator-action":
@@ -2183,18 +2187,14 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
 
 def open_run(private_root: Path | str, *, runtime=None, registry=None, memory_factory=None,
              memory_preflight: Callable[[], bool] | None = None,
-             provider_runner=None, for_dispatch: bool = False, trial_certificate=None) -> RunContext:
-    pointer = Path(private_root) / _QUALITY_CASE
-    if pointer.exists() or pointer.is_symlink():
-        raise ValueError("attached runs require the closed quality-case entry")
+             provider_runner=None, for_dispatch: bool = False) -> RunContext:
     return _rebuild_run(private_root, runtime=runtime, registry=registry,
         memory_factory=memory_factory, memory_preflight=memory_preflight,
-        provider_runner=provider_runner, for_dispatch=for_dispatch, trial_certificate=trial_certificate)
+        provider_runner=provider_runner, for_dispatch=for_dispatch)
 
 
 def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memory_factory=None,
-                 memory_preflight=None, provider_runner=None, for_dispatch=False, trial_certificate=None,
-                 require_provider_guards=False):
+                 memory_preflight=None, provider_runner=None, for_dispatch=False):
     """Rebuild the same service from private bytes and every authenticated store."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
@@ -2204,7 +2204,7 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
     if descriptor["schema_version"] == "fanout-execute-private-v2":
         return _open_v2_run(private_root, descriptor, runtime=runtime, registry=registry,
             memory_factory=memory_factory, memory_preflight=memory_preflight,
-            provider_runner=provider_runner, for_dispatch=for_dispatch, trial_certificate=trial_certificate)
+        provider_runner=provider_runner, for_dispatch=for_dispatch)
     repository = Path(descriptor["repo_root"])
     run = Path(descriptor["run_root"])
     authority = Path(descriptor["authority_root"])
@@ -2297,17 +2297,19 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
             controller=lifecycle, artifacts=artifacts, registry=registry,
             restore=True, workspace_evidence=workspace_evidence,
             plan_revision=plan_revision,
-            require_provider_guards=for_dispatch or require_provider_guards,
+            require_provider_guards=for_dispatch,
         )
         scheduler = runtime.resume_scheduler_from_amendments(
             initial_plan=initial_plan, journal=journal, backend=scheduler_backend,
             artifacts=artifacts, owner=owner, anchor_store=anchor,
+            lifecycle_controller=lifecycle, repository_baselines={"": baseline},
         )
         coordinator = runtime.CollaborationCoordinator(
             artifacts=artifacts, journal=journal, owner=owner, memory=memory,
             registry=registry, provider_runner=provider_runner or runtime.run_provider,
             lifecycle_controller=lifecycle, repository_baseline=baseline,
             slot_root=run / "slots",
+            forbidden_read_roots=(authority, private),
         )
         service = runtime.ExecutionService(
             plan=plan, inputs=inputs, preparations=preparations,
@@ -2328,49 +2330,6 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
         raise
 
 
-def _quality_pointer(value):
-    ref = value.get("attachment") if type(value) is dict else None
-    if (type(value) is not dict or set(value) != {"schema_version", "attachment"}
-            or value["schema_version"] != "fanout-quality-case-pointer-v1"
-            or len(_canonical(value)) > 1024 or type(ref) is not list or len(ref) != 2
-            or type(ref[0]) is not str or re.fullmatch(r"[0-9a-f]{64}\.json", ref[0]) is None
-            or type(ref[1]) is not str or re.fullmatch(r"[0-9a-f]{64}", ref[1]) is None):
-        raise ValueError("quality attachment pointer fields differ")
-    return ref
-
-
-def attach_quality_case(private_root, document):
-    """Owner-local adoption only; fixed runtime and existing stores, no spend."""
-    if (Path(private_root) / _QUALITY_CASE).exists() or (Path(private_root) / _QUALITY_CASE).is_symlink():
-        raise ValueError("quality attachment already published")
-    runtime = _runtime()
-    module = importlib.import_module(runtime.__name__ + ".quality_case")
-    with open_run(private_root, runtime=runtime) as opened:
-        attachment = module.adopt_quality_case(opened.service, opened.owner, document,
-            helper=Path(__file__), runtime_digest=_runtime_digest(runtime))
-        save_private_descriptor(private_root, {"schema_version": "fanout-quality-case-pointer-v1",
-            "attachment": [attachment.name, attachment.digest]}, name=_QUALITY_CASE)
-        return attachment
-
-
-def open_quality_case(private_root):
-    """Closed installed consumer: no registry, version probe, Memory or runner injection."""
-    try:
-        pointer = _quality_pointer(load_private_descriptor(private_root, name=_QUALITY_CASE))
-    except ValueError as error:
-        raise ValueError("quality attachment pointer is unavailable or differs") from error
-    runtime = _runtime()
-    module = importlib.import_module(runtime.__name__ + ".quality_case")
-    attachment = module.QualityCaseAttachment(*pointer)
-    runner = module.QualityCaseRunner(attachment, helper=Path(__file__), runtime_digest=_runtime_digest(runtime))
-    opened = _rebuild_run(private_root, runtime=runtime, provider_runner=runner,
-        require_provider_guards=True)
-    try:
-        runner.bind(opened.service)
-        return opened
-    except BaseException:
-        opened.close()
-        raise
 
 
 def _read_file(path: str, *, limit: int = _MAX_PACKET_BYTES) -> bytes:
@@ -2488,7 +2447,11 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
             if amendment.phase == "plan-amendment-accepted":
                 plan, inputs = documents.plan, documents.inputs
         catalog = registry or runtime.ProviderRegistry.default()
-        if dict(catalog.profile_digests) != dict(inputs.provider_profiles):
+        restored_registry = _initial_registry(runtime, descriptor, catalog, initial_inputs)
+        restored_registry = _accepted_registry(
+            runtime, artifacts, restored_registry, inputs, adapter_catalog=catalog,
+        )
+        if dict(restored_registry.profile_digests) != dict(inputs.provider_profiles):
             raise ValueError("restore original executor profiles for v2 owner handover")
         scheduler = runtime.Scheduler.resume_exact_v2(
             plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
@@ -2499,7 +2462,8 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
             if args.verification_ref_file is None:
                 raise ValueError("v2 handover requires --verification-ref-file")
             task = next((item for item in plan.tasks if item.id == args.task_id
-                         and item.kind == "work" and item.execution_class == "repo-write"), None)
+                         and item.kind == "work" and (item.execution_class == "repo-write" or
+                             item.execution_class == "orchestrator-action" and item.owned_paths)), None)
             if task is None:
                 raise ValueError("v2 handover requires a repository writer")
             binding = inputs.targets[task.target_id]
@@ -2609,7 +2573,7 @@ def _inspect_answers(opened: RunContext, task_id: str, private_root: Path) -> di
         raise ValueError("answer inspection requires read-only work")
     policy = task.provider_policy or service.plan.defaults
     state = service._execution_state(task_id)
-    if (len(state.barriers) != policy.rounds
+    if (not service._provider_complete(task, state)
             or service.scheduler.task_phase(task_id) not in {"reconciliation-pending", "completed"}):
         raise ValueError("final answer barrier is not complete")
     barrier = service._restore_barrier(state.barriers[-1], service._packet_for(task))
@@ -2621,6 +2585,7 @@ def _inspect_answers(opened: RunContext, task_id: str, private_root: Path) -> di
         answer = opened.artifacts.read_bytes(ref).decode("utf-8")
         seats.append({
             "seat_id": terminal.seat_id, "executor_id": terminal.executor_id,
+            "round": terminal.round,
             "answer": answer, "answer_ref": _ref_document(ref),
             "requested_model": terminal.requested_model,
             "observed_model": terminal.observed_model,
@@ -2647,7 +2612,7 @@ def _inspect_candidates(opened: RunContext, task_id: str,
         raise ValueError("candidate inspection requires repo-write work")
     policy = task.provider_policy or service.plan.defaults
     state = service._execution_state(task_id)
-    if (len(state.barriers) != policy.rounds
+    if (not service._provider_complete(task, state)
             or service.scheduler.task_phase(task_id) not in {"reconciliation-pending", "completed"}):
         raise ValueError("final candidate barrier is not complete")
     candidates = service.collect(task_id, owner=opened.owner)
@@ -2750,9 +2715,6 @@ def _parser() -> argparse.ArgumentParser:
     command("status", "read safe durable task metadata")
     command("recover-journal", "resolve authenticated current-v1 journal authority without provider work")
     command("resume", "advance a started run from its durable barriers")
-    command("quality-case", "advance one authenticated installed read-only Council case")
-    quality_attach = command("quality-attach", "adopt an existing allocation before any turn")
-    quality_attach.add_argument("--attachment-file", required=True)
     uncertain = command("recover-uncertain", "exclude one uncertain source turn by owner action")
     uncertain.add_argument("--task-id", required=True)
     uncertain.add_argument("--seat-id", required=True)
@@ -2780,6 +2742,9 @@ def _parser() -> argparse.ArgumentParser:
     repository = command("synthesize-repository", "verify and submit a fresh repo synthesis")
     repository.add_argument("--task-id", required=True)
     repository.add_argument("--candidate-file", required=True)
+    preview = command("preview-owner", "check an owner delta without changing repository files or refs")
+    preview.add_argument("--task-id", required=True)
+    preview.add_argument("--candidate-file", required=True)
     handover = command("handover", "transactionally deliver a verified repository result")
     handover.add_argument("--task-id", required=True)
     handover.add_argument("--candidate-ref-file", required=True)
@@ -2802,22 +2767,6 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
     args = _parser().parse_args(argv)
     try:
         reject_nested(os.environ)
-        if args.command in {"quality-case", "quality-attach"}:
-            if any(value is not None for value in (runtime, registry, memory_factory, memory_preflight, provider_runner)):
-                raise ValueError("quality entry rejects injected execution dependencies")
-            if args.command == "quality-attach":
-                attachment = attach_quality_case(args.private_root, _strict_json(_read_file(args.attachment_file, limit=64 * 1024)))
-                result = {"attachment": [attachment.name, attachment.digest]}
-            else:
-                with open_quality_case(args.private_root) as opened:
-                    result = opened.service.resume(owner=opened.owner).to_dict()
-                    runner = opened.service.coordinator.provider_runner
-                    task_id = next(iter(opened.service.preparations))
-                    if opened.service.scheduler.task_phase(task_id) == "reconciliation-pending":
-                        result = {"delivery": list(runner.synthesize_and_submit(opened.owner)),
-                                  "status": opened.service.status().to_dict()}
-            print(_canonical(result).decode("utf-8"), end="")
-            return 0
         runtime = runtime or _runtime()
         common = dict(runtime=runtime, registry=registry, memory_factory=memory_factory,
                       memory_preflight=memory_preflight, provider_runner=provider_runner)
@@ -2867,10 +2816,9 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
             if (private_root / _DESCRIPTOR).is_file():
                 descriptor = load_private_descriptor(private_root)
                 if descriptor["schema_version"] == "fanout-execute-private-v2":
-                    if args.command == "resume":
-                        raise ValueError("v2 provider execution requires a validated native seat boundary")
-                    print(_canonical(inspect_v2_status(private_root, runtime=runtime, registry=registry)).decode("utf-8"), end="")
-                    return 0
+                    if args.command == "status":
+                        print(_canonical(inspect_v2_status(private_root, runtime=runtime, registry=registry)).decode("utf-8"), end="")
+                        return 0
                 if descriptor.get("runtime_sha256") != _runtime_digest(runtime):
                     if args.command == "resume":
                         raise runtime.RunStateError("restore the original runtime to resume this run")
@@ -2914,17 +2862,14 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                 service.abandon_pending_amendment(owner=owner)
                 result = service.status().to_dict()
             elif args.command == "collect":
-                task = next(task for task in service.plan.tasks if task.id == args.task_id)
-                policy = task.provider_policy or service.plan.defaults
                 candidates = service.collect(args.task_id, owner=owner)
+                task = service._task(args.task_id)
+                state = service._execution_state(args.task_id)
+                barrier = service._restore_barrier(state.barriers[-1], service._packet_for(task))
+                sources = dict(barrier.candidate_sources)
                 result = {"task_id": args.task_id, "candidates": []}
                 for item in candidates:
-                    path = runtime.source_candidate_artifact_path(
-                        service.inputs.run_id, args.task_id, 1, policy.rounds, item.seat_id,
-                    )
-                    ref = runtime.ArtifactRef(
-                        path, item.candidate.digest, len(item.candidate.manifest_bytes),
-                    )
+                    ref = sources[item.seat_id]
                     if opened.artifacts.read_bytes(ref) != item.candidate.manifest_bytes:
                         raise ValueError("collected candidate artifact changed")
                     result["candidates"].append({"seat_id": item.seat_id,
@@ -2943,28 +2888,7 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                     raise ValueError("reconciled answer failed fresh verification")
                 result = _result_document(service.submit(args.task_id, verified, owner=owner))
             elif args.command == "select-answer":
-                task = next(task for task in service.plan.tasks if task.id == args.task_id)
-                if task.checks:
-                    evidence = service.verify_read_only_selection(
-                        args.task_id, args.seat_id, owner=owner,
-                    )
-                    if not evidence.valid:
-                        raise ValueError("selected answer failed fresh verification")
-                else:
-                    if args.answer_ref_file is None:
-                        raise ValueError("unchecked selection needs an exact answer reference file")
-                    evidence = _read_ref(args.answer_ref_file, runtime)
-                    state = service._execution_state(args.task_id)
-                    policy = task.provider_policy or service.plan.defaults
-                    if len(state.barriers) != policy.rounds:
-                        raise ValueError("selected answer has no final provider barrier")
-                    barrier = service._restore_barrier(state.barriers[-1],
-                                                       service._packet_for(task))
-                    selected = next((terminal for terminal in barrier.valid_terminals
-                                     if terminal.seat_id == args.seat_id), None)
-                    if selected is None or selected.answer_ref != evidence:
-                        raise ValueError("selected answer differs from the named final seat")
-                result = _result_document(service.submit(args.task_id, evidence, owner=owner))
+                raise ValueError("single-answer selection cannot reconcile all seats; use synthesize-answer")
             elif args.command == "synthesize-repository":
                 candidate = runtime.CandidateBundle.from_manifest(
                     _read_file(args.candidate_file, limit=_MAX_CANDIDATE_MANIFEST_BYTES),
@@ -2973,6 +2897,34 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                 if not verified.valid:
                     raise ValueError("repository synthesis failed fresh verification")
                 result = _result_document(service.submit(args.task_id, verified, owner=owner))
+            elif args.command == "preview-owner":
+                candidate = runtime.CandidateBundle.from_manifest(
+                    _read_file(args.candidate_file, limit=_MAX_CANDIDATE_MANIFEST_BYTES),
+                )
+                verified = service.verify_owner_candidate(args.task_id, candidate, owner=owner)
+                if not verified.valid:
+                    raise ValueError("owner candidate failed declared checks")
+                if service.inputs.targets is not None:
+                    issued = runtime.issue_target_candidate(
+                        candidate, task_id=args.task_id, plan=service.plan, inputs=service.inputs,
+                        store=opened.artifacts, controller=service.lifecycle_controller,
+                        baseline=service._require_baseline(service._task(args.task_id)),
+                    )
+                    wrapped, _ = runtime.verify_target_candidate(
+                        issued, baseline=service._require_baseline(service._task(args.task_id)),
+                        plan=service.plan, inputs=service.inputs, store=opened.artifacts,
+                        controller=service.lifecycle_controller, verification=verified,
+                    )
+                ref = service._write_exact(
+                    runtime.candidate_result_path(args.task_id, candidate.digest, verified.evidence_digest),
+                    candidate.manifest_bytes,
+                )
+                result = {"run_id": service.inputs.run_id, "task_id": args.task_id,
+                          "candidate": _ref_document(ref), "preview": True,
+                          "proposal_inputs": _ref_document(verified.reconciliation.barrier_ref)}
+                if service.inputs.targets is not None:
+                    result.update(target_candidate=_ref_document(issued.payload),
+                                  target_verification=_ref_document(wrapped.payload))
             elif args.command in {"handover", "recover-handover"}:
                 ref = _read_ref(args.candidate_ref_file, runtime)
                 action = args.command
@@ -3001,7 +2953,12 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                 _action_approval(args.owner_approval_file, action="action-complete",
                                  run_id=service.inputs.run_id, task_id=args.task_id,
                                  evidence={"artifact": _ref_document(ref)})
-                result = _result_document(service.action_complete(args.task_id, ref, owner=owner))
+                task = service._task(args.task_id)
+                evidence = (runtime.load_candidate_verification(
+                    service.lifecycle_controller, opened.artifacts, task_id=args.task_id, candidate_ref=ref,
+                    baseline=service._require_baseline(task),
+                ) if task.owned_paths else ref)
+                result = _result_document(service.action_complete(args.task_id, evidence, owner=owner))
             else:
                 raise ValueError("unsupported fanout command")
         print(_canonical(result).decode("utf-8"), end="")

@@ -7,7 +7,6 @@ arbitrary absolute paths outside its assigned workspace.
 from __future__ import annotations
 
 import hashlib
-import contextvars
 import math
 import os
 import re
@@ -41,7 +40,6 @@ if TYPE_CHECKING:
 
 
 _GIT = "git"
-_QUALITY_GIT = contextvars.ContextVar("fanout-quality-git", default=None)
 _GIT_OPTIONS = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
                 "-c", f"core.hooksPath={os.devnull}")
 _INDEX_ASSUME_UNCHANGED = 0x8000
@@ -1001,9 +999,6 @@ def _git(
     extra_environment: Mapping[str, str] | None = None,
     max_output_bytes: int | None = None,
 ) -> bytes:
-    quality = _QUALITY_GIT.get()
-    if quality is not None:
-        return _bounded_quality_git(quality, cwd, args, input, extra_environment, max_output_bytes)
     environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     environment.update({
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -1039,165 +1034,6 @@ def _git(
         message = result.stderr.decode("utf-8", "replace").strip()
         raise RepositoryValidationError(f"git {' '.join(args[:2]) or 'command'} failed: {message}")
     return result.stdout
-
-
-@contextmanager
-def _quality_git_scope(*, timeout, max_commands, max_output_bytes, git_dir=None, worktree=None):
-    if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
-            or type(max_commands) is not int or max_commands < 1
-            or type(max_output_bytes) is not int or max_output_bytes < 1):
-        raise RepositoryValidationError("quality Git process allocation is invalid")
-    state = {"timeout": timeout, "remaining": max_commands, "output": max_output_bytes,
-             "git_dir": git_dir, "worktree": worktree}
-    token = _QUALITY_GIT.set(state)
-    try:
-        yield state
-    finally:
-        _QUALITY_GIT.reset(token)
-
-
-def _bounded_quality_git(state, cwd, args, data, extra, requested_cap):
-    from .container_boundary import _run_bounded_command
-    from .process import ProcessCommand, ProcessStatus
-    if state["remaining"] <= 0:
-        raise RepositoryQuotaError("quality Git command allocation exhausted")
-    state["remaining"] -= 1
-    binary = shutil.which(_GIT)
-    if binary is None:
-        raise RepositoryValidationError("quality Git executable is unavailable")
-    env = {"PATH": os.defpath, "GIT_CONFIG_GLOBAL": os.devnull,
-           "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
-           "GIT_CONFIG_COUNT": "0", "GIT_OPTIONAL_LOCKS": "0"}
-    if extra:
-        if set(extra) - {"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
-                         "GIT_COMMITTER_EMAIL", "GIT_LITERAL_PATHSPECS"}:
-            raise RepositoryValidationError("quality Git environment differs")
-        env.update(extra)
-    if state["git_dir"] is not None:
-        env.update(GIT_DIR=str(state["git_dir"]), GIT_WORK_TREE=str(state["worktree"]))
-    command = ProcessCommand(("/usr/bin/env", "-i", *(f"{key}={value}" for key, value in env.items()),
-        str(Path(binary).resolve()), "-C", str(cwd), *_GIT_OPTIONS, *args), data or b"",
-        cwd=cwd, timeout=state["timeout"])
-    result = _run_bounded_command(command, stdout_cap=min(state["output"], requested_cap or state["output"]),
-        stderr_cap=512 * 1024, acquire_slot=False, output_limit_result=True)
-    if result.status != ProcessStatus.EXIT or result.returncode != 0:
-        raise RepositoryValidationError(f"quality Git process failed: {result.status.value}")
-    return result.stdout
-
-
-def stage_quality_git_context(repository, published, closed_refs, *, timeout,
-                              max_commands, max_output_bytes):
-    """Reconstruct exact original objects/index/worktree in the existing context channel."""
-    repository, published = Path(repository), Path(published)
-    try:
-        repository = repository.resolve(strict=True)
-        resolved_published = published.resolve(strict=False)
-    except (OSError, RuntimeError) as error:
-        raise RepositoryValidationError("quality Git context path is invalid") from error
-    if (published.exists() or published.is_symlink() or not published.is_absolute()
-            or resolved_published == repository or repository in resolved_published.parents
-            or not isinstance(closed_refs, dict) or not closed_refs
-            or any(not re.fullmatch(r"refs/(?:heads|forge)/[A-Za-z0-9._/-]+", ref)
-                   or ".." in ref or not re.fullmatch(r"[0-9a-f]{40}", oid)
-                   for ref, oid in closed_refs.items())):
-        raise RepositoryValidationError("quality Git context or closed refs are invalid")
-    with _quality_git_scope(timeout=timeout, max_commands=max_commands,
-                            max_output_bytes=max_output_bytes) as budget:
-        baseline = capture_repository_baseline(repository)
-        for ref, oid in closed_refs.items():
-            if _git(repository, "rev-parse", "--verify", ref).strip().decode() != oid:
-                raise RepositoryValidationError("quality Git original ref differs")
-        published.mkdir(mode=0o700)
-        target, context = published / "repo", published / "context"
-        target.mkdir(mode=0o700); context.mkdir(mode=0o700)
-        with tempfile.TemporaryDirectory(prefix="quality-git-", dir=published.parent) as temporary:
-            bundle = Path(temporary) / "original.bundle"
-            template = Path(temporary) / "empty-template"; template.mkdir(mode=0o700)
-            _git(repository, "bundle", "create", str(bundle), "HEAD", *closed_refs)
-            _git(target, "init", "-q", f"--template={template}")
-            _git(target, "fetch", "--no-tags", "--no-write-fetch-head", str(bundle),
-                 *(f"{ref}:{ref}" for ref in closed_refs), "HEAD:refs/quality/original-head")
-            _git(target, "update-ref", "--no-deref", "HEAD", baseline.head)
-            _git(target, "update-ref", "-d", "refs/quality/original-head")
-            _write_index(target, baseline.index_entries)
-            _materialize_worktree(target, baseline.entries, baseline.directories)
-            _replay_index_flags(target, baseline.index_entries, baseline.deleted_paths)
-            if capture_repository_baseline(target).digest != baseline.digest:
-                raise RepositoryValidationError("quality Git reconstructed state differs")
-        if capture_repository_baseline(repository).digest != baseline.digest:
-            raise RepositoryValidationError("quality Git original changed during staging")
-        os.rename(target / ".git", context / "quality-git")
-        witness = {"schema": "fanout-quality-git-v1", "head": baseline.head,
-                   "baseline_sha256": baseline.digest, "closed_refs": dict(closed_refs)}
-    reopen_quality_git_context(published, witness, timeout=timeout,
-        max_commands=max_commands, max_output_bytes=max_output_bytes)
-    return witness
-
-
-def reopen_quality_git_context(published, witness, *, timeout, max_commands, max_output_bytes):
-    published = Path(published)
-    git_dir, worktree = published / "context/quality-git", published / "repo"
-    try:
-        if (set(witness) != {"schema", "head", "baseline_sha256", "closed_refs"}
-                or witness["schema"] != "fanout-quality-git-v1"
-                or any(path.is_symlink() or not path.is_dir() for path in (published, git_dir, worktree))
-                or (worktree / ".git").exists() or (worktree / ".git").is_symlink()
-                or (git_dir / "commondir").exists() or (git_dir / "objects/info/alternates").exists()
-                or (git_dir / "hooks").exists()):
-            raise ValueError("metadata")
-        with _quality_git_scope(timeout=timeout, max_commands=max_commands,
-            max_output_bytes=max_output_bytes, git_dir=git_dir, worktree=worktree):
-            config = _git(worktree, "config", "--local", "--list").decode().splitlines()
-            if any(not line.startswith(("core.repositoryformatversion=", "core.filemode=",
-                                        "core.bare=", "core.logallrefupdates=", "core.ignorecase=",
-                                        "core.precomposeunicode=")) for line in config):
-                raise ValueError("configuration")
-            refs = dict(line.split(" ", 1)[::-1] for line in _git(worktree, "show-ref").decode().splitlines())
-            baseline = capture_repository_baseline(worktree)
-            if (refs != witness["closed_refs"] or baseline.head != witness["head"]
-                    or baseline.digest != witness["baseline_sha256"]):
-                raise ValueError("state")
-            return baseline
-    except Exception as error:
-        raise RepositoryValidationError("quality Git context binding differs") from error
-
-
-def capture_quality_commit_bundle(published, witness, store, path, *, expected_refs,
-                                  timeout, max_commands, max_output_bytes):
-    """Retain actual generated objects before the quality caller stops its seat."""
-    published = Path(published)
-    git_dir, worktree = published / "context/quality-git", published / "repo"
-    if (not isinstance(expected_refs, dict) or "HEAD" not in expected_refs
-            or not set(expected_refs) <= {"HEAD", *witness["closed_refs"]}
-            or any(not isinstance(oid, str) or not re.fullmatch(r"[0-9a-f]{40}", oid)
-                   for oid in expected_refs.values())):
-        raise RepositoryValidationError("quality commit expected ref differs")
-    if (any(path.is_symlink() or not path.is_dir() for path in (published, git_dir, worktree))
-            or (worktree / ".git").exists() or (worktree / ".git").is_symlink()
-            or any((git_dir / name).exists() or (git_dir / name).is_symlink()
-                   for name in ("commondir", "objects/info/alternates", "hooks"))):
-        raise RepositoryValidationError("quality commit metadata differs")
-    with _quality_git_scope(timeout=timeout, max_commands=max_commands,
-        max_output_bytes=max_output_bytes, git_dir=git_dir, worktree=worktree):
-        config = _git(worktree, "config", "--local", "--list").decode().splitlines()
-        if any(not line.startswith(("core.repositoryformatversion=", "core.filemode=", "core.bare=",
-                    "core.logallrefupdates=", "core.ignorecase=", "core.precomposeunicode=")) for line in config):
-            raise RepositoryValidationError("quality commit configuration differs")
-        refs = dict(line.split(" ", 1)[::-1] for line in _git(worktree, "show-ref").decode().splitlines())
-        expected_closed = {**witness["closed_refs"], **{key: value for key, value in expected_refs.items() if key != "HEAD"}}
-        current = capture_repository_baseline(worktree)
-        if refs != expected_closed or current.head != expected_refs["HEAD"]:
-            raise RepositoryValidationError("quality commit actual ref differs")
-        _git(worktree, "merge-base", "--is-ancestor", witness["head"], current.head)
-        bundle = _git(worktree, "bundle", "create", "-", *expected_refs)
-        if not bundle or len(bundle) > max_output_bytes:
-            raise RepositoryQuotaError("quality commit bundle exceeds its process bound")
-        ref = store.write_bytes(path, bundle)
-        if capture_repository_baseline(worktree).digest != current.digest:
-            raise RepositoryValidationError("quality commit changed during capture")
-    return {"schema": "fanout-quality-commit-v1", "head": current.head,
-            "original_head": witness["head"], "baseline_sha256": current.digest,
-            "refs": dict(expected_refs), "closed_refs": refs, "bundle": asdict(ref)}
 
 
 def _file_identity(info: os.stat_result) -> tuple[int, ...]:

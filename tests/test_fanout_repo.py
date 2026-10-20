@@ -74,78 +74,6 @@ def _repo(tmp_path: Path, name: str = "repo") -> Path:
     return repo
 
 
-def test_quality_context_preserves_original_head_refs_and_dirty_index(tmp_path):
-    source = _repo(tmp_path)
-    original_head = _git(source, "rev-parse", "HEAD").stdout.decode().strip()
-    _git(source, "config", "remote.attacker.url", "https://example.invalid/never-copy")
-    _git(source, "update-index", "--assume-unchanged", "tracked.txt")
-    (source / "binary.bin").write_bytes(b"\x00dirty\xff")
-    (source / "staged.txt").write_text("staged-current\n")
-    _git(source, "add", "staged.txt")
-    (source / "deleted.txt").unlink()
-    (source / "empty").mkdir(mode=0o750)
-    baseline = capture_repository_baseline(source)
-    published = tmp_path / "published"
-    witness = fanout.repo.stage_quality_git_context(source, published,
-        {"refs/heads/main": original_head}, timeout=30, max_commands=300,
-        max_output_bytes=64 * 1024 * 1024)
-    assert witness["head"] == original_head
-    assert witness["baseline_sha256"] == baseline.digest
-    assert (published / "repo/binary.bin").read_bytes() == b"\x00dirty\xff"
-    assert not (published / "repo/deleted.txt").exists()
-    assert not (published / "repo/.git").exists()
-    assert (published / "context/quality-git/HEAD").is_file()
-    assert b"attacker" not in (published / "context/quality-git/config").read_bytes()
-    actual = fanout.repo.reopen_quality_git_context(published, witness,
-        timeout=30, max_commands=300, max_output_bytes=64 * 1024 * 1024)
-    assert actual.digest == baseline.digest
-    (published / "repo/binary.bin").write_bytes(b"substituted")
-    with pytest.raises(fanout.RepositoryValidationError, match="quality"):
-        fanout.repo.reopen_quality_git_context(published, witness,
-            timeout=30, max_commands=300, max_output_bytes=64 * 1024 * 1024)
-
-
-@pytest.mark.parametrize("alias_to_parent", (False, True))
-def test_quality_context_refuses_destination_alias_into_source_before_creation(tmp_path, alias_to_parent):
-    source = _repo(tmp_path)
-    head = _git(source, "rev-parse", "HEAD").stdout.decode().strip()
-    before = {}
-    for path in source.rglob("*"):
-        info = path.lstat()
-        value = os.readlink(path) if stat.S_ISLNK(info.st_mode) else (
-            hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None)
-        before[path.relative_to(source).as_posix()] = (stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode), value)
-    alias = tmp_path / "alias"
-    alias.symlink_to(source.parent if alias_to_parent else source, target_is_directory=True)
-    published = (alias / source.name if alias_to_parent else alias) / "published"
-    with pytest.raises(fanout.RepositoryValidationError, match="quality Git context"):
-        fanout.repo.stage_quality_git_context(source, published, {"refs/heads/main": head},
-            timeout=10, max_commands=100, max_output_bytes=1024 * 1024)
-    after = {}
-    for path in source.rglob("*"):
-        info = path.lstat()
-        value = os.readlink(path) if stat.S_ISLNK(info.st_mode) else (
-            hashlib.sha256(path.read_bytes()).hexdigest() if stat.S_ISREG(info.st_mode) else None)
-        after[path.relative_to(source).as_posix()] = (stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode), value)
-    assert after == before
-    assert not (source / "published").exists()
-    assert not (published / "repo").exists()
-    assert not (published / "context").exists()
-
-
-def test_quality_context_refuses_relative_source_alias_destination_before_creation(tmp_path):
-    source = _repo(tmp_path)
-    head = _git(source, "rev-parse", "HEAD").stdout.decode().strip()
-    alias = tmp_path / "source-alias"
-    alias.symlink_to(source, target_is_directory=True)
-    before = capture_repository_baseline(source)
-    with pytest.raises(fanout.RepositoryValidationError, match="quality Git context"):
-        fanout.repo.stage_quality_git_context(alias, source / "published", {"refs/heads/main": head},
-            timeout=10, max_commands=100, max_output_bytes=1024 * 1024)
-    assert capture_repository_baseline(source).digest == before.digest
-    assert not (source / "published").exists()
-
-
 def _target_repo(tmp_path: Path, target_id: str) -> tuple[Path, object]:
     root = _repo(tmp_path, target_id)
     _git(root, "remote", "add", "origin", f"https://github.com/example/{target_id}.git")
@@ -946,34 +874,18 @@ def test_seats_parent_redirect_is_refused_before_any_destination_write(tmp_path,
     assert (_caller_state(repo), _caller_state(other), seats.lstat()) == before
 
 
-@pytest.mark.parametrize("join", ("initial", "warm", "cold", "first-turn", "native"))
+@pytest.mark.parametrize("join", ("initial", "warm", "cold", "first-turn"))
 def test_seat_git_worktree_redirect_is_refused_at_workspace_authority_joins(tmp_path, join):
     repo = _repo(tmp_path)
-    if join == "native":
-        (repo / "inside-link").unlink()
     baseline = capture_repository_baseline(repo)
     controller = fanout.create_lifecycle_controller(tmp_path / "run")
     seat = create_seat_workspace(baseline, controller.root, "claude")
     receipt = fanout.verify_seat_workspace(baseline, seat, controller=controller)
-    if join == "native":
-        adapter = fanout.CodexAdapter()
-        profile = fanout.ExecutorProfile("codex", adapter, adapter.capabilities, "repo-write", "standard",
-                                         "diagnostic-model", "low", "diagnostic-cli", ("/bin/sh",),
-                                         ("/bin/sh", "--resume", "{session_id}"), 10, 10)
-        request = fanout.ProviderRequest("codex", "diagnostic only", cwd=seat.root,
-            execution_class="repo-write", profile=profile, run_id="run-1", task_id="task-1",
-            target_id="target-1", inputs_digest="a" * 64, seat_id="claude")
-        command = fanout.ProcessCommand(argv=("/bin/sh", "-c", "printf diagnostic"), stdin=b"", cwd=seat.root)
-        owner_root = tmp_path / "native-owner"
-        owner_root.mkdir(mode=0o700)
-        boundary = fanout.issue_native_boundary(controller, receipt, run_id="run-1", task_id="task-1",
-            target_id="target-1", inputs_digest="a" * 64, request=request, command=command,
-            other_target_roots=(repo,), denied_owner_roots=(owner_root,))
     identities = (seat.root.stat().st_ino, (seat.root / ".git").stat().st_ino)
     _git(seat.root, "config", "core.worktree", str(repo))
     (seat.root / "tracked.txt").write_bytes(b"seat drift\n")
     assert (seat.root.stat().st_ino, (seat.root / ".git").stat().st_ino) == identities
-    with pytest.raises(fanout.ProviderRequestError if join == "native" else RepositoryIsolationError) as refused:
+    with pytest.raises(RepositoryIsolationError) as refused:
         if join == "initial":
             fanout.verify_seat_workspace(baseline, seat, controller=controller)
         elif join == "warm":
@@ -982,12 +894,7 @@ def test_seat_git_worktree_redirect_is_refused_at_workspace_authority_joins(tmp_
             fanout.resume_seat_workspace(seat, controller=controller, evidence_digest=receipt.evidence_digest)
         elif join == "first-turn":
             fanout.validate_seat_workspace_baseline(baseline, controller, receipt)
-        else:
-            fanout.validate_native_boundary(boundary, request, command, controller, receipt)
-    if join == "native":
-        assert isinstance(refused.value.__cause__, RepositoryIsolationError)
-    else:
-        assert "Git" in str(refused.value) or "worktree" in str(refused.value)
+    assert "Git" in str(refused.value) or "worktree" in str(refused.value)
 
 
 def _tiny_repo(tmp_path):
@@ -1123,36 +1030,3 @@ def test_workspace_identity_allows_legitimate_resumed_content_changes(tmp_path):
     resumed = fanout.resume_seat_workspace(seat, controller=controller, evidence_digest=receipt.evidence_digest)
     assert resumed.evidence_digest == receipt.evidence_digest
     assert (seat.root / "tracked.txt").read_bytes() == b"legitimate turn result\n"
-def test_quality_commit_bundle_retains_exact_generated_commit_and_refuses_foreign_ref(tmp_path):
-    repo = fanout.repo
-    repository = tmp_path / "original"
-    repository.mkdir()
-    subprocess.run(("git", "init", "-q", str(repository)), check=True)
-    (repository / "value.txt").write_bytes(b"original\n")
-    subprocess.run(("git", "-C", str(repository), "add", "value.txt"), check=True)
-    subprocess.run(("git", "-C", str(repository), "-c", "user.name=Test", "-c",
-                    "user.email=test@example.invalid", "commit", "-qm", "original"), check=True)
-    original = repo.capture_repository_baseline(repository)
-    branch = subprocess.run(("git", "-C", str(repository), "symbolic-ref", "HEAD"),
-                            check=True, capture_output=True).stdout.decode().strip()
-    published = tmp_path / "published"
-    witness = repo.stage_quality_git_context(repository, published, {branch: original.head},
-        timeout=10, max_commands=200, max_output_bytes=1024 * 1024)
-    metadata, worktree = published / "context/quality-git", published / "repo"
-    (worktree / "value.txt").write_bytes(b"generated committed change\n")
-    argv = ("git", "--git-dir", str(metadata), "--work-tree", str(worktree))
-    subprocess.run((*argv, "add", "value.txt"), check=True)
-    subprocess.run((*argv, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                    "commit", "-qm", "generated"), check=True)
-    generated = subprocess.run((*argv, "rev-parse", "HEAD"), check=True, capture_output=True).stdout.decode().strip()
-    with fanout.ArtifactStore(tmp_path / "raw") as store:
-        captured = repo.capture_quality_commit_bundle(published, witness, store,
-            "quality/committed.bundle", expected_refs={"HEAD": generated},
-            timeout=10, max_commands=200, max_output_bytes=1024 * 1024)
-        assert captured["head"] == generated and captured["head"] != original.head
-        assert store.read_bytes(fanout.ArtifactRef(**captured["bundle"])).startswith(b"# v2 git bundle\n")
-        with pytest.raises(fanout.RepositoryValidationError, match="ref"):
-            repo.capture_quality_commit_bundle(published, witness, store,
-                "quality/foreign.bundle", expected_refs={"refs/remotes/foreign/main": generated},
-                timeout=10, max_commands=200, max_output_bytes=1024 * 1024)
-    assert repo.capture_repository_baseline(repository).digest == original.digest

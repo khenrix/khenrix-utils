@@ -749,13 +749,17 @@ def _load_draft(draft_bytes: bytes, *, schema_version: str = DRAFT_SCHEMA_VERSIO
 
 def _require_executable_evidence(plan: FanoutPlanV1) -> None:
     for task in plan.tasks:
-        if task.kind != "work" or task.execution_class == "orchestrator-action":
+        if task.kind != "work":
             continue
-        if task.execution_class == "repo-write":
+        if task.execution_class == "repo-write" or (
+            task.execution_class == "orchestrator-action" and task.owned_paths
+        ):
             if not task.owned_paths:
                 raise CompilerError(f"draft task {task.id} repo-write requires owned_paths")
             if not task.checks:
                 raise CompilerError(f"draft task {task.id} requires at least one argv check")
+        if task.execution_class == "orchestrator-action":
+            continue
         texts = (task.title, task.objective, *task.acceptance)
         if any(_VAGUE.search(text) for text in texts):
             raise CompilerError(f"draft task {task.id} contains a vague placeholder")
@@ -799,9 +803,22 @@ def _require_source_write_intent(
     optional = {task_id: set(paths) for task_id, paths in source_tests}
     covered: dict[str, set[str]] = {task_id: set() for task_id in declared}
     write_owners: dict[str, set[str]] = {task_id: set() for task_id in declared}
+    tasks = {task.id: task for task in plan.tasks}
     for task in plan.tasks:
-        if task.kind != "work" or task.execution_class != "repo-write":
+        if task.kind != "work" or task.execution_class not in {"repo-write", "orchestrator-action"}:
             continue
+        if task.execution_class == "orchestrator-action":
+            if not task.owned_paths:
+                continue
+            proposals = tuple(tasks[dependency] for dependency in task.depends_on)
+            if (not any(proposal.execution_class == "read-only" for proposal in proposals)
+                    or any(proposal.execution_class == "repo-write" for proposal in proposals)):
+                raise CompilerError(f"draft task {task.id} owner action requires read-only proposal dependencies")
+            if isinstance(task, PlanTaskV2) and not any(
+                proposal.execution_class == "read-only" and proposal.target_id == task.target_id
+                for proposal in proposals
+            ):
+                raise CompilerError(f"draft task {task.id} owner action needs a proposal for its target")
         source_tasks = {step_id.split("/", 1)[0] for step_id in task.source_step_ids}
         allowed = set().union(*(declared[source_id] | optional[source_id]
                                 for source_id in source_tasks))
@@ -816,7 +833,7 @@ def _require_source_write_intent(
         if paths and len(write_owners[source_id]) > 1:
             raise CompilerError(f"{source_id} repo-write ownership is split across work tasks")
         if covered[source_id] != paths:
-            raise CompilerError(f"{source_id} source write intent needs repo-write ownership of {sorted(paths - covered[source_id])}")
+            raise CompilerError(f"{source_id} source write intent needs repo-write or owner-action ownership of {sorted(paths - covered[source_id])}")
 
 
 def _require_exact_source_dependencies(plan: FanoutPlanV1, steps: Sequence[SourceStepRecord],

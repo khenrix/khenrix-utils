@@ -52,7 +52,7 @@ def _bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
         "schema_version": "fanout-draft-v1",
         "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
         "defaults": {"executor_ids": ["claude", "codex", "agy"], "rounds": 2,
-                     "timeout": 120, "retries": 0, "minimum_success": 2},
+                     "timeout": 120, "retries": 0, "minimum_success": 3},
         "tasks": [{
             "id": "change", "kind": "work", "parent_id": None,
             "title": "Update module", "objective": "Implement the bounded change.",
@@ -702,12 +702,11 @@ def test_delivery_stages_runtime_and_memory_and_receipt_covers_both(tmp_path: Pa
     with skillctl.staged_skill_sources(config) as staged:
         bundled = staged["llm-fanout-plan"]
         assert {path.relative_to(bundled).as_posix() for path in bundled.rglob("SKILL.md")} == {
-            "SKILL.md", ".runtime/shared/skills/llm-fanout-plan/SKILL.md",
-            ".runtime/shared/skills/llm-fanout-execute/SKILL.md",
+            "SKILL.md",
         }
-        assert (bundled / ".runtime/shared/lib/fanout/__init__.py").read_bytes() == (
+        assert (bundled / "lib/fanout/__init__.py").read_bytes() == (
             ROOT / "shared/lib/fanout/__init__.py").read_bytes()
-        assert (bundled / ".runtime/components/memory/memory_exchange.py").read_bytes() == (
+        assert (bundled / "memory/memory_exchange.py").read_bytes() == (
             ROOT / "components/memory/memory_exchange.py").read_bytes()
         result = subprocess.run(
             [sys.executable, str(bundled / "scripts/plan.py"), "from-question",
@@ -722,7 +721,8 @@ def test_delivery_stages_runtime_and_memory_and_receipt_covers_both(tmp_path: Pa
     source_paths = {path for path, _ in checks.source_manifest(ROOT, "llm-fanout-plan")}
     assert "shared/lib/fanout/compiler.py" in source_paths
     assert "components/memory/memory_exchange.py" in source_paths
-    assert "scripts/lib/portability.py" in source_paths
+    instrument_paths = {path for path, _ in checks.instrument_manifest(ROOT)}
+    assert "scripts/lib/portability.py" in instrument_paths
     assert "capabilities.toml" in source_paths
 
 

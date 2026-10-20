@@ -8,8 +8,6 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
-from historical_only import read_historical
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CLIS = ("claude", "codex", "agy")
@@ -23,9 +21,7 @@ CHAIN_OPS = ("&&", "||", ";")
 
 
 def _shared_skills(root: Path):
-    historical_skills, _ = read_historical(root)
-    return sorted(path for path in (root / "shared" / "skills").glob("*/")
-                  if path.name not in historical_skills)
+    return sorted((root / "shared" / "skills").glob("*/"))
 
 
 def _native_only_skills(root: Path) -> frozenset[str]:
@@ -80,12 +76,12 @@ def script_tree_parity(root: Path) -> list[str]:
 
 def plugin_root_probes(root: Path) -> list[str]:
     """A SKILL.md that resolves its own bundled script does it with a probe loop over
-    each CLI's plugin root (see shared/skills/llm-council/SKILL.md). Assert every such
+    each CLI's plugin root. Assert every such
     loop names ALL THREE roots — omitting the agy root is exactly the silent
     single-CLI breakage this module exists to catch.
 
     Deliberately does NOT scan prose for bare `scripts/*.py` strings. Skills
-    legitimately cite $KU/scripts/render.py, llm-council's fanout.py and codex's
+    legitimately cite $KU/scripts/render.py, bundled helpers and Codex's
     ~/.codex/skills/.system tooling; that rule was implemented during design review and
     produced 9 false positives out of 9 hits.
     """

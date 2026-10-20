@@ -1,9 +1,8 @@
 # Skill-eval process (provider-agnostic)
 
 **Every change to a Khenrix-authored skill in this repo must be eval-tested and
-blind-reviewed before it is committed.** This is a hard gate, not a suggestion. The point is the same rigor the
-`llm-council` work proved out — with-skill vs baseline, judged against assertions, then a
-blind A/B — applied to *every* skill and *every* provider, not just Claude.
+blind-reviewed before it is committed.** The harness compares explicit skill guidance
+with a native baseline, grades assertions, and records a blind A/B verdict per provider.
 
 This repo ships a portable, stdlib-only harness (`scripts/eval_harness.py`) that delivers
 that loop for the three provider CLIs: Claude, Codex, and agy. Claude's
@@ -35,16 +34,17 @@ not create a local per-skill receipt for one vendored member.
    harness gives `with_skill` a private copy of the complete selected skill directory
    (SKILL.md plus references, scripts, and assets). It also inlines the bounded UTF-8
    textual closure with relative path labels. Scripts and opaque assets are named for
-   closure transparency but are unavailable to the model; an answer must not claim it read
-   or ran them. Binary text candidates and oversized closures fail instead of being omitted.
+   closure transparency; an answer may claim it read or ran them only when actual tool
+   evidence supports that claim. Binary text candidates and oversized closures fail.
    Each eval's declared fixtures are likewise bounded, decoded as UTF-8, and inlined as
    labeled untrusted data into both conditions and the judge prompt. Missing, unsafe,
    symlinked, duplicate, binary, non-UTF-8, or oversized fixture closures fail closed.
    Baseline receives the same fixture data but no skill closure.
-   Both conditions run from fresh temporary working directories with ambient skills,
-   rules, plugins, and user configuration disabled. Authentication is bridged without
-   copying credential values into workspaces or artifacts, so an installed old version
-   cannot contaminate baseline.
+   Both conditions use fresh working directories and normal installed skills, plugins,
+   MCPs, HOME, configuration and authentication. `without_skill` has no explicit copy,
+   but may discover installed guidance. The comparison measures explicit guidance under
+   native configuration, not target absence or causal skill uplift. Credential values
+   are not copied into workspaces or capture metadata.
 4. **Grade.** An LLM judge scores each output against the assertions → `grading.json`
    (`text`/`passed`/`evidence`).
 5. **Blind A/B.** The two outputs are shuffled into A/B (with a hidden key) and the judge
@@ -74,17 +74,64 @@ An unchanged installed skill remains discoverable and usable after a compatible 
 CLI update. A version newer than its last development measurement is informational;
 it does not require a downgrade, instruction rewrite or paid reevaluation. A concrete
 capability, protocol or loader failure still stops the affected operation. Recorded
-fanout runs retain their profiles and inputs, and exact isolated-write certificates
-retain their guest executable, image, source and route checks.
+fanout runs retain their profiles and inputs. Dispatch checks their recorded CLI
+versions before intent and launch; executable drift requires a reviewed profile
+transition or a fresh admission, not an implicit rewrite of the recorded run.
+
+## Receipt policy: delivered behavior and shared measurement proof
 
 When instructions, metadata, helpers or shared runtime change, identify every affected
-skill using `scripts/lib/checks.py`'s `source_manifest` closure. Run the relevant
+skill using `scripts/lib/checks.py`'s delivered `source_manifest` closure. Run the relevant
 deterministic tests, current target CLI discovery/metadata checks and bounded behavior
 or pressure evaluations before publishing or claiming the revision verified. Include
 Claude, Codex, agy and Maka where they provide the relevant capability; Maka remains
 outside the three-provider harness. Report an unavailable target as unverified.
-The shared eval harness and its CLI version observer are inputs to every behavior
-receipt: changing them affects all of those skills, not just the edited fanout skill.
+New V3 receipts store the evaluated per-file behavior, acceptance-criteria and measurement
+instrument manifests separately. Behavior includes skill/template/facts and bundled
+helpers, plus the fanout/memory runtime for fanout skills and the receipt/consumer
+dependencies used by skill-tuneup. Criteria include the target's assertions, fixtures and
+declared deterministic gate/tests. The instrument includes the harness, its entire eager
+fanout import surface, renderer, acceptance checks, Makefile and test surface. Runtime
+dependencies are not removed from a skill's behavior merely because the evaluator uses
+them too. `legacy_source_manifest` preserves the old combined closure for diagnostics.
+
+Capture all three snapshots before loading campaign criteria or the first paid turn,
+verify the loaded criteria still match before launch, and compare them again after
+measurement and any certifying suite, before receipt issuance. A changed source,
+criterion or instrument retains raw results but earns no receipt. V3 records the original
+snapshots, actual requested evaluator `judge_config`, measured CLI versions and hashes of real private raw files, including actual
+deterministic-suite output. Unknown native usage/counts remain `null`; requested model
+configuration is never served-model evidence. Passing assertions, invalid-run refusal,
+judge failure handling, deterministic count requirements and final full-panel rules
+are unchanged.
+
+`evals/legacy-adoption-baseline.json` is an immutable, explicit adoption boundary from
+commit `60ff42b5f0a566bcf27b4c1a8d94c02bdc7a1ecf`, not a recertification. Its per-active-skill
+manifests were computed from that unchanged clean source, with hashes of the exact old
+receipt bytes. Missing receipts are recorded as missing and cannot be adopted. Its file
+digest and commit are pinned by the validator; there is no auto-rebaseline or membership
+extension. Existing receipt files are not rewritten.
+
+An old receipt can only produce a `HISTORICAL_UNVERIFIED` non-final warning when its
+delivered behavior, criteria/fixtures and exact old bytes still match that entry, its
+certification did not fail, and the shared current instrument proof passes. A behavior,
+criterion, fixture or old-receipt edit requires fresh V3 evidence. Restamping an old hash
+does not qualify. Historical adoption never passes `final=True`, and is never described
+as earned, fresh or verified.
+
+One current `evals/instrument-proof.json` owner record covers the shared measurement
+instrument; instrument-only changes invalidate that proof without demanding unrelated
+unchanged skill-body campaigns. The record is schema version 1 and binds the exact
+`instrument_manifest` and `instrument_hash`. It requires nonempty `tests` entries with
+portable argv `command`, actual positive `counts.tests_run`, zero `failed`/`skipped` and
+`evidence_sha256`; valid sessions for each of `claude`, `codex` and `agy`, each recording
+`session_id`, observed `cli_version`, `role: "evaluator"`, actual requested `judge_config`
+(`model` and `thinking`: Claude/Codex `xhigh`, agy `high`), `raw_capture_sha256` and
+`read_tool_evidence_sha256`; and `private_artifact_manifest_sha256` for the complete
+private artifact manifest. This is an owner record of actual captures, not a signature
+service, inferred tool-use claim or automatic proof issuer. An executor canary cannot
+stand in for this evaluator proof. Root creates it only from
+observed evidence after the final instrument freeze. No proof is bundled by this change.
 
 Each real harness campaign observes the selected executors and judge with `--version`
 before the first paid turn. It records the deduplicated, bounded UTF-8 single-line
@@ -97,17 +144,15 @@ invocation identities, outcomes and raw private evidence with the evaluated revi
 
 CLI metadata describes the measured release; receipt readers do not compare it with
 the user's current host version. Older and seeded receipts must never be restamped to
-claim a newer binary was measured. Unchanged source/eval hashes remain valid across a
+claim a newer binary was measured. Unchanged behavior/criteria remain valid across a
 CLI-only update, while changed source or eval inputs require new evidence. The historical
-whole-help characterization receipt is diagnostic: its opt-in
-`scripts/fanout_baseline.py check-characterization` comparison remains exact, and its
-drift is not an ordinary installed-skill admission gate.
+development observation remains provenance, not a host-version equality gate.
 
 Requested model names in a receipt record configuration, not the model actually served.
 Missing positive served-model observations remain separate release-proof requirements;
 version measurements, source tests and native discovery cannot satisfy them. Fresh
 receipts for changed closures belong to the approved final-source release sequence,
-alongside its live canaries, Maka judgments, trial and strict gate.
+alongside scoped native reads, independent Maka analysis and owner-application checks.
 
 ## Layout
 
@@ -139,50 +184,28 @@ mise exec -- make eval SKILL=khenrix-quality
 mise exec -- make eval SKILL=khenrix-quality PROVIDERS=claude,codex,agy MODE=deep
 ```
 
-Notes: the eval harness removes permission-bypass flags, isolates each
-provider's working directory, and applies a checked no-tools boundary
-before launch. Claude retains its real HOME for account/keychain authentication,
-using safe mode and an empty built-in tool set, not plan mode. Codex
-uses its read-only sandbox with shell and app tools disabled; agy selects the
-private `eval-no-tools` agent with no bypass. A read-only posture line is
-prepended to each executor's prompt, and canary scanning checks for unintended
-actions afterward. The agy `--mode plan` flag is **not** the write barrier:
-agy 1.2.10 wrote a file under `--mode plan --dangerously-skip-permissions` in
-a disposable live probe. The harness's separate no-tools boundary is what
-keeps a skill that normally mutates config (`khenrix-setup`/`khenrix-upgrade`)
-from doing so during an eval.
+Executors use the shared native read profile at medium effort; grading and blind
+comparison use evaluator xhigh. Gemini uses high for both roles. Both retain normal
+installed read tools, skills, plugins, MCPs and authentication.
 
-The installed-binary help and bounded hostile probes were checked on 2026-09-21 before
-these barriers were wired. Every executor and judge has an unconditional no-tools boundary:
+Known write tools are denied where the native CLI supports it. Native plan permissions
+and the read-only prompt express the authorized task; a trusted shell-capable CLI is
+not OS confinement. Evaluations authorize no repository/service writes, messages or
+configuration changes. `--no-readonly` omits the prompt reminder, not these role controls.
 
-- Claude runs with `--safe-mode --disable-slash-commands --no-session-persistence
-  --strict-mcp-config --no-chrome --tools ''`. No MCP config is supplied.
-- Codex runs with a pinned eval model and `--ignore-user-config --ignore-rules --ephemeral`
-  in a fresh `HOME`/`CODEX_HOME`. It disables `plugins`, `skill_search`, `shell_tool`,
-  `unified_exec`, and `apps`; it also sets `agents.enabled=false`,
-  `tools.view_image=false`, `tools.web_search=false`, and `web_search="disabled"`.
-- agy invokes the absolute installed `agy-bin` in a fresh `HOME` and selects a private
-  `eval-no-tools` agent with `tools: []`, `excludeDefaultComponents: true`, and
-  `enable_mcp_tools: false`.
+Native transport retries are zero. A successful judge turn with malformed verdict JSON
+gets at most one fresh semantic attempt, with both raw attempts retained. Timeouts,
+provider failures and uncertain launches are terminal; they never trigger an automatic
+whole-campaign replay.
 
-The probes asked each provider to read a marker file and echo an environment canary; none
-returned either value. The hermetic self-test repeats the hostile request through
-`run_text` with provider-specific argv-parsing stubs and fails if any barrier is removed.
-Each real run also receives a random environment canary and a mode-`000` canary file.
-After the process exits, the harness scans stdout, stderr, result, and manifest artifacts
-for that canary, known child credential values (including ADC secrets), and credential
-shapes. A match removes the provider artifact tree, leaves only a generic security-failure
-marker, and aborts the run.
+After each turn, artifact screening checks stdout, stderr, answer, manifest and other
+capture files for the selected canary, known credentials and credential shapes. Unsafe
+paths or a match fail closed, redact captured files and leave a generic failure marker.
+This checks disclosure in retained artifacts; it does not prove tool confinement.
 
-Codex and agy use isolated temporary homes. Claude retains its real HOME and normal account
-access; Codex accepts `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or bridges
-its stored credential into the child environment; agy receives the existing ADC path.
-
-Full
-three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
-iteration and the full panel for the final gate. `--no-readonly` removes the additional
-plan/read-only posture but does not re-enable tools; behavior evals cannot execute scripts,
-read files, browse, call MCPs, or mutate the machine.
+Three-provider runs cost more than a single-provider iteration. Use the final configured
+panel for the affected proof, with the existing spend allocation. Keep native discovery,
+actual service reads, answer pressure and owner-application evidence separate.
 
 **Invalid runs.** Each entry in `benchmark.json`'s `runs[]` carries `result.errors` (1 when
 the executor timed out or died, **or the judge returned no verdict** — `result.reason`
@@ -191,7 +214,7 @@ when the executor died, on a missing verdict when the judge did — and averaged
 side's mean, so it BIASES the delta — a `with_skill` error
 sinks it, a `without_skill` error inflates it and would otherwise earn a receipt off a
 baseline that never answered. The gate therefore fails closed whenever any run is invalid,
-for every skill whose gate IS the delta; `llm-council` and every `DETERMINISTIC_GATED` skill
+for every skill whose gate IS the delta; `DETERMINISTIC_GATED` skills
 are exempt because their receipts are earned by a self-test / unit suite instead. The
 run summary prints a `⚠ INVALID RUN` line per occurrence. If one recurs with nothing else in
 flight, the eval is under-timed — raise the per-attempt cap with `make eval … TIMEOUT=<secs>`
@@ -203,8 +226,9 @@ After one fresh semantic retry, an exhausted malformed judge reply stops further
 campaign turns. The partial benchmark retains completed runs/comparisons and the
 current executor condition, with unusable grading marked invalid and both raw attempt
 paths and reasons retained. Ordinary and mandatory quality/review verdicts still fail
-closed. The existing deterministic-advisory exception applies only if its actual owning
-suite succeeds with nonzero executed tests and no skips; a partial judge result is not
+closed, including deterministic-gated campaigns after an exhausted judge failure.
+Their actual owning suite still must succeed with nonzero executed tests and no skips;
+a partial judge result is not
 the certification evidence.
 
 `run_summary.by_provider` reports each executor's own `with_skill` / `without_skill` /
@@ -309,16 +333,13 @@ and arena evals.
 - **agy** — no native skill tooling. The harness is the only eval path; `agy plugin
   validate` covers manifest validation.
 
-## Orchestrator skills (llm-council)
+## Native fanout skills
 
-`llm-council` is special: harness executors run under `LLM_COUNCIL_DEPTH=1`, so an
-injected body cannot convene a real nested council — the with-skill/baseline benchmark
-still runs but its delta measures solo answers and is **advisory only**, never the
-receipt gate. What earns the receipt is the model/mode wiring verified
-**deterministically** by `python3 shared/skills/llm-council/scripts/fanout.py
---self-test` and a live `--smoke` (inspect the manifest's `model`/`thinking` and
-`[mode: …]`). Its synthesis quality has a bespoke blind-review workspace under
-`evals/llm-council/` (authored with skill-creator).
+Planner and executor answer-pressure runs complement their deterministic contract suites.
+They cannot alone prove native skill discovery, authorized service reads, durable peer
+exchange or owner-only application. Retain exact native session/tool evidence and every
+configured final identity for those behaviors. Missing or invalid final seats block owner
+reconciliation; identical answers from separate identities remain valid.
 
 ## Deterministically-gated skills (`DETERMINISTIC_GATED`)
 
@@ -333,7 +354,8 @@ receipt that cannot name its gate; `make eval-test` catches that before a paid r
 | Skill | Why the delta cannot gate it | Gate |
 |---|---|---|
 | `khenrix-wiki-add` / `khenrix-wiki-sync` | a read-only answer-quality run cannot exercise the stateful engine's commit, lock, ledger, and render behavior | the wikisync unit suite |
-| `llm-forge` | a read-only with-skill/baseline harness cannot drive a clone fleet, three providers and a fresh verifier — a judge receipt would certify prose and leave the dangerous mechanics untouched | the hermetic forge handover/CLI/`--gc` suites |
+| `llm-fanout-plan` | answer pressure alone cannot establish admission, skill resolution or source dependency mapping | named planner/compiler/source/skill contract suites |
+| `llm-fanout-execute` | answer pressure alone cannot establish durable recovery or owner-only application | named executor/recovery/repository/verification suites |
 
 **The judge run still executes.** `gate_ok = True` is applied *after* it in `run()`, so
 routing makes the delta **advisory, not free** — the cost control is a cheap eval set. Read
