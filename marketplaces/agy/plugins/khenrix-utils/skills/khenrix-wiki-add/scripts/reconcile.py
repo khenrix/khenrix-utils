@@ -217,8 +217,8 @@ def read_json_object(path: Path, *, preimage=_UNREAD) -> dict:
     if not raw:
         return {}
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise ReconcileReadError(
             f"{path} exists but is not readable as JSON ({e}). Reconcile will not treat an "
             "unreadable config as an empty one: the caller would report every desired key as "

@@ -140,6 +140,37 @@ def test_common_writer_refuses_invalid_json(tmp_path, contents):
     assert path.read_text() == contents
 
 
+@pytest.mark.parametrize("contents", [
+    b'\xef\xbb\xbf{"local":true}',
+    b'{"local":"\xff"}',
+    '{"local":true}'.encode("utf-16"),
+], ids=["utf8-bom", "invalid-utf8", "utf16"])
+def test_common_json_paths_refuse_unsupported_encoding_without_publication(tmp_path, contents):
+    path = tmp_path / "settings.json"
+    path.write_bytes(contents)
+    with pytest.raises(reconcile.ReconcileReadError, match=str(path)):
+        reconcile.read_json_object(path)
+    with pytest.raises(reconcile.ReconcileReadError, match=str(path)):
+        reconcile.read_json_object(path, preimage=contents)
+    with pytest.raises(reconcile.ReconcileReadError, match=str(path)):
+        reconcile.write_json_object(path, {"managed": True})
+    assert path.read_bytes() == contents
+    assert not list(path.parent.glob("*.khenrix-backup*"))
+    assert not list(path.parent.glob(".*.tmp"))
+
+
+def test_common_json_paths_preserve_valid_utf8_unicode(tmp_path):
+    path = tmp_path / "settings.json"
+    original = '{"local":"Blåbär 猫 🚚"}'.encode("utf-8")
+    path.write_bytes(original)
+    assert reconcile.read_json_object(path) == {"local": "Blåbär 猫 🚚"}
+    assert reconcile.read_json_object(path, preimage=original) == {"local": "Blåbär 猫 🚚"}
+    assert path.read_bytes() == original
+    reconcile.write_json_object(path, {"local": "Blåbär 猫 🚚", "managed": True})
+    assert json.loads(path.read_text()) == {"local": "Blåbär 猫 🚚", "managed": True}
+    assert path.with_suffix(".json.khenrix-backup").read_bytes() == original
+
+
 @pytest.mark.parametrize("cli", ["codex", "agy"])
 def test_mcp_refuses_explicit_stale_preimage(tmp_path, monkeypatch, cli):
     monkeypatch.setenv("HOME", str(tmp_path))
