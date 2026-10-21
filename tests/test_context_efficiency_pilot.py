@@ -54,7 +54,7 @@ def test_native_usage_includes_first_mcp_later_reads_and_attribution(pilot):
         "cache_creation_input_tokens": None, "output_tokens": 100,
         "provider_requests": None, "consumed_input_tokens": 1500}
     assert result["tool_access"] is True
-    assert pilot.aggregate_usage([result["usage"], result["usage"]])["input_tokens"] == 3000
+    assert pilot.aggregate_usage([result, result])["input_tokens"] == 1500
 
 
 def test_missing_usage_and_counter_cannot_establish_savings(pilot):
@@ -63,6 +63,38 @@ def test_missing_usage_and_counter_cannot_establish_savings(pilot):
     assert pilot.aggregate_usage([result["usage"]])["input_tokens"] is None
     assert pilot.comparison_decision(None, 20, counter_available=False) == "retain-baseline"
     assert pilot.comparison_decision(100, 20, counter_available=False) == "retain-baseline"
+
+
+def test_pilot_cumulative_turns_and_owner_evaluation_share_the_existing_ledger(pilot, tmp_path):
+    campaign = pilot.Campaign(tmp_path / "run", CORPUS)
+    initial = pilot.parse_native("codex", codex_result())
+    campaign.reserve(campaign.plan[0]["id"])
+    campaign.finish(campaign.plan[0]["id"], initial)
+    assert campaign.manifest["usage_summary"]["totals"]["input"] is None
+    assert campaign.manifest["usage_summary"]["missing_roles"] == ["evaluator", "owner"]
+    from dataclasses import replace
+    owner = replace(pilot.UsageEvidence.from_dict(initial["usage_evidence"]),
+        role="owner", session_id="owner-session", turn_id="owner-turn")
+    evaluator = replace(owner, role="evaluator", session_id="judge-session", turn_id="judge-turn")
+    campaign.record_usage("owner-synthesis", owner, kind="owner-synthesis")
+    campaign.record_usage("independent-evaluation", evaluator, kind="evaluation")
+    recovered = pilot.Campaign(campaign.root, CORPUS)
+    assert recovered.manifest["usage_summary"]["totals"]["input"] == 4500
+    assert recovered.manifest["usage_summary"]["totals"]["consumed_input"] == 4500
+    assert recovered.manifest["usage_summary"]["totals"]["cache_read"] == 3000
+    assert recovered.manifest["usage_summary"]["by_role"]["owner"]["input"] == 1500
+    assert recovered.manifest["outer_session_attempts"] == 1
+    assert recovered.manifest["decision"] == "retain-baseline"
+    with pytest.raises(pilot.PilotError, match="usage.*identity"):
+        recovered.record_usage("owner-synthesis", owner, kind="owner-synthesis")
+
+
+def test_legacy_scalar_maps_and_unknown_owner_usage_do_not_become_measured_totals(pilot, tmp_path):
+    assert pilot.aggregate_usage([{"input_tokens": 100}, {"input_tokens": 180}])["input_tokens"] is None
+    campaign = pilot.Campaign(tmp_path / "run", CORPUS)
+    campaign.record_usage("owner-unavailable", None, kind="owner-synthesis")
+    assert campaign.manifest["usage_summary"]["totals"]["input"] is None
+    assert campaign.manifest["usage_summary"]["measured_savings_eligible"] is False
 
 
 def test_claude_cache_categories_are_not_double_counted(pilot):

@@ -12,7 +12,7 @@ from pathlib import Path
 from .errors import ProcessValidationError, ProviderProtocolError
 from .process import ProcessCommand, run_command
 from .providers import (AgyAdapter, ClaudeAdapter, CodexAdapter, ExecutorProfile,
-                        ProviderRegistry, ProviderRequest)
+                        ProviderRegistry, ProviderRequest, UsageEvidence, aggregate_usage_evidence)
 
 MODES = ("normal", "deep")
 ADAPTERS = {"claude": ClaudeAdapter(), "codex": CodexAdapter(), "agy": AgyAdapter()}
@@ -141,7 +141,8 @@ def run(spec: PromptSpec, workdir: Path, *, timeout: int, retries: int,
             pass
     from .providers import _make_result
     native_result = _make_result(request, request.profile.adapter, result, parsed,
-                                 1, time.monotonic() - started)
+                                 1, time.monotonic() - started,
+                                 observed_cli_version=observed_version)
     answer_file = workdir / f"{spec.name}.result.txt"
     answer_file.write_text(native_result.answer)
     record = {"name": spec.name, "model": spec.model, "thinking": spec.thinking,
@@ -150,6 +151,7 @@ def run(spec: PromptSpec, workdir: Path, *, timeout: int, retries: int,
               "attempts": 1, "duration_sec": round(time.monotonic() - started, 4),
               "result_file": str(answer_file), "stdout_file": str(stdout), "stderr_file": str(stderr),
               "usage": dict(native_result.usage) if native_result.usage is not None else None,
+              "usage_evidence": native_result.usage_evidence.to_dict(),
               "observed_model": native_result.observed_model,
               "session_id": native_result.session_id}
     from .diagnostic import describe_native_launch

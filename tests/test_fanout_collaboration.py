@@ -1122,6 +1122,31 @@ def test_v2_hermetic_round_binds_every_native_request_and_skill_grant(tmp_path, 
         store.close()
 
 
+def test_native_usage_absence_survives_the_durable_terminal_pipeline(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(tmp_path, monkeypatch)
+    native_providers = sys.modules[SPEC.name + ".providers"]
+    def retain_unavailable_usage(request, *, registry):
+        result = provider(request, registry=registry)
+        evidence = native_providers.UsageEvidence(request.executor_id, result.session_id,
+            request.artifact_prefix, result.stdout_digest, role=request.role, resumed=request.resume)
+        return dataclasses.replace(result, usage_evidence=evidence)
+    coordinator.provider_runner = retain_unavailable_usage
+    try:
+        result = coordinator.execute_round(
+            packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy), round=1)
+        assert len(result.terminals) == len(seats)
+        for terminal in result.terminals:
+            assert terminal.usage_evidence.counters == ()
+            assert terminal.usage_evidence.session_id == terminal.session_id
+            persisted = json.loads(store.read_bytes(terminal.terminal_ref))
+            restored = TerminalSeatResult.from_dict(persisted)
+            assert restored.usage_evidence == terminal.usage_evidence
+            assert restored.usage_evidence.source_sha256 == terminal.stdout_ref.digest
+    finally:
+        journal.close()
+        store.close()
+
+
 def test_v2_read_only_native_round_uses_normal_profile_without_broker(tmp_path, monkeypatch):
     packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
         tmp_path, monkeypatch,

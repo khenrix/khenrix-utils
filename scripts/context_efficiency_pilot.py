@@ -24,13 +24,15 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared/lib"))
 from fanout.errors import ProviderProtocolError
 from fanout.process import ProcessCommand, ProcessStatus, _supervise_command
-from fanout.providers import AgyAdapter, ClaudeAdapter, CodexAdapter
+from fanout.providers import (AgyAdapter, ClaudeAdapter, CodexAdapter,
+                              UsageEvidence, aggregate_usage_evidence)
 
 CORPUS = ROOT / "tests/fixtures/context_efficiency/model-input"
 CORPUS_SHA256 = "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
@@ -120,10 +122,13 @@ def campaign_plan():
 
 
 def aggregate_usage(records):
-    records = tuple(records)
-    return {name: sum(record[name] for record in records)
-            if records and all(type(record.get(name)) is int and record[name] >= 0 for record in records)
-            else None for name in USAGE_FIELDS}
+    evidence = [UsageEvidence.from_dict(record["usage_evidence"])
+                if record.get("usage_evidence") is not None else None for record in records]
+    totals = aggregate_usage_evidence(evidence)["totals"]
+    return {target: totals[source] for source, target in (
+        ("input", "input_tokens"), ("cache_read", "cached_input_tokens"),
+        ("cache_write", "cache_creation_input_tokens"), ("output", "output_tokens"),
+        ("provider_requests", "provider_requests"), ("consumed_input", "consumed_input_tokens"))}
 
 
 def comparison_decision(baseline, candidate, *, counter_available):
@@ -251,13 +256,14 @@ def _control_read(provider, events, cwd):
     return False if False in outcomes else True if True in outcomes else None
 
 
-def parse_native(provider, raw, *, cwd=None):
+def parse_native(provider, raw, *, cwd=None, role="executor", resumed=False,
+                 observed_cli_version=None):
     usage = dict.fromkeys(USAGE_FIELDS)
     if provider == "maka":
         answer = raw.decode("utf-8").strip()
         return {"valid": bool(answer), "reason": "ok" if answer else "protocol-error",
                 "answer": answer, "session_id": None, "observed_model": None,
-                "tool_access": None, "usage": usage}
+                "tool_access": None, "usage": usage, "usage_evidence": None}
     events = []
     if provider == "claude":
         events = _json_events(raw)
@@ -290,7 +296,10 @@ def parse_native(provider, raw, *, cwd=None):
                  and not parsed.successful_file_change)
     return {"valid": valid, "reason": "ok" if valid else "protocol-error", "answer": parsed.answer,
             "session_id": parsed.session_id, "observed_model": parsed.observed_model,
-            "tool_access": read, "usage": usage}
+            "tool_access": read, "usage": usage,
+            "usage_evidence": replace(parsed.usage_evidence, role=role, resumed=resumed,
+                declared_cli_version=TARGETS[provider]["version"],
+                observed_cli_version=observed_cli_version).to_dict()}
 
 
 def native_argv(provider, cwd, *, evaluation=False, wall_seconds=120, tool_steps=40):
@@ -380,8 +389,32 @@ class Campaign:
                        or step["reason"] is None for step in unavailable)):
             raise PilotError("campaign ledger is invalid")
         self.manifest["unavailable_steps"] = unavailable
+        events = self.manifest.get("usage_events", [])
+        if (not isinstance(events, list) or any(not isinstance(event, dict) for event in events)
+                or len({event.get("id") for event in events}) != len(events)):
+            raise PilotError("campaign usage event identity is invalid")
+        for event in events:
+            if (set(event) != {"id", "kind", "evidence", "after_attempt"}
+                    or not isinstance(event["id"], str) or not event["id"]
+                    or event["kind"] not in {"owner-synthesis", "evaluation", "reference-read"}
+                    or type(event["after_attempt"]) is not int
+                    or not 0 <= event["after_attempt"] <= len(attempts)):
+                raise PilotError("campaign usage event is invalid")
+            if event["evidence"] is not None:
+                UsageEvidence.from_dict(event["evidence"])
+        self.manifest["usage_events"] = events
 
     def _save(self):
+        records = []
+        attempts = self.manifest["attempts"]
+        for index in range(len(attempts) + 1):
+            records.extend(event["evidence"] for event in self.manifest.get("usage_events", [])
+                           if event["after_attempt"] == index)
+            if index < len(attempts):
+                records.append(attempts[index].get("result", {}).get("usage_evidence"))
+        self.manifest["usage_summary"] = aggregate_usage_evidence(
+            [UsageEvidence.from_dict(record) if record is not None else None for record in records],
+            required_roles=("executor", "owner", "evaluator"))
         temporary = self.root / "manifest.next"
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         try:
@@ -399,6 +432,22 @@ class Campaign:
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    def record_usage(self, event_id, evidence, *, kind):
+        """Attach separately captured owner/evaluation/read usage to this ledger."""
+        with self._lock():
+            self._load()
+            if (not isinstance(event_id, str) or not event_id
+                    or any(event["id"] == event_id for event in self.manifest["usage_events"])):
+                raise PilotError("campaign usage event identity is invalid or duplicated")
+            expected_role = {"owner-synthesis": "owner", "evaluation": "evaluator", "reference-read": "executor"}.get(kind)
+            if expected_role is None or evidence is not None and (
+                    not isinstance(evidence, UsageEvidence) or evidence.role != expected_role):
+                raise PilotError("campaign usage event role is invalid")
+            self.manifest["usage_events"].append({"id": event_id, "kind": kind,
+                "evidence": evidence.to_dict() if evidence is not None else None,
+                "after_attempt": len(self.manifest["attempts"])})
+            self._save()
 
     def reserve(self, session_id):
         with self._lock():
@@ -527,7 +576,8 @@ def execute_session(campaign, session, *, argv=None, wall_seconds=120):
     stdout_ref = _write_artifact(campaign.root, f"results/{session['id']}/stdout.bin", process.stdout)
     stderr_ref = _write_artifact(campaign.root, f"results/{session['id']}/stderr.bin", process.stderr)
     try:
-        result = parse_native(provider, process.stdout, cwd=seat)
+        result = parse_native(provider, process.stdout, cwd=seat,
+            observed_cli_version=TARGETS[provider]["version"] if argv is None else None)
     except (PilotError, ProviderProtocolError, ValueError, UnicodeDecodeError) as error:
         result = {"valid": False, "reason": "protocol-error", "usage": dict.fromkeys(USAGE_FIELDS),
                   "parse_error": type(error).__name__, "answer": ""}

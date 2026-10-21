@@ -38,7 +38,7 @@ from .memory import (
 )
 from .plan import DEFAULT_EXECUTOR_IDS, FanoutPlanV1, FanoutPlanV2, ProviderPolicyV1, load_fanout_plan
 from .process import exact_session_lock
-from .providers import ExecutorProfile, ProviderRegistry, ProviderRequest, ProviderResult, run_provider
+from .providers import ExecutorProfile, ProviderRegistry, ProviderRequest, ProviderResult, UsageEvidence, run_provider
 from .controller import LifecycleController
 from .repo import (
     RepositoryBaseline,
@@ -871,6 +871,7 @@ class TerminalSeatResult:
     schema_version: str = TERMINAL_SCHEMA
     peer_packet_sha256: str | None = None
     read_audit_ref: ArtifactRef | None = None
+    usage_evidence: UsageEvidence | None = None
 
     def __post_init__(self) -> None:
         for name in ("run_id", "task_id", "seat_id", "executor_id", "reason"):
@@ -905,6 +906,13 @@ class TerminalSeatResult:
                 _artifact_ref(_artifact_dict(ref))
         if self.read_audit_ref is not None:
             _artifact_ref(_artifact_dict(self.read_audit_ref))
+        if self.usage_evidence is not None and (
+            not isinstance(self.usage_evidence, UsageEvidence)
+            or self.usage_evidence.provider != self.executor_id
+            or self.session_id is not None and self.usage_evidence.session_id != self.session_id
+            or self.stdout_ref is not None and self.usage_evidence.source_sha256 != self.stdout_ref.digest
+        ):
+            raise CollaborationValidationError("terminal usage evidence differs from its provider source")
         if not _is_digest(self.answer_sha256):
             raise CollaborationValidationError("terminal answer digest is invalid")
         if self.valid and (
@@ -969,6 +977,8 @@ class TerminalSeatResult:
             value["peer_packet_sha256"] = self.peer_packet_sha256
         if self.read_audit_ref is not None:
             value["read_audit_ref"] = _artifact_dict(self.read_audit_ref)
+        if self.usage_evidence is not None:
+            value["usage_evidence"] = self.usage_evidence.to_dict()
         return value
 
     @classmethod
@@ -987,6 +997,8 @@ class TerminalSeatResult:
             fields.add("peer_packet_sha256")
         if isinstance(value, Mapping) and "read_audit_ref" in value:
             fields.add("read_audit_ref")
+        if isinstance(value, Mapping) and "usage_evidence" in value:
+            fields.add("usage_evidence")
         if not isinstance(value, Mapping) or set(value) != fields or schema not in {
             TERMINAL_SCHEMA, PROFILED_TERMINAL_SCHEMA,
         }:
@@ -994,6 +1006,11 @@ class TerminalSeatResult:
         def optional_ref(name: str) -> ArtifactRef | None:
             raw = value[name]
             return None if raw is None else _artifact_ref(raw)
+        try:
+            usage_evidence = (None if "usage_evidence" not in value
+                              else UsageEvidence.from_dict(value["usage_evidence"]))
+        except ProviderRequestError as error:
+            raise CollaborationValidationError("terminal usage evidence is invalid") from error
         return cls(
             run_id=value["run_id"], task_id=value["task_id"], seat_id=value["seat_id"],  # type: ignore[arg-type]
             executor_id=value["executor_id"], attempt=value["attempt"], round=value["round"],  # type: ignore[arg-type]
@@ -1016,6 +1033,7 @@ class TerminalSeatResult:
             peer_packet_sha256=value.get("peer_packet_sha256"),
             read_audit_ref=(None if value.get("read_audit_ref") is None
                             else _artifact_ref(value["read_audit_ref"])),
+            usage_evidence=usage_evidence,
         )
 
 
@@ -2550,6 +2568,7 @@ class CollaborationCoordinator:
             schema_version=(PROFILED_TERMINAL_SCHEMA if request.profile is not None
                             else TERMINAL_SCHEMA),
             read_audit_ref=audit_ref,
+            usage_evidence=result.usage_evidence,
         )
 
     def _audit_native_reads(self, packet, seat, round, request, result):

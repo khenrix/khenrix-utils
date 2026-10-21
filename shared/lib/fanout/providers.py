@@ -336,6 +336,81 @@ class ProviderRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class UsageEvidence:
+    """Immutable wire counters with separate units, scope and provenance."""
+
+    provider: str
+    session_id: str | None
+    turn_id: str
+    source_sha256: str
+    counters: tuple[tuple[str, int | float, str, str], ...] = ()
+    raw_counters: tuple[tuple[str, int | float], ...] = ()
+    role: str = "executor"
+    resumed: bool | None = None
+    declared_cli_version: str | None = None
+    observed_cli_version: str | None = None
+    scope_evidence: str = "uncharacterized"
+    coverage: str = "unknown"
+    captured_at_ns: int = field(default_factory=time.time_ns)
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.provider, str) or not self.provider
+                or self.role not in _ROLES or self.resumed is not None and type(self.resumed) is not bool
+                or not isinstance(self.turn_id, str) or not self.turn_id
+                or not isinstance(self.source_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", self.source_sha256) is None
+                or self.session_id is not None and (not isinstance(self.session_id, str) or not self.session_id)
+                or any(version is not None and (not isinstance(version, str) or not version)
+                       for version in (self.declared_cli_version, self.observed_cli_version))
+                or self.scope_evidence not in {"uncharacterized", "upstream-source-uncharacterized", "provider-docs-uncharacterized"}
+                or self.coverage not in {"unknown", "main-loop-only", "native-session"}):
+            raise ProviderRequestError("usage evidence identity or provenance is invalid")
+        if type(self.captured_at_ns) is not int or self.captured_at_ns <= 0:
+            raise ProviderRequestError("usage evidence capture time is invalid")
+        counters = tuple(tuple(row) for row in self.counters)
+        raw = tuple(tuple(row) for row in self.raw_counters)
+        for rows, width in ((counters, 4), (raw, 2)):
+            if any(len(row) != width for row in rows) or len({row[0] for row in rows}) != len(rows):
+                raise ProviderRequestError("usage evidence counters are duplicated or malformed")
+            for row in rows:
+                if (not isinstance(row[0], str) or not row[0]
+                        or type(row[1]) not in {int, float} or not math.isfinite(row[1])):
+                    raise ProviderRequestError("usage evidence counter is invalid")
+        if any(value < 0 or scope not in {"turn", "session-cumulative", "unknown"}
+               or kind not in {"provider-reported", "estimate"} for _, value, scope, kind in counters):
+            raise ProviderRequestError("usage evidence counter semantics are invalid")
+        object.__setattr__(self, "counters", counters)
+        object.__setattr__(self, "raw_counters", raw)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"schema_version": "fanout-usage-evidence-v1", "provider": self.provider,
+            "session_id": self.session_id, "turn_id": self.turn_id, "role": self.role,
+            "resumed": self.resumed, "source_sha256": self.source_sha256,
+            "declared_cli_version": self.declared_cli_version,
+            "observed_cli_version": self.observed_cli_version, "scope_evidence": self.scope_evidence,
+            "coverage": self.coverage, "raw_counters": dict(self.raw_counters),
+            "captured_at_ns": self.captured_at_ns,
+            "counters": {name: {"value": value, "scope": scope, "kind": kind,
+                "status": "unqualified-zero" if value == 0 else "reported"}
+                for name, value, scope, kind in self.counters}}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "UsageEvidence":
+        try:
+            fields = dict(value)
+            fields.pop("schema_version")
+            fields["raw_counters"] = tuple(fields["raw_counters"].items())
+            fields["counters"] = tuple((name, row["value"], row["scope"], row["kind"])
+                                       for name, row in fields["counters"].items())
+            evidence = cls(**fields)
+        except (TypeError, ValueError, KeyError, AttributeError) as error:
+            raise ProviderRequestError("usage evidence descriptor is invalid") from error
+        if evidence.to_dict() != value:
+            raise ProviderRequestError("usage evidence descriptor changed semantics")
+        return evidence
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderResult:
     """Terminal evidence for exactly one provider request, including raw captures."""
 
@@ -359,9 +434,12 @@ class ProviderResult:
     requested_model: str | None = None
     observed_model: str | None = None
     launch_metadata: Mapping[str, object] = field(default_factory=dict)
+    usage_evidence: UsageEvidence | None = None
 
     def __post_init__(self) -> None:
         """Copy the supported scalar usage surface behind an immutable mapping."""
+        if self.usage_evidence is not None and not isinstance(self.usage_evidence, UsageEvidence):
+            raise ProviderRequestError("result usage evidence is invalid")
         if self.usage is not None:
             if not isinstance(self.usage, Mapping):
                 raise ProviderRequestError("result usage must be a mapping or None")
@@ -386,6 +464,7 @@ class _Parsed:
     observed_model: str | None = None
     successful_file_change: bool = False
     observed_tools: tuple[str, ...] = ()
+    usage_evidence: UsageEvidence | None = None
 
 
 class ProviderAdapter:
@@ -478,6 +557,8 @@ class ClaudeAdapter(ProviderAdapter):
                    and data.get("is_error") is False),
             error=error,
             observed_model=observed_model,
+            usage_evidence=_native_usage_evidence("claude", data.get("usage"), stdout,
+                session_id=session_id, cost=data.get("total_cost_usd"), model_usage=model_usage),
         )
 
 
@@ -520,6 +601,7 @@ class CodexAdapter(ProviderAdapter):
         observed_model: str | None = None
         successful_file_change = False
         observed_tools: list[str] = []
+        usage_evidence = _native_usage_evidence("codex", None, stdout, session_id=None)
         for event in events:
             kind = event.get("type")
             if final and kind in {"thread.started", "turn.started", "item.started", "item.updated",
@@ -565,6 +647,8 @@ class CodexAdapter(ProviderAdapter):
                     "cache_write_input_tokens": "cache_write",
                     "reasoning_output_tokens": "reasoning",
                 })
+                usage_evidence = _native_usage_evidence("codex", event.get("usage"), stdout,
+                    session_id=session_id)
             elif kind in {"turn.failed", "error"}:
                 final = True
                 detail = event.get("error")
@@ -573,7 +657,7 @@ class CodexAdapter(ProviderAdapter):
         return _Parsed(session_id=session_id, answer=answer, usage=usage, final=final,
                        error=error, observed_model=observed_model,
                        successful_file_change=successful_file_change,
-                       observed_tools=tuple(observed_tools))
+                       observed_tools=tuple(observed_tools), usage_evidence=usage_evidence)
 
 
 class AgyAdapter(ProviderAdapter):
@@ -650,6 +734,8 @@ class AgyAdapter(ProviderAdapter):
             error=(_optional_string(data.get("error")) or "agy reported a structured error")
                   if status == "ERROR" else None,
             observed_model=_optional_string(data.get("model")),
+            usage_evidence=_native_usage_evidence("agy", data.get("usage"), stdout,
+                session_id=_optional_string(data.get("conversation_id"))),
         )
 
 
@@ -1032,7 +1118,8 @@ def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderReg
         break
     assert last_process is not None
     duration = time.monotonic() - started
-    result = _make_result(request, adapter, last_process, parsed, attempts, duration)
+    result = _make_result(request, adapter, last_process, parsed, attempts, duration,
+                          observed_cli_version=observed_version)
     from .diagnostic import describe_native_launch
     result = replace(result, launch_metadata=describe_native_launch(
         profile, command, observed_cli_version=observed_version,
@@ -1077,10 +1164,19 @@ def _run_many_with_runner(requests: Sequence[ProviderRequest], *, max_workers: i
 
 
 def _make_result(request: ProviderRequest, adapter: ProviderAdapter, process: ProcessResult,
-                 parsed: _Parsed | None, attempts: int, duration: float) -> ProviderResult:
+                 parsed: _Parsed | None, attempts: int, duration: float, *,
+                 observed_cli_version: str | None = None) -> ProviderResult:
     answer = parsed.answer if parsed else ""
     session_id = parsed.session_id if parsed else None
     usage = parsed.usage if parsed else None
+    usage_evidence = (parsed.usage_evidence if parsed else None) or _native_usage_evidence(
+        request.executor_id, None, process.stdout, session_id=session_id)
+    usage_evidence = replace(usage_evidence, role=request.role, resumed=request.resume,
+        session_id=session_id or request.session_id,
+        declared_cli_version=request.profile.cli_version if request.profile else None,
+        observed_cli_version=observed_cli_version,
+        turn_id=_digest(canonical_json({"prefix": request.artifact_prefix,
+            "prompt": _digest(request.prompt_bytes), "source": usage_evidence.source_sha256})))
     if parsed and parsed.error:
         valid, reason, hint = False, "provider-error", parsed.error
     elif process.status == ProcessStatus.TIMEOUT:
@@ -1131,6 +1227,7 @@ def _make_result(request: ProviderRequest, adapter: ProviderAdapter, process: Pr
         stderr_digest=_digest(process.stderr),
         requested_model=request.profile.requested_model if request.profile else None,
         observed_model=parsed.observed_model if parsed else None,
+        usage_evidence=usage_evidence,
     )
 
 
@@ -1209,9 +1306,117 @@ def _usage(raw: object, names: Mapping[str, str], *, cost: object = None) -> Map
         value = raw.get(source)
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             result[target] = value
-    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0:
         result["cost_usd"] = cost
     return result or None
+
+
+_USAGE_NAMES = {
+    "input_tokens": "input", "output_tokens": "output", "cached_input_tokens": "cache_read",
+    "cache_read_input_tokens": "cache_read", "cache_creation_input_tokens": "cache_write",
+    "cache_write_input_tokens": "cache_write", "reasoning_output_tokens": "reasoning",
+    "thinking_tokens": "thinking", "cache_read_tokens": "cache_read", "total_tokens": "total",
+}
+USAGE_COUNTERS = ("input", "output", "cache_read", "cache_write", "reasoning", "thinking",
+                  "total", "consumed_input", "provider_requests", "cost_usd")
+
+
+def _native_usage_evidence(provider, raw, stdout, *, session_id, cost=None, model_usage=None):
+    raw = raw if isinstance(raw, dict) else {}
+    normalized = dict(_usage(raw, _USAGE_NAMES, cost=cost) or {})
+    if provider == "claude":
+        parts = [normalized.get(name) for name in ("input", "cache_read", "cache_write")]
+        if all(type(part) is int for part in parts):
+            normalized["consumed_input"] = sum(parts)
+    elif provider == "codex" and "input" in normalized:
+        # Codex input already includes cached input; these are not disjoint buckets.
+        normalized["consumed_input"] = normalized["input"]
+
+    def numeric_rows(value, prefix):
+        for name, child in value.items():
+            if type(child) in {int, float} and math.isfinite(child):
+                yield prefix + str(name), child
+            elif isinstance(child, dict):
+                yield from numeric_rows(child, prefix + str(name) + ".")
+
+    raw_rows = list(numeric_rows(raw, "usage."))
+    if type(cost) in {int, float} and math.isfinite(cost):
+        raw_rows.append(("total_cost_usd", cost))
+    if isinstance(model_usage, dict):
+        raw_rows.extend(numeric_rows(model_usage, "modelUsage."))
+    return UsageEvidence(provider, session_id, _digest(stdout), _digest(stdout),
+        counters=tuple((name, value,
+            "session-cumulative" if provider == "codex" or name == "cost_usd" else
+            "turn" if provider == "claude" else "unknown",
+            "estimate" if name == "cost_usd" else "provider-reported")
+            for name, value in normalized.items()), raw_counters=tuple(raw_rows),
+        scope_evidence={"codex": "upstream-source-uncharacterized",
+            "claude": "provider-docs-uncharacterized"}.get(provider, "uncharacterized"),
+        coverage="main-loop-only" if provider == "claude" else "native-session" if provider == "codex" else "unknown")
+
+
+def aggregate_usage_evidence(records: Iterable[UsageEvidence | None], *,
+                             required_roles: Iterable[str] = ()) -> dict[str, object]:
+    """Report every supplied turn; cumulative deltas require its initial session."""
+    entries = []
+    seen = {}
+    for evidence in records:
+        if evidence is None:
+            entries.append(None)
+            continue
+        if not isinstance(evidence, UsageEvidence):
+            raise ProviderRequestError("usage aggregation requires versioned evidence")
+        identity = evidence.provider, evidence.session_id, evidence.turn_id
+        if identity in seen:
+            if seen[identity] != evidence:
+                raise ProviderRequestError("usage turn identity has conflicting evidence")
+            continue
+        seen[identity] = evidence
+        entries.append(evidence)
+    entries.sort(key=lambda item: item.captured_at_ns if item is not None else math.inf)
+    session_sizes = {}
+    for evidence in entries:
+        if evidence is not None:
+            key = evidence.provider, evidence.session_id
+            session_sizes[key] = session_sizes.get(key, 0) + 1
+    previous = {}
+    contributions = []
+    for evidence in entries:
+        values = dict.fromkeys(USAGE_COUNTERS)
+        if evidence is None:
+            contributions.append(("unknown", values))
+            continue
+        key = evidence.provider, evidence.session_id
+        prior = previous.get(key)
+        counters = {name: (value, scope, kind) for name, value, scope, kind in evidence.counters}
+        for name, (value, scope, _) in counters.items():
+            if value == 0 or evidence.session_id is None:
+                continue
+            if scope == "turn" or scope == "unknown" and session_sizes[key] == 1 and evidence.resumed is False:
+                values[name] = value
+            elif scope == "session-cumulative":
+                if prior is None and evidence.resumed is False:
+                    values[name] = value
+                elif prior is not None and prior.get(name) is not None and value >= prior[name]:
+                    values[name] = value - prior[name]
+        # A reset, missing counter or absent initial observation taints later deltas.
+        previous[key] = {name: counters[name][0] if values.get(name) is not None else None
+                         for name in USAGE_COUNTERS if name in counters}
+        contributions.append((evidence.role, values))
+
+    def totals(rows):
+        return {name: sum(row[name] for row in rows)
+                if rows and all(row.get(name) is not None for row in rows) else None
+                for name in USAGE_COUNTERS}
+
+    roles = {role for role, _ in contributions}
+    missing = sorted(set(required_roles) - roles)
+    return {"schema_version": "fanout-usage-summary-v1", "entries": len(entries),
+        "totals": dict.fromkeys(USAGE_COUNTERS) if missing else totals([row for _, row in contributions]),
+        "by_role": {role: totals([row for current, row in contributions if current == role]) for role in sorted(roles)},
+        "missing_roles": missing, "counter_kinds": {name: "estimate" if name == "cost_usd" else "provider-reported"
+                                                     for name in USAGE_COUNTERS},
+        "measured_savings_eligible": False}
 
 
 def _digest(data: bytes) -> str:
@@ -1222,4 +1427,5 @@ __all__ = [
     "AgyAdapter", "ClaudeAdapter", "CodexAdapter", "ExecutorProfile",
     "ProviderAdapter", "ProviderCapabilities", "ProviderRegistry", "ProviderRequest",
     "ProviderResult", "RoutingTargetRegistry", "run_many", "run_provider",
+    "UsageEvidence", "aggregate_usage_evidence",
 ]

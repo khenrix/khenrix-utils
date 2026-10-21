@@ -670,6 +670,20 @@ def aggregate(runs: list) -> dict:
     return summary
 
 
+def _experiment_usage_summary(directory: Path) -> dict:
+    """Include executor captures and every judge attempt, including failures."""
+    evidence = []
+    for path in sorted(directory.rglob("manifest.json")):
+        document = json.loads(path.read_text())
+        records = document.get("providers") if isinstance(document, dict) else None
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            raw = record.get("usage_evidence") if isinstance(record, dict) else None
+            evidence.append(eval_runtime.UsageEvidence.from_dict(raw) if raw is not None else None)
+    return eval_runtime.aggregate_usage_evidence(evidence, required_roles=("executor", "evaluator"))
+
+
 # --------------------------------------------------------------------------- #
 # Execution layer (uses fanout for the real headless runs).
 # --------------------------------------------------------------------------- #
@@ -1409,6 +1423,7 @@ def build_run_result(rec: dict, g: dict) -> dict:
         "tool_calls": None,
         "observed_tools": rec.get("launch_metadata", {}).get("observed_tools"),
         "usage": rec.get("usage"),
+        "usage_evidence": rec.get("usage_evidence"),
         "executor_error": executor_error,
         "judge_error": judge_error,
         "errors": 1 if (executor_error or judge_error) else 0,
@@ -1710,6 +1725,7 @@ def run(args) -> int:
         "runs": all_runs,
         "comparisons": comparisons,
         "run_summary": aggregate(all_runs),
+        "usage_summary": _experiment_usage_summary(itdir),
         "notes": ["Portable harness: time_seconds from fan-out duration; token "
                   "accounting not captured cross-provider (tokens=null)."],
     }
