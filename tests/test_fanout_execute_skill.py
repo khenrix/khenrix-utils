@@ -460,7 +460,8 @@ helper._runtime()
 
 @pytest.mark.parametrize("source_cli", (PLANNER, CLI))
 @pytest.mark.parametrize("relative", ("lib", "lib/fanout", "lib/fanout/__init__.py",
-                                      "lib/fanout/durable_io.py", "lib/fanout/compiler.py"))
+                                      "lib/fanout/durable_io.py", "lib/fanout/compiler.py",
+                                      "lib/native_context.py"))
 def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, source_cli, relative):
     spec = importlib.util.spec_from_file_location("_import_boundary_delivery", ROOT / "components/skills/skillctl.py")
     delivery = importlib.util.module_from_spec(spec)
@@ -471,6 +472,7 @@ def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, sourc
     external = tmp_path / "external"
     shutil.copytree(ROOT / "shared/lib/fanout", external / "lib/fanout",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(ROOT / "shared/lib/native_context.py", external / "lib/native_context.py")
     leaf = external / (relative if relative.endswith(".py") else "lib/fanout/__init__.py")
     code = leaf.read_text()
     mark = f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
@@ -501,6 +503,39 @@ helper._runtime()
     assert not marker.exists(), result.stderr
     assert result.returncode != 0
     assert "unsafe" in result.stderr
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_native_context_import_ignores_ambient_search_and_refuses_foreign_cache(tmp_path, cached):
+    marker = tmp_path / "external-imported"
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "native_context.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n")
+    command = '''
+import importlib.util, pathlib, sys, types
+sys.path.insert(0, sys.argv[2])
+if sys.argv[3] == 'cached':
+    cached = types.ModuleType('native_context')
+    cached.__file__ = str(pathlib.Path(sys.argv[2]) / 'native_context.py')
+    cached.NativeRoots = object
+    cached.resolve_native_roots = lambda environment=None: None
+    sys.modules['native_context'] = cached
+spec = importlib.util.spec_from_file_location('guarded_runtime', pathlib.Path(sys.argv[1]) / '__init__.py', submodule_search_locations=[sys.argv[1]])
+runtime = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = runtime
+spec.loader.exec_module(runtime)
+assert pathlib.Path(sys.modules[runtime.process.resolve_native_roots.__module__].__file__) == pathlib.Path(sys.argv[1]).parent / 'native_context.py'
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+        str(ROOT / "shared/lib/fanout"), str(shadow), "cached" if cached else "shadow"],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert not marker.exists(), result.stderr
+    if cached:
+        assert result.returncode != 0
+        assert "native context" in result.stderr and "foreign" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("relative", (".runtime", ".runtime/components", ".runtime/components/memory"))
@@ -2473,6 +2508,7 @@ def test_fresh_process_v1_status_authenticates_accepted_amendment_and_runtime_fe
     isolated = tmp_path / "owned-helper"
     shutil.copytree(ROOT / "shared/lib/fanout", isolated / "shared/lib/fanout",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(ROOT / "shared/lib/native_context.py", isolated / "shared/lib/native_context.py")
     (isolated / "scripts").mkdir()
     cli = isolated / "scripts/execute.py"
     shutil.copy2(CLI, cli)

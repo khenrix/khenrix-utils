@@ -90,6 +90,7 @@ def _runtime():
         raise ValueError("bundled fanout runtime is missing")
     source_root = skill_root if runtime_root == candidates[2] else runtime_root.parents[2]
     _require_import_path(source_root, runtime_root, directory=True)
+    _require_import_path(source_root, runtime_root.parent / "native_context.py")
     for path in runtime_root.rglob("*"):
         _require_import_path(source_root, path, directory=path.is_dir())
     if runtime_root != candidates[2]:

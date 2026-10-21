@@ -23,19 +23,28 @@ from typing import Callable, Iterator, Mapping, Sequence
 
 from .errors import ProcessValidationError, SlotCapacityConflictError, SlotTimeoutError
 
-# Fanout is also loaded as a standalone/aliased package by installed skills.
+# Installed skills must load their sibling helper, never an ambient module.
+_context_source = Path(__file__).resolve().parents[1] / "native_context.py"
 try:
-    from native_context import NativeRoots, resolve_native_roots
-except ModuleNotFoundError as error:
-    if error.name != "native_context":
-        raise
+    _context_mode = _context_source.lstat().st_mode
+except OSError as error:
+    raise ImportError("bundled native context source is missing or unsafe") from error
+if not stat.S_ISREG(_context_mode):
+    raise ImportError("bundled native context source is unsafe")
+_context_module = sys.modules.get("native_context")
+if _context_module is not None:
+    _cached_source = getattr(_context_module, "__file__", None)
+    if (not isinstance(_cached_source, str) or Path(_cached_source).is_symlink()
+            or Path(_cached_source).resolve() != _context_source):
+        raise ImportError("native context imported a foreign module")
+else:
     _context_spec = importlib.util.spec_from_file_location(
-        "native_context", Path(__file__).resolve().parents[1] / "native_context.py")
+        "native_context", _context_source)
     _context_module = importlib.util.module_from_spec(_context_spec)
     sys.modules[_context_spec.name] = _context_module
     _context_spec.loader.exec_module(_context_module)
-    NativeRoots = _context_module.NativeRoots
-    resolve_native_roots = _context_module.resolve_native_roots
+NativeRoots = _context_module.NativeRoots
+resolve_native_roots = _context_module.resolve_native_roots
 
 
 DEFAULT_EXECUTOR_SLOTS = 6
