@@ -24,6 +24,151 @@ providers = sys.modules[SPEC.name + ".providers"]
 process = sys.modules[SPEC.name + ".process"]
 
 
+@pytest.mark.parametrize("role,model", [
+    ("executor", "gemini-3.8-flash-high"),
+    ("evaluator", "gemini-4-argon-high"),
+    ("owner", "gemini-4-argon-high"),
+])
+def test_gemini_role_model_identity_survives_resume_and_serialization(tmp_path, role, model):
+    registry = fanout.ProviderRegistry.default()
+    profile = registry.select("agy", "read-only", "standard", role=role)
+    assert profile.requested_model == model
+    assert profile.requested_effort == "high"
+    restored = fanout.ExecutorProfile.from_dict(profile.to_dict(), adapter=profile.adapter)
+    assert restored.digest == profile.digest
+    for resume in (False, True):
+        request = fanout.ProviderRequest("agy", "read", cwd=tmp_path, profile=restored,
+            role=role, resume=resume, session_id="bound-session" if resume else None)
+        command = profile.adapter.build_command(request)
+        assert command.argv[command.argv.index("--model") + 1] == model
+        assert command.argv[command.argv.index("--effort") + 1] == "high"
+
+
+def test_native_root_resolver_uses_only_the_explicit_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "ambient-codex"))
+    roots = process.resolve_native_roots({"HOME": str(tmp_path / "child"),
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"), "CODEX_HOME": str(tmp_path / "codex")})
+    assert roots.home == tmp_path / "child"
+    assert roots.codex == tmp_path / "codex"
+    assert roots.claude == tmp_path / "claude"
+    assert roots.agy == tmp_path / "child/.gemini/antigravity-cli"
+    assert process.resolve_native_roots({"HOME": str(tmp_path)}).codex == tmp_path / ".codex"
+    with pytest.raises((AttributeError, TypeError)):
+        roots.home = tmp_path
+
+
+def test_private_vertex_route_reader_uses_the_effective_claude_root(tmp_path):
+    root = tmp_path / "claude-override"
+    root.mkdir(mode=0o700)
+    path = root / "settings.json"
+    route = {"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "synthetic-project", "CLOUD_ML_REGION": "eu"}
+    path.write_text(json.dumps({"env": route}))
+    path.chmod(0o600)
+    assert process.default_claude_vertex_route({"HOME": str(tmp_path), "CLAUDE_CONFIG_DIR": str(root)}) == route
+
+
+def test_native_command_rejects_root_drift_before_process_spawn(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = fanout.ProviderRegistry.default().select("claude", "read-only", "standard")
+    request = fanout.ProviderRequest("claude", "read", cwd=tmp_path, profile=profile)
+    command = profile.adapter.build_command(request)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "drift"))
+    monkeypatch.setattr(process, "_supervise_command", lambda *a, **k: pytest.fail("root drift spawned"))
+    with pytest.raises(process.ProcessValidationError, match="native.*root"):
+        process.run_command(command)
+
+
+@pytest.mark.parametrize("variable", ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"])
+def test_native_child_override_cannot_escape_the_policy_root_binding(tmp_path, monkeypatch, variable):
+    profile = fanout.ProviderRegistry.default().select("codex", "read-only", "standard")
+    command = profile.adapter.build_command(fanout.ProviderRequest("codex", "read", cwd=tmp_path, profile=profile))
+    command = replace(command, environment={variable: str(tmp_path / "other")})
+    monkeypatch.setattr(process, "_supervise_command", lambda *a, **k: pytest.fail("override spawned"))
+    with pytest.raises(process.ProcessValidationError, match="native.*root"):
+        process.run_command(command)
+
+
+def test_native_diagnostic_uses_captured_child_roots(tmp_path, monkeypatch):
+    from importlib import import_module
+    diagnostic = import_module(SPEC.name + ".diagnostic")
+    monkeypatch.setenv("HOME", str(tmp_path / "child"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    profile = fanout.ProviderRegistry.default().select("claude", "read-only", "standard")
+    command = profile.adapter.build_command(fanout.ProviderRequest("claude", "read", cwd=tmp_path, profile=profile))
+    monkeypatch.setenv("HOME", str(tmp_path / "other"))
+    metadata = diagnostic.describe_native_launch(profile, command, observed_cli_version=profile.cli_version)
+    assert metadata["native_roots"]["home"] == str(tmp_path / "child")
+    assert str(tmp_path / "claude/skills") in metadata["skill_paths"]
+
+
+def test_native_profile_rejects_resume_in_a_changed_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    profile = fanout.ProviderRegistry.default().select("codex", "read-only", "standard")
+    stored = profile.to_dict()
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "other"))
+    restored = fanout.ExecutorProfile.from_dict(stored, adapter=profile.adapter)
+    request = fanout.ProviderRequest("codex", "continue", cwd=tmp_path, profile=restored,
+        session_id="bound-session", resume=True)
+    with pytest.raises(fanout.ProviderRequestError, match="native.*root"):
+        restored.adapter.build_command(request)
+
+
+def test_native_trace_uses_launch_roots_after_ambient_environment_changes(tmp_path, monkeypatch):
+    from importlib import import_module
+    native_trace = import_module(SPEC.name + ".native_trace")
+    monkeypatch.setenv("HOME", str(tmp_path / "child"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "configuration"))
+    profile = fanout.ProviderRegistry.default().select("claude", "read-only", "standard")
+    session = "11111111-1111-4111-8111-111111111111"
+    request = fanout.ProviderRequest("claude", "exact prompt", cwd=tmp_path, profile=profile, session_id=session)
+    transcript = profile.native_roots.claude / "projects/project" / f"{session}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "user", "sessionId": session, "message": {"content": "exact prompt"}},
+        {"type": "assistant", "sessionId": session, "message": {
+            "content": [{"type": "text", "text": "answer"}], "stop_reason": "end_turn"}},
+    ]) + "\n")
+    from types import SimpleNamespace
+    result = SimpleNamespace(session_id=session, answer="answer", valid=True, stdout=b"",
+        launch_metadata={"native_roots": profile.native_roots.to_dict()})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "different"))
+    trace = native_trace.capture_native_trace(request, result)
+    assert trace["coverage"] == "complete"
+    assert trace["source"] == str(transcript)
+
+
+def test_legacy_profile_descriptor_roundtrips_without_inventing_a_root_binding():
+    profile = fanout.ProviderRegistry.default().select("agy", "read-only", "standard")
+    legacy = replace(profile, native_roots=None, profile_sha256=None)
+    descriptor = legacy.to_dict()
+    assert "native_roots" not in descriptor
+    assert descriptor["schema_version"] == "fanout-executor-profile-v3"
+    restored = fanout.ExecutorProfile.from_dict(descriptor, adapter=legacy.adapter)
+    assert restored.to_dict() == descriptor and restored.native_roots is None
+
+
+def test_public_native_resume_refuses_unbound_legacy_profile_before_spending(tmp_path, monkeypatch):
+    profile = fanout.ProviderRegistry.default().select("codex", "read-only", "standard")
+    legacy = replace(profile, native_roots=None, profile_sha256=None)
+    request = fanout.ProviderRequest("codex", "continue", cwd=tmp_path, profile=legacy,
+        session_id="historical-session", resume=True)
+    monkeypatch.setattr(providers, "run_command", lambda *_: pytest.fail("unbound legacy resume spent"))
+    with pytest.raises(fanout.ProviderRequestError, match="fresh admission or historical inspection"):
+        fanout.run_provider(request)
+
+
+def test_evaluator_bridge_keeps_executor_mode_defaults_separate_from_judge_profile(tmp_path):
+    from importlib import import_module
+    from types import SimpleNamespace
+    runtime = import_module(SPEC.name + ".eval_provider")
+    config = runtime.resolve_mode_config(SimpleNamespace(mode="normal"))
+    assert config["agy"] == {"model": "gemini-3.8-flash-high", "thinking": "high", "model_explicit": False}
+    assert config["codex"]["thinking"] == "medium"
+    registry = fanout.ProviderRegistry.default(version_probe=lambda _: "fixture", contract_probe=lambda _: None)
+    judge = runtime.build_native_spec("agy", "evaluate", cwd=tmp_path, registry=registry)
+    assert judge.profile.requested_model == "gemini-4-argon-high"
+
+
 def test_native_runtime_and_diagnostics_work_without_retired_isolation_modules(tmp_path):
     probe = r'''
 import importlib.abc, importlib.util, json, sys

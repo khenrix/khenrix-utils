@@ -1944,6 +1944,27 @@ def test_cli_model_defaults_passes_for_matching_configs(tmp_path):
     assert "12 portable" in check["detail"]
 
 
+def test_cli_model_defaults_reads_effective_native_config_roots(tmp_path):
+    home = fake_home(tmp_path)
+    write_default_configs(home)
+    codex = tmp_path / "codex-override"
+    claude = tmp_path / "claude-override"
+    (home / ".codex").rename(codex)
+    (home / ".claude").rename(claude)
+    r = run("--json", "--only", "cli-model-defaults", env={
+        "HOME": str(home), "CODEX_HOME": str(codex), "CLAUDE_CONFIG_DIR": str(claude)})
+    assert checks_of(r)["cli-model-defaults"]["status"] == "PASS", r.stdout
+
+
+def test_onepassword_registry_reads_effective_codex_root(tmp_path, monkeypatch):
+    config = tmp_path / "codex-override"
+    config.mkdir()
+    (config / "config.toml").write_text('[mcp_servers.onepassword]\ncommand = "fixture-op-mcp"\n')
+    monkeypatch.setenv("CODEX_HOME", str(config))
+    entries = doctor.onepassword_mcp_entries(tmp_path / "home")
+    assert entries == [(["codex:onepassword"], ["fixture-op-mcp"], {})]
+
+
 def test_cli_model_defaults_reports_field_but_never_observed_values(tmp_path):
     home = fake_home(tmp_path)
     observed = "private-custom-model-never-print"

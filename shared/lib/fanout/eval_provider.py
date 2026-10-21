@@ -83,6 +83,7 @@ def resolve_mode_config(args) -> dict:
     tier = "deep" if args.mode == "deep" else "standard"
     return {name: {"model": getattr(args, f"model_{name}", None) or
                          registry.select(name, "read-only", tier).requested_model,
+                   "model_explicit": getattr(args, f"model_{name}", None) is not None,
                    "thinking": registry.select(name, "read-only", tier).requested_effort}
             for name in ADAPTERS}
 
@@ -115,6 +116,9 @@ def run(spec: PromptSpec, workdir: Path, *, timeout: int, retries: int,
     if any(environment.get(name) != value or os.environ.get(name) != value
            for name, value in spec._native_config):
         raise ProcessValidationError("native evaluator configuration environment differs from its build")
+    if request.resume and request.profile.native_roots is None:
+        raise ProcessValidationError(
+            "native evaluator resume lacks historical discovery roots; use fresh admission or historical inspection")
     expected = request.profile.adapter.build_command(request)
     if list(spec.argv) != list(expected.argv) or spec.stdin != expected.stdin:
         raise ProcessValidationError("native evaluator command differs from its profile")
@@ -122,7 +126,7 @@ def run(spec: PromptSpec, workdir: Path, *, timeout: int, retries: int,
     spec.registry._contract_probe(spec.profile)
     command = ProcessCommand(spec.argv, spec.stdin, cwd=spec.cwd, timeout=timeout,
                              max_output_bytes=8 * 1024 * 1024, trusted_native=True,
-                             environment=expected.environment)
+                             environment=expected.environment, native_roots=expected.native_roots)
     started = time.monotonic()
     result = run_command(command, base_environment=environment)
     stdout = workdir / f"{spec.name}.stdout.attempt-1.txt"

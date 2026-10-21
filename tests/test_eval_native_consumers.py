@@ -218,6 +218,31 @@ def test_trigger_judge_uses_native_review_role(tmp_path, native_cli):
     assert record["attempts"] == 1
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_generated_config_selects_role_models_without_losing_explicit_overrides(tmp_path, native_cli, explicit):
+    from types import SimpleNamespace
+    cfg = eval_harness.eval_runtime.resolve_mode_config(SimpleNamespace(
+        mode="normal", model_agy="gemini-3.8-flash-high" if explicit else None))
+    cfg = json.loads(json.dumps(cfg))
+    assert cfg["agy"]["model"] == "gemini-3.8-flash-high"
+    assert cfg["codex"]["thinking"] == "medium"
+    expected = "gemini-3.8-flash-high" if explicit else "gemini-4-argon-high"
+    judge_cfg = eval_harness._judge_config("agy", cfg)
+    assert judge_cfg["agy"]["model"] == expected
+    assert eval_harness._checks()._judge_config_valid(judge_cfg["agy"], "agy")
+    assert eval_harness._judge_config("agy", json.loads(json.dumps(judge_cfg))) == judge_cfg
+    _, record = eval_trigger.run_isolated_judge("agy", "Route supplied metadata.", cfg,
+        tmp_path / "trigger-role", 3)
+    assert record["model"] == expected and record["thinking"] == "high"
+
+
+def test_judge_refuses_malformed_override_provenance_before_spending(tmp_path, native_cli):
+    cfg = {"agy": {"model": "gemini-3.8-flash-high", "model_explicit": "false", "thinking": "high"}}
+    with pytest.raises(RuntimeError, match="model.*provenance"):
+        eval_trigger.run_isolated_judge("agy", "Route metadata.", cfg, tmp_path / "bad-provenance", 3)
+    assert not (native_cli / "launches.jsonl").exists()
+
+
 def test_paired_conditions_keep_private_workspaces_with_native_reads(tmp_path, native_cli, monkeypatch):
     skill = tmp_path / "shared/skills/private-cwd"
     skill.mkdir(parents=True)

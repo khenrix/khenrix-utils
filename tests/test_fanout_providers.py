@@ -334,7 +334,8 @@ def test_agy_capture_uses_full_exact_native_args_when_stdout_is_truncated(tmp_pa
     request = _request("agy", tmp_path, prompt="task")
     from types import SimpleNamespace
     result = SimpleNamespace(session_id=session, answer="answer", valid=True,
-        stdout=b'{"tool_info":{"parameters":"printf harmless xxx...\xe2\x80\xa6"}}')
+        stdout=b'{"tool_info":{"parameters":"printf harmless xxx...\xe2\x80\xa6"}}',
+        launch_metadata={"native_roots": providers.resolve_native_roots().to_dict()})
     trace = native.capture_native_trace(request, result)
     assert trace["coverage"] == "complete"
     assert trace["calls"][0]["arguments"]["CommandLine"] == command

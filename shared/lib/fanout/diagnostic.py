@@ -10,19 +10,19 @@ def describe_native_launch(profile, command, *, observed_cli_version: str,
     Native tool restrictions and trusted shell access are not OS confinement.
     Paths record discovery roots, not a claim that every skill was loaded.
     """
-    import os
-    from pathlib import Path
-
-    home = Path(os.environ.get("HOME", str(Path.home())))
-    codex_home = Path(os.environ.get("CODEX_HOME", str(home / ".codex")))
-    roots = [home / ".agents/skills"]
-    roots.extend({
-        "claude": [home / ".claude/skills", home / ".claude/plugins"],
-        "codex": [codex_home / "skills"],
-        "agy": [home / ".gemini/antigravity/skills", home / ".gemini/config/skills"],
-    }.get(profile.executor_id, []))
+    native_roots = command.native_roots
+    roots = []
+    if native_roots is not None:
+        home = native_roots.home
+        roots = [home / ".agents/skills"]
+        roots.extend({
+            "claude": [native_roots.claude / "skills", native_roots.claude / "plugins"],
+            "codex": [native_roots.codex / "skills"],
+            "agy": [home / ".gemini/antigravity/skills", home / ".gemini/config/skills"],
+        }.get(profile.executor_id, []))
     return {
         "role": profile.role,
+        "native_roots": native_roots.to_dict() if native_roots is not None else None,
         "declared_cli_version": profile.cli_version,
         "observed_cli_version": observed_cli_version,
         "argv": list(command.argv),

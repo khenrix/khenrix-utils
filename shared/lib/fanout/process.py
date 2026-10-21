@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -13,6 +14,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -20,6 +22,20 @@ from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence
 
 from .errors import ProcessValidationError, SlotCapacityConflictError, SlotTimeoutError
+
+# Fanout is also loaded as a standalone/aliased package by installed skills.
+try:
+    from native_context import NativeRoots, resolve_native_roots
+except ModuleNotFoundError as error:
+    if error.name != "native_context":
+        raise
+    _context_spec = importlib.util.spec_from_file_location(
+        "native_context", Path(__file__).resolve().parents[1] / "native_context.py")
+    _context_module = importlib.util.module_from_spec(_context_spec)
+    sys.modules[_context_spec.name] = _context_module
+    _context_spec.loader.exec_module(_context_module)
+    NativeRoots = _context_module.NativeRoots
+    resolve_native_roots = _context_module.resolve_native_roots
 
 
 DEFAULT_EXECUTOR_SLOTS = 6
@@ -89,6 +105,7 @@ class ProcessCommand:
     reap_timeout: float = 2.0
     max_output_bytes: int | None = None
     trusted_native: bool = False
+    native_roots: NativeRoots | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.argv, str) or not isinstance(self.argv, Sequence):
@@ -106,6 +123,8 @@ class ProcessCommand:
             raise ProcessValidationError("environment must be a mapping")
         if type(self.trusted_native) is not bool:
             raise ProcessValidationError("trusted_native must be a boolean")
+        if self.native_roots is not None and not isinstance(self.native_roots, NativeRoots):
+            raise ProcessValidationError("native roots binding is invalid")
         _validate_duration("timeout", self.timeout, positive=True)
         _validate_duration("slot timeout", self.slot_timeout, positive=False)
         _validate_duration("TERM grace", self.term_grace, positive=False)
@@ -236,9 +255,9 @@ def build_child_environment(base: Mapping[str, str] | None = None, *,
     return child
 
 
-def default_claude_adc_path() -> Path | None:
+def default_claude_adc_path(environment: Mapping[str, str] | None = None) -> Path | None:
     """Return the owner's private default ADC file path without opening its contents."""
-    path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    path = resolve_native_roots(environment).home / ".config" / "gcloud" / "application_default_credentials.json"
     try:
         info = path.lstat()
     except OSError:
@@ -250,13 +269,13 @@ def default_claude_adc_path() -> Path | None:
     return path
 
 
-def default_claude_vertex_route() -> dict[str, str] | None:
+def default_claude_vertex_route(environment: Mapping[str, str] | None = None) -> dict[str, str] | None:
     """Read only the owner's pinned Vertex route from private Claude settings.
 
     Restricted Claude ignores user settings, so the selected non-secret routing
     fields must be passed explicitly.  Credentials themselves remain on disk.
     """
-    directory = Path.home() / ".claude"
+    directory = resolve_native_roots(environment).claude
     try:
         directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -399,6 +418,8 @@ def run_command(command: ProcessCommand, *,
         base_environment, overrides=command.environment, max_depth=command.max_depth,
         trusted_native=command.trusted_native,
     )
+    if command.native_roots is not None and resolve_native_roots(environment) != command.native_roots:
+        raise ProcessValidationError("native discovery roots differ from the command binding")
     return _supervise_command(command, environment, on_started=on_started)
 
 

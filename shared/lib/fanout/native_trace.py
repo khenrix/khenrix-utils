@@ -181,10 +181,15 @@ def capture_native_trace(request, result):
             raw = result.stdout
             source = "captured-stdout"
         else:
+            from .process import NativeRoots
+            bound = getattr(result, "launch_metadata", {}).get("native_roots")
+            if not isinstance(bound, dict) or set(bound) != {"home", "codex", "claude", "agy"}:
+                raise ValueError("native exact-session discovery roots are unavailable")
+            roots = NativeRoots(**{name: Path(path) for name, path in bound.items()})
             if request.executor_id == "claude":
-                paths = list((Path.home() / ".claude/projects").glob(f"*/{session}.jsonl"))
+                paths = list((roots.claude / "projects").glob(f"*/{session}.jsonl"))
             else:
-                paths = [Path.home() / ".gemini/antigravity-cli/brain" / session
+                paths = [roots.agy / "brain" / session
                          / ".system_generated/logs/transcript_full.jsonl"]
             if len(paths) != 1:
                 raise ValueError("native exact-session transcript missing or ambiguous")
@@ -198,7 +203,7 @@ def capture_native_trace(request, result):
         trace["cli_version"] = request.profile.cli_version if request.profile else None
         if not result.valid:
             trace["coverage"] = "incomplete"
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, TypeError) as error:
         trace["detail"] = str(error)[:200]
     return trace
 

@@ -69,6 +69,14 @@ import time
 import zlib
 from pathlib import Path
 
+try:
+    from native_context import resolve_native_roots
+except ModuleNotFoundError as error:
+    if error.name != "native_context":
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared" / "lib"))
+    from native_context import resolve_native_roots
+
 try:                                  # stdlib since 3.11; the doctor must still
     import tomllib                    # import on an older interpreter, so a
 except ImportError:                   # missing tomllib costs one config source,
@@ -1247,8 +1255,9 @@ def onepassword_mcp_entries(home):
     machine, and launching it three times proves nothing the first launch did
     not while tripling the worst-case runtime."""
     found = {}
+    roots = resolve_native_roots({**os.environ, "HOME": str(home)})
     for cli, rel, fmt, key in OP_MCP_CONFIGS:
-        path = home / rel
+        path = roots.codex / "config.toml" if cli == "codex" else roots.home / rel
         try:
             text = path.read_text(errors="replace")
         except OSError:
@@ -1456,12 +1465,13 @@ def _cli_model_defaults():
 
     problems = []
     checked = 0
+    roots = resolve_native_roots()
     for cli, (relative, kind) in CLI_DEFAULT_CONFIGS.items():
         declared = defaults.get(cli)
         if not isinstance(declared, dict) or not declared:
             problems.append(f"{cli}:declaration")
             continue
-        path = Path.home() / relative
+        path = getattr(roots, cli) / Path(relative).name
         try:
             live = _load_default_config(path, kind)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):

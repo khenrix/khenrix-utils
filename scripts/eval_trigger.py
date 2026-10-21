@@ -165,10 +165,7 @@ def run_isolated_judge(judge: str, prompt: str, cfg: dict, workdir: Path,
 
     This measures a supplied-description verdict, not isolated skill discovery.
     """
-    profile = fanout.ProviderRegistry.default().select(judge, "read-only", "standard",
-                                                       role="evaluator")
-    cfg = {**cfg, judge: {"model": profile.requested_model, **cfg.get(judge, {}),
-                         "thinking": profile.requested_effort}}
+    cfg = eval_harness._judge_config(judge, cfg)
     return eval_harness.run_text(
         judge, prompt, cfg, workdir, timeout=timeout, retries=0, readonly=True,
         role="evaluator"

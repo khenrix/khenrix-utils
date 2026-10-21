@@ -1274,9 +1274,17 @@ class JudgeVerdictError(RuntimeError):
 
 
 def _judge_config(judge: str, cfg: dict) -> dict:
-    """Select review effort without changing executor or explicit model choices."""
-    effort = "high" if judge == "agy" else "xhigh"
-    return {**cfg, judge: {**cfg.get(judge, {}), "thinking": effort}}
+    """Select the review profile while retaining explicit model overrides."""
+    profile = eval_runtime.ProviderRegistry.default().select(
+        judge, "read-only", "standard", role="evaluator")
+    selected = dict(cfg.get(judge, {}))
+    explicit = selected.pop("model_explicit", "model" in selected)
+    if type(explicit) is not bool:
+        raise RuntimeError("judge model override provenance must be a boolean")
+    if not explicit:
+        selected["model"] = profile.requested_model
+    selected["thinking"] = profile.requested_effort
+    return {**cfg, judge: selected}
 
 
 def _run_judge(judge: str, prompt: str, cfg: dict, workdir: Path, *,

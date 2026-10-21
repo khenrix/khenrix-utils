@@ -30,6 +30,7 @@ from .errors import (
 from .process import (
     DEFAULT_EXECUTOR_SLOTS, ProcessCommand, ProcessResult, ProcessStatus,
     build_child_environment, default_claude_adc_path,
+    NativeRoots, resolve_native_roots,
     run_command,
 )
 from .skills import SkillAdmission
@@ -89,11 +90,14 @@ class ExecutorProfile:
     characterized: bool = True
     profile_sha256: str | None = None
     role: str = "executor"
+    native_roots: NativeRoots | None = None
 
     def __post_init__(self) -> None:
         profile_binding_key(self.executor_id, self.execution_class, self.quality_tier)
         if self.role not in _ROLES:
             raise ProviderRequestError("profile role must be executor, evaluator or owner")
+        if self.native_roots is not None and not isinstance(self.native_roots, NativeRoots):
+            raise ProviderRequestError("profile native roots binding is invalid")
         derived = self.digest
         if self.profile_sha256 is not None and self.profile_sha256 != derived:
             raise ProviderRequestError("executor profile digest differs from its descriptor")
@@ -113,7 +117,7 @@ class ExecutorProfile:
 
     def to_dict(self) -> dict[str, object]:
         """Return the exact descriptor committed by this profile's digest."""
-        return {
+        descriptor = {
             "adapter_class": f"{type(self.adapter).__module__}.{type(self.adapter).__qualname__}",
             "capabilities": {
                 "assigned_session_id": self.capabilities.assigned_session_id,
@@ -135,6 +139,10 @@ class ExecutorProfile:
             "schema_version": "fanout-executor-profile-v3",
             "role": self.role,
         }
+        if self.native_roots is not None:
+            descriptor["native_roots"] = self.native_roots.to_dict()
+            descriptor["schema_version"] = "fanout-executor-profile-v4"
+        return descriptor
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object], *, adapter: "ProviderAdapter") -> "ExecutorProfile":
@@ -145,8 +153,15 @@ class ExecutorProfile:
             "initial_argv", "resume_argv", "default_timeout", "timeout_ceiling",
             "characterized", "schema_version", "role",
         }
+        if isinstance(value, Mapping) and "native_roots" in value:
+            fields.add("native_roots")
         if not isinstance(value, Mapping) or set(value) != fields:
             raise ProviderRequestError("executor profile descriptor fields are invalid")
+        roots = value.get("native_roots")
+        if roots is not None and (not isinstance(roots, Mapping)
+                or set(roots) != {"home", "codex", "claude", "agy"}
+                or any(not isinstance(path, str) or not path or "\x00" in path for path in roots.values())):
+            raise ProviderRequestError("executor profile native roots are invalid")
         capabilities = value["capabilities"]
         if not isinstance(capabilities, Mapping) or set(capabilities) != {
             "assigned_session_id", "explicit_resume", "stdin_prompt", "structured_output",
@@ -170,6 +185,7 @@ class ExecutorProfile:
                 timeout_ceiling=value["timeout_ceiling"],
                 characterized=value["characterized"],
                 role=value["role"],
+                native_roots=NativeRoots(**{name: Path(path) for name, path in roots.items()}) if roots else None,
             )
         except (TypeError, ValueError, ProviderRequestError) as error:
             raise ProviderRequestError("executor profile descriptor is invalid") from error
@@ -385,7 +401,8 @@ class ProviderAdapter:
         raise NotImplementedError
 
     @staticmethod
-    def _command(request: ProviderRequest, argv: Sequence[str]) -> ProcessCommand:
+    def _command(request: ProviderRequest, argv: Sequence[str], *,
+                 native_roots: NativeRoots | None = None) -> ProcessCommand:
         return ProcessCommand(
             argv=tuple(argv),
             stdin=request.prompt_bytes,
@@ -397,6 +414,7 @@ class ProviderAdapter:
             slot_root=request.slot_root,
             max_output_bytes=ArtifactLimits().max_file_bytes,
             trusted_native=True,
+            native_roots=native_roots or _native_roots_for_request(request),
         )
 
 
@@ -468,16 +486,17 @@ class CodexAdapter(ProviderAdapter):
     capabilities = ProviderCapabilities(False, True, True)
 
     def build_command(self, request: ProviderRequest) -> ProcessCommand:
+        roots = _native_roots_for_request(request)
         if request.session_id is not None and not request.resume:
             raise ProviderRequestError("Codex session_id is only valid when resuming")
         if request.profile is not None:
             template = request.profile.resume_argv if request.resume else request.profile.initial_argv
             argv = _render_profile_argv(template, request.session_id)
             if request.execution_class == _READ_ONLY:
-                argv = (*argv, *_codex_native_mcp_denials(request.cwd))
-            return self._command(request, argv)
+                argv = (*argv, *_codex_native_mcp_denials(request.cwd, roots=roots))
+            return self._command(request, argv, native_roots=roots)
         sandbox = "read-only" if request.execution_class == _READ_ONLY else "workspace-write"
-        isolation = (_codex_native_mcp_denials(request.cwd)
+        isolation = (_codex_native_mcp_denials(request.cwd, roots=roots)
                      if request.execution_class == _READ_ONLY else ())
         if request.resume:
             # `exec resume` does not expose `--sandbox`; Codex's documented config
@@ -489,7 +508,7 @@ class CodexAdapter(ProviderAdapter):
             ]
         else:
             argv = ["codex", "exec", *isolation, "-", "--json", "--sandbox", sandbox]
-        return self._command(request, argv)
+        return self._command(request, argv, native_roots=roots)
 
     def parse(self, stdout: bytes) -> _Parsed:
         events = _json_lines(stdout, "Codex")
@@ -713,6 +732,7 @@ class ProviderRegistry:
             "agy": ("gemini-3.8-flash-high", "high", "high", "high"),
         }
         profiles = []
+        native_roots = resolve_native_roots()
         for adapter in adapters:
             model, read_effort, write_effort, deep_effort = models[adapter.executor_id]
             for execution_class, quality_tier, effort, timeout in (
@@ -726,6 +746,7 @@ class ProviderRegistry:
                     execution_class, quality_tier, model, effort, versions[adapter.executor_id],
                     initial, resume, timeout, timeout,
                     characterized=execution_class == _READ_ONLY and adapter.executor_id != "codex",
+                    native_roots=native_roots,
                 ))
         return cls(profiles, version_probe=version_probe, contract_probe=contract_probe)
 
@@ -779,8 +800,9 @@ class ProviderRegistry:
             raise UnsupportedExecutorError(f"unsupported executor profile: {key}")
         if role != profile.role:
             effort = "high" if executor_id == "agy" else "xhigh"
-            initial, resume = _default_argv(executor_id, execution_class, profile.requested_model, effort)
-            profile = replace(profile, role=role, requested_effort=effort,
+            model = "gemini-4-argon-high" if executor_id == "agy" and role != "executor" else profile.requested_model
+            initial, resume = _default_argv(executor_id, execution_class, model, effort)
+            profile = replace(profile, role=role, requested_model=model, requested_effort=effort,
                               initial_argv=initial, resume_argv=resume, profile_sha256=None)
         return profile
 
@@ -835,9 +857,18 @@ def _installed_cli_contract(profile: ExecutorProfile) -> None:
         raise ProviderRequestError("native CLI does not support requested role effort")
 
 
-def _codex_native_mcp_denials(cwd: Path | str) -> tuple[str, ...]:
+def _native_roots_for_request(request: ProviderRequest) -> NativeRoots:
+    roots = resolve_native_roots()
+    if request.profile is not None and request.profile.native_roots is not None:
+        if roots != request.profile.native_roots:
+            raise ProviderRequestError("native discovery roots differ from the pinned profile")
+        return request.profile.native_roots
+    return roots
+
+
+def _codex_native_mcp_denials(cwd: Path | str, *, roots: NativeRoots | None = None) -> tuple[str, ...]:
     """Merge per-tool denials without replacing native MCP transports or reads."""
-    home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    home = (roots or resolve_native_roots()).codex
     paths = [home / "config.toml"]
     directory = Path(cwd).resolve()
     paths.extend(parent / ".codex/config.toml" for parent in reversed((directory, *directory.parents)))
@@ -945,6 +976,9 @@ def _require_native_read_request(request: ProviderRequest) -> None:
         raise ProviderRequestError("shared-repository writes belong to the invoking owner CLI")
     if request.retries:
         raise ProviderRequestError("native automatic retries must be zero")
+    if request.resume and (request.profile is None or request.profile.native_roots is None):
+        raise ProviderRequestError(
+            "native resume lacks historical discovery roots; use fresh admission or historical inspection")
 
 
 def run_provider(request: ProviderRequest, *, registry: ProviderRegistry | None = None) -> ProviderResult:
