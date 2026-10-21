@@ -275,7 +275,8 @@ def run_all(root: Path = ROOT) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Eval-receipt gate (Increment 7) — source-input closure → hash → freshness gate.
 # --------------------------------------------------------------------------- #
-LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundled into every skill
+LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py",
+               "shared/lib/native_context.py"]  # bundled into every skill
 # THE CERTIFIER AND THE TEST MANIFEST ARE INPUTS TO EVERY RECEIPT, and leaving them out meant
 # a gate could be NARROWED — a suite dropped from DETERMINISTIC_GATED, a test deleted from the
 # Makefile — while every existing receipt stayed fresh. A receipt says "this source was

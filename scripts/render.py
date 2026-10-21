@@ -38,7 +38,8 @@ BUNDLED_DIRS = ["statusline", "overlays", "hooks"]
 # Shared engine/helper scripts bundled into every skill's scripts/ dir so each
 # skill is self-contained after a marketplace copies the plugin.
 LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
-               ROOT / "scripts" / "lib" / "inventory.py"]
+               ROOT / "scripts" / "lib" / "inventory.py",
+               ROOT / "shared" / "lib" / "native_context.py"]
 # Shared stdlib engines under shared/lib/<name>/, bundled once per plugin at lib/<name>/
 # so skills can `PYTHONPATH=<plugin>/lib python3 -m <name>` after a marketplace copy.
 # Runtime code only — tests are excluded to keep the plugin lean.

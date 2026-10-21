@@ -14,7 +14,10 @@ is brought IN by a copy, the other APPEARS IN PLACE and survives because `lib/` 
 with `copy2` into a directory that is never `rmtree`'d.
 """
 import importlib.util
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,6 +34,37 @@ def _render() -> None:
     # Exercise packaging itself. Repository-wide chart/eval receipt validation belongs to
     # render.py --check and must not make this output regression depend on unrelated edits.
     render_module.render()
+
+
+def test_rendered_settings_scripts_bundle_shared_native_roots(tmp_path, monkeypatch):
+    source = tmp_path / "shared/skills/portable"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: portable\ndescription: test\n---\n")
+    (tmp_path / "capabilities.toml").write_text('[settings.defaults.codex]\nmodel = "wanted"\n')
+    monkeypatch.setattr(render_module, "ROOT", tmp_path)
+    monkeypatch.setattr(render_module, "CLIS", ("codex",))
+    monkeypatch.setattr(render_module, "TEMPLATED_SKILLS", ())
+    monkeypatch.setattr(render_module, "BUNDLED", ("capabilities.toml",))
+    monkeypatch.setattr(render_module, "BUNDLED_DIRS", ())
+    monkeypatch.setattr(render_module, "SHARED_LIB_FILES", ())
+    monkeypatch.setattr(render_module, "SHARED_LIBS", ())
+    render_module.render()
+
+    scripts = tmp_path / "marketplaces/codex/plugins/khenrix-utils/skills/portable/scripts"
+    assert (scripts / "native_context.py").read_bytes() == (ROOT / "shared/lib/native_context.py").read_bytes()
+    for manifest in (render_module.checks.source_manifest,
+                     render_module.checks.delivered_behavior_manifest):
+        assert "shared/lib/native_context.py" in {relative for relative, _ in manifest(ROOT, "khenrix-setup")}
+    native_home = tmp_path / "native-home"
+    environment = {**os.environ, "HOME": str(tmp_path / "home"), "CODEX_HOME": str(native_home)}
+    result = subprocess.run([sys.executable, "-E", "-B", str(scripts / "reconcile.py"),
+                             "--cli", "codex", "--defaults-only", "--apply"],
+                            cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert (native_home / "config.toml").read_text() == 'model = "wanted"\n'
+    inventory = subprocess.run([sys.executable, "-E", "-B", str(scripts / "inventory.py"), "--help"],
+                               cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert inventory.returncode == 0, inventory.stderr
 
 
 def _plant(cache_dir: Path) -> tuple[Path, bool]:
