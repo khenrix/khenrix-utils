@@ -249,7 +249,8 @@ def test_decisions_response_refusal_and_malformed_shapes_cannot_choose(broken):
 
 
 @pytest.mark.parametrize("changes", [{"fallback_route_id": []}, {"fallback_route_id": ""},
-                                     {"minimum_confidence": float("nan")}, {"enabled": "yes"}])
+                                     {"minimum_confidence": float("nan")},
+                                     {"minimum_confidence": 10**400}, {"enabled": "yes"}])
 def test_invalid_local_policy_is_rejected_before_it_can_reach_a_backend(changes):
     with pytest.raises(ValueError, match="policy"):
         module().ChildChoicePolicy(**changes)
@@ -297,3 +298,21 @@ def test_missing_usage_is_unavailable_rather_than_reported_zero():
     result = choice.choose_child_route("task", candidates[0].profile, candidates,
         policy=policy(candidates), backend=choice.DecisionsBackend(lambda *_: wire), budget=budget())
     assert result.status == "chosen" and result.usage_json is None
+
+
+@pytest.mark.parametrize("kind", ["generic", "decisions"])
+@pytest.mark.parametrize("eligible_fallback", [False, True])
+def test_oversized_confidence_is_invalid_with_only_eligible_fallback(kind, eligible_fallback):
+    choice = module()
+    candidates = routes()
+    if kind == "generic":
+        backend = Backend(choice.BackendChoice("chosen", candidates[0].route_id, 10**400))
+    else:
+        wire = response([route.route_id for route in candidates[:2]], confidence=10**400)
+        backend = choice.DecisionsBackend(lambda *_: wire)
+    fallback = candidates[1].route_id if eligible_fallback else candidates[2].route_id
+    result = choice.choose_child_route("task", candidates[0].profile, candidates,
+        policy=policy(candidates, fallback_route_id=fallback), backend=backend, budget=budget())
+    assert result.reason == "invalid-choice"
+    assert result.route_id == (fallback if eligible_fallback else None)
+    assert result.status == ("fallback" if eligible_fallback else "abstained")
