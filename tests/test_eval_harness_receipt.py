@@ -966,6 +966,8 @@ EXECUTOR_MEMBERS = (
 )
 FANOUT_MEMBERS = (
     "test_fanout_artifacts.py", "test_fanout_benchmark.py",
+    "test_fanout_child_choice.py", "test_fanout_skill_projection.py",
+    "test_fanout_usage.py",
     "test_fanout_bootstrap_packages.py", "test_fanout_branch_handover.py",
     "test_fanout_cold_recovery.py", "test_fanout_collaboration.py",
     "test_fanout_compiler.py", "test_fanout_context_view.py",

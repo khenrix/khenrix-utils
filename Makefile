@@ -13,9 +13,10 @@ PY   := python3
 .PHONY: workvault-test help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test core-test fanout-test tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-fanout benchmark-llm-fanout eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
 
 EVAL := scripts/eval_harness.py
-DOCTOR_TESTS := tests/test_doctor.py
+DOCTOR_TESTS := tests/test_doctor.py tests/test_native_inventory.py
 RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py \
-                            tests/test_statusline.py tests/test_statusline_reconcile.py
+                            tests/test_statusline.py tests/test_statusline_reconcile.py \
+                            tests/test_reconcile_publication.py
 MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py tests/test_memory_exchange.py tests/test_memory_ingress.py
 MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py \
                         tests/test_maka_native_host.py tests/test_maka_read_aggregation.py \
@@ -24,12 +25,14 @@ SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.
                         tests/test_refresh.py
 AUDIT_TESTS := tests/test_setup_audit.py
 CORE_TESTS := tests/test_checks_secrets.py tests/test_mutate.py \
+              tests/test_context_efficiency_corpus.py tests/test_context_efficiency_pilot.py \
               tests/test_eval_harness_receipt.py tests/test_eval_receipt_v3.py \
               tests/test_eval_native_consumers.py tests/test_eval_agy_read_policy.py \
               tests/test_eval_claude_scratch_policy.py \
               tests/test_eval_patch_acceptance.py \
               tests/test_render_packaging.py
 FANOUT_TESTS := tests/test_fanout_artifacts.py \
+                tests/test_fanout_child_choice.py \
                 tests/test_fanout_benchmark.py \
                 tests/test_fanout_bootstrap_packages.py \
                 tests/test_fanout_branch_handover.py \
@@ -59,6 +62,8 @@ FANOUT_TESTS := tests/test_fanout_artifacts.py \
                 tests/test_fanout_runstate.py \
                 tests/test_fanout_scheduler.py \
                 tests/test_fanout_skills.py \
+                tests/test_fanout_skill_projection.py \
+                tests/test_fanout_usage.py \
                 tests/test_fanout_smoke.py \
                 tests/test_fanout_storage.py \
                 tests/test_fanout_targets.py \
