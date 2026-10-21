@@ -112,6 +112,29 @@ def test_unknown_tree_including_new_skill_version_uses_full_legacy_delivery(tmp_
     assert context["projection"]["skills"][0]["mode"] == "full-unreviewed"
 
 
+@pytest.mark.parametrize("suffix", [
+    ".markdown", ".MarKDown", ".mdown", ".mkd", ".mkdn", ".mdwn",
+    ".text", ".rest", ".asciidoc", ".AsciiDoc", ".asc",
+])
+def test_instruction_document_aliases_cannot_be_omitted_at_admission(tmp_path, suffix):
+    root = tmp_path / "skills"
+    skill = root / "reviewed"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"Read `instructions{suffix}`.\n")
+    (skill / f"instructions{suffix}").write_text("Preserve these required instructions.\n")
+    roots = (cases.fanout.SkillRoot("source", root, 0),)
+    resolved = cases.fanout.SkillResolver(roots).resolve(("reviewed",))[0]
+    module = importlib.import_module(cases.fanout.__name__ + ".skill_projection")
+    policy = module.SkillProjection.from_bytes(cases.canonical_json({
+        "schema_version": "fanout-skill-projection-v1", "reviews": [{
+            "tree_hash": resolved.tree_hash, "inline_files": ["SKILL.md"],
+            "required_resources": []}]}))
+    resolver = cases.fanout.SkillResolver(roots, projection=policy)
+    with pytest.raises(cases.fanout.SkillAdmissionError, match="omits instruction documents"):
+        resolver.admit(("reviewed",), task_id="work", seat_id="seat-codex",
+                       provider="codex", session_id="session")
+
+
 @pytest.mark.parametrize("changes", [
     {"inline_files": ["SKILL.md", "scripts/check.py"]},
     {"inline_files": ["SKILL.md", "references/RULES.TXT"]},

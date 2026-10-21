@@ -51,8 +51,11 @@ review has exactly `tree_hash` (the complete admitted `ResolvedSkill.tree_hash`,
 including its `sha256:` prefix), `inline_files` (exact skill-relative file paths)
 and `required_resources` (reviewed required resources in other formats).
 
-Keep `SKILL.md`, every `.md`, `.txt`, `.rst` and `.adoc` file (case-insensitive),
-and every required resource inline. Review backtick paths and conditional
+Keep `SKILL.md` and all instruction documents inline, including these
+case-insensitive suffixes: Markdown (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`,
+`.mdwn`), plain text (`.txt`, `.text`), reStructuredText (`.rst`, `.rest`) and
+AsciiDoc (`.adoc`, `.asciidoc`, `.asc`). Keep every required resource in other
+formats inline through `required_resources`. Review backtick paths and conditional
 instructions as well as Markdown links before omitting helper or packaging
 contents. Unknown tree hashes, including a new skill version, receive full
 delivery. This does not enable projection globally or establish measured savings.

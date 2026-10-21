@@ -15,7 +15,10 @@ if TYPE_CHECKING:
 
 
 SCHEMA = "fanout-skill-projection-v1"
-_INSTRUCTIONS = {".md", ".txt", ".rst", ".adoc"}
+_INSTRUCTIONS = {
+    ".md", ".markdown", ".mdown", ".mkd", ".mkdn", ".mdwn",
+    ".txt", ".text", ".rst", ".rest", ".adoc", ".asciidoc", ".asc",
+}
 
 
 @dataclass(frozen=True, slots=True)
