@@ -1381,6 +1381,7 @@ def aggregate_usage_evidence(records: Iterable[UsageEvidence | None], *,
             session_sizes[key] = session_sizes.get(key, 0) + 1
     previous = {}
     contributions = []
+    kinds = {name: set() for name in USAGE_COUNTERS}
     for evidence in entries:
         values = dict.fromkeys(USAGE_COUNTERS)
         if evidence is None:
@@ -1389,7 +1390,8 @@ def aggregate_usage_evidence(records: Iterable[UsageEvidence | None], *,
         key = evidence.provider, evidence.session_id
         prior = previous.get(key)
         counters = {name: (value, scope, kind) for name, value, scope, kind in evidence.counters}
-        for name, (value, scope, _) in counters.items():
+        for name, (value, scope, kind) in counters.items():
+            kinds[name].add(kind)
             if value == 0 or evidence.session_id is None:
                 continue
             if scope == "turn" or scope == "unknown" and session_sizes[key] == 1 and evidence.resumed is False:
@@ -1397,16 +1399,17 @@ def aggregate_usage_evidence(records: Iterable[UsageEvidence | None], *,
             elif scope == "session-cumulative":
                 if prior is None and evidence.resumed is False:
                     values[name] = value
-                elif prior is not None and prior.get(name) is not None and value >= prior[name]:
-                    values[name] = value - prior[name]
+                elif (prior is not None and prior.get(name) is not None
+                      and prior[name][1:] == (scope, kind) and value >= prior[name][0]):
+                    values[name] = value - prior[name][0]
         # A reset, missing counter or absent initial observation taints later deltas.
-        previous[key] = {name: counters[name][0] if values.get(name) is not None else None
+        previous[key] = {name: counters[name] if values.get(name) is not None else None
                          for name in USAGE_COUNTERS if name in counters}
         contributions.append((evidence.role, values))
 
     def totals(rows):
         return {name: sum(row[name] for row in rows)
-                if rows and all(row.get(name) is not None for row in rows) else None
+                if rows and len(kinds[name]) == 1 and all(row.get(name) is not None for row in rows) else None
                 for name in USAGE_COUNTERS}
 
     roles = {role for role, _ in contributions}
@@ -1414,8 +1417,9 @@ def aggregate_usage_evidence(records: Iterable[UsageEvidence | None], *,
     return {"schema_version": "fanout-usage-summary-v1", "entries": len(entries),
         "totals": dict.fromkeys(USAGE_COUNTERS) if missing else totals([row for _, row in contributions]),
         "by_role": {role: totals([row for current, row in contributions if current == role]) for role in sorted(roles)},
-        "missing_roles": missing, "counter_kinds": {name: "estimate" if name == "cost_usd" else "provider-reported"
-                                                     for name in USAGE_COUNTERS},
+        "missing_roles": missing, "counter_kinds": {
+            name: next(iter(values)) if len(values) == 1 else "mixed" if values else "unknown"
+            for name, values in kinds.items()},
         "measured_savings_eligible": False}
 
 

@@ -71,6 +71,29 @@ def test_cumulative_roles_use_capture_order_after_report_paths_are_sorted(tmp_pa
     assert summary["by_role"]["owner"]["input"] == 80
 
 
+def test_estimated_input_keeps_its_kind_in_the_summary(tmp_path):
+    evidence = codex_usage(tmp_path).usage_evidence
+    estimated = replace(evidence, counters=tuple(
+        (name, value, scope, "estimate" if name == "input" else kind)
+        for name, value, scope, kind in evidence.counters))
+    summary = providers.aggregate_usage_evidence([estimated])
+    assert summary["counter_kinds"]["input"] == "estimate"
+
+
+@pytest.mark.parametrize("changed", ["scope", "kind"])
+def test_cumulative_baselines_cannot_cross_counter_semantics(tmp_path, changed):
+    initial = codex_usage(tmp_path, total=100).usage_evidence
+    middle = codex_usage(tmp_path, total=130, resume=True).usage_evidence
+    middle = replace(middle, counters=tuple(
+        (name, 30 if name == "input" and changed == "scope" else value,
+         "turn" if name == "input" and changed == "scope" else scope,
+         "estimate" if name == "input" and changed == "kind" else kind)
+        for name, value, scope, kind in middle.counters))
+    final = codex_usage(tmp_path, total=180, resume=True).usage_evidence
+    summary = providers.aggregate_usage_evidence([initial, middle, final])
+    assert summary["totals"]["input"] is None
+
+
 def test_wire_zero_is_preserved_without_claiming_observed_zero(tmp_path):
     zero = codex_usage(tmp_path, total=0, cached=0)
     assert zero.usage["input"] == 0

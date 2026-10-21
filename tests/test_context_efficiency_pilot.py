@@ -109,6 +109,25 @@ def test_claude_cache_categories_are_not_double_counted(pilot):
     assert result["tool_access"] is None
 
 
+def test_claude_usage_source_hash_matches_the_persisted_raw_capture(pilot, tmp_path):
+    campaign = pilot.Campaign(tmp_path / "run", CORPUS)
+    campaign.reserve(campaign.plan[0]["id"])
+    campaign.finish(campaign.plan[0]["id"], {"valid": True, "tool_access": True})
+    manifest = json.loads((CORPUS / "manifest.json").read_text())
+    packet = {"cases": [{"id": case["id"], "answer": "fixture answer", "evidence": case["citations"]}
+                        for case in manifest["cases"]]}
+    raw = b'{"type":"system","subtype":"init"}\n' + json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "session_id": "fixture-claude", "result": json.dumps(packet),
+        "usage": {"input_tokens": 20, "output_tokens": 7}}, indent=2).replace("\n", " ").encode() + b"\n"
+    result = pilot.execute_session(campaign, campaign.plan[1], argv=(sys.executable, "-c",
+        "import sys; sys.stdin.read(); sys.stdout.buffer.write(" + repr(raw) + ")"))
+    attempt = campaign.manifest["attempts"][1]
+    assert result["valid"] is True
+    assert result["usage_evidence"]["source_sha256"] == attempt["stdout_ref"]["sha256"]
+    assert (campaign.root / attempt["stdout_ref"]["path"]).read_bytes() == raw
+
+
 def test_plan_has_control_first_and_22_distinct_outer_sessions(pilot):
     plan = pilot.campaign_plan()
     assert len(plan) == 22

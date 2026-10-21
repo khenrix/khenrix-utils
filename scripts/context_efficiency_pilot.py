@@ -298,6 +298,7 @@ def parse_native(provider, raw, *, cwd=None, role="executor", resumed=False,
             "session_id": parsed.session_id, "observed_model": parsed.observed_model,
             "tool_access": read, "usage": usage,
             "usage_evidence": replace(parsed.usage_evidence, role=role, resumed=resumed,
+                source_sha256=digest(raw), turn_id=digest(raw),
                 declared_cli_version=TARGETS[provider]["version"],
                 observed_cli_version=observed_cli_version).to_dict()}
 
