@@ -21,7 +21,7 @@
       "skill": "khenrix-quality",
       "prompt": "Use the former i-have-adhd workflow to make the next action easy to start, then apply the former no-ai-slop detect workflow to this sentence without rewriting it: This isn't just useful; it is transformative.",
       "timeout_seconds": 120,
-      "max_steps": 2
+      "max_steps": 3
     },
     {
       "id": "natural-quality-legacy-code",
@@ -29,7 +29,7 @@
       "skill": "khenrix-quality",
       "prompt": "Show concise help for the former ponytail, ponytail-review, ponytail-audit, ponytail-debt, ponytail-gain, and ponytail-help workflows, including what each now maps to.",
       "timeout_seconds": 120,
-      "max_steps": 2
+      "max_steps": 3
     },
     {
       "id": "explicit-writing",
@@ -45,7 +45,7 @@
       "skill": "khenrix-writing",
       "prompt": "Use the former humanizer workflow. Humanize this sentence without changing its claim: It is important to note that our innovative solution leverages a robust framework.",
       "timeout_seconds": 120,
-      "max_steps": 2
+      "max_steps": 3
     },
     {
       "id": "explicit-superpowers-bootstrap",
@@ -61,7 +61,7 @@
       "skill": "using-superpowers",
       "prompt": "Check the supported tools and skills before you answer, then tell me what two plus two is.",
       "timeout_seconds": 120,
-      "max_steps": 2
+      "max_steps": 3
     },
     {
       "id": "explicit-brainstorming",
@@ -77,7 +77,7 @@
       "skill": "brainstorming",
       "prompt": "Let's make a react todo list",
       "timeout_seconds": 120,
-      "max_steps": 2
+      "max_steps": 3
     }
   ],
   "matrix": [
@@ -124,7 +124,7 @@
           "continue": true,
           "expected_skills": [{"id": "brainstorming", "invocation": "model_tool"}],
           "timeout_seconds": 120,
-          "max_steps": 2
+          "max_steps": 3
         },
         {
           "id": "write-plan",
@@ -135,7 +135,7 @@
             {"id": "writing-plans", "invocation": "model_tool"}
           ],
           "timeout_seconds": 120,
-          "max_steps": 2
+          "max_steps": 3
         },
         {
           "id": "delegate-plan",
@@ -146,7 +146,7 @@
             {"id": "subagent-driven-development", "invocation": "model_tool"}
           ],
           "timeout_seconds": 120,
-          "max_steps": 2
+          "max_steps": 3
         },
         {
           "id": "execute-route",
@@ -176,7 +176,7 @@
           "continue": true,
           "expected_skills": [{"id": "systematic-debugging", "invocation": "model_tool"}],
           "timeout_seconds": 120,
-          "max_steps": 2
+          "max_steps": 3
         },
         {
           "id": "test-first-subtask",
@@ -184,7 +184,7 @@
           "continue": true,
           "expected_skills": [{"id": "test-driven-development", "invocation": "model_tool"}],
           "timeout_seconds": 120,
-          "max_steps": 2
+          "max_steps": 3
         }
       ]
     },

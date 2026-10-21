@@ -1107,7 +1107,8 @@ def test_production_run_uses_only_attested_helper_and_bound_session(
     monkeypatch.setattr(
         maka_smoke, "verified_model_route",
         lambda *_args, **_kwargs: {"requested_model": "gpt-6.1-sol",
-                                  "provider_content": [forwarded]},
+                                  "provider_content": [forwarded],
+                                  "provider_task_sha256": [hashlib.sha256(forwarded[0]["content"][0]["text"].encode()).hexdigest()]},
     )
     observed: list[list[str]] = []
 
@@ -1160,7 +1161,7 @@ def test_production_run_uses_only_attested_helper_and_bound_session(
             host_identity=host, enforce_session_profile=True, private_host=binding,
         )
     if fault:
-        with pytest.raises(maka_smoke.SmokeError, match="admitted or outbound instruction content"):
+        with pytest.raises(maka_smoke.SmokeError, match="admitted or outbound instruction content|task digest"):
             invoke()
         return
     completed, route = invoke()
@@ -2206,7 +2207,7 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     assert len(invocations) == (
         len(declared["cases"])
         + bootstrap_turns
-        + sum(len(flow["steps"]) for flow in declared["flows"])
+        + sum(1 + len(flow["steps"]) for flow in declared["flows"])
         + sum(len(scenario["steps"]) for scenario in declared["matrix"])
     )
     assert all("--yolo" not in line for line in invocations)
@@ -2293,7 +2294,7 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
         "humanizer",
     } <= set(natural_prompts.replace(",", "").replace(".", "").split())
     flow = receipt["flows"][0]
-    assert [step["continued"] for step in flow["steps"]] == [False, True, True]
+    assert [step["continued"] for step in flow["steps"]] == [True, True, True]
     assert flow["activation_evidence"]["invocation"] == "explicit"
     assert flow["steps"][1]["behavior_evidence"]["opening_actionable"] is True
     assert flow["steps"][1]["behavior_evidence"]["action_line"] in {1, 2}
@@ -2318,6 +2319,8 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     ] + [
         case["session_bootstrap"]["model_route"]
         for case in receipt["cases"] if case["session_bootstrap"] is not None
+    ] + [
+        flow["session_bootstrap"]["model_route"] for flow in receipt["flows"]
     ] + [
         step["model_route"] for flow in receipt["flows"] for step in flow["steps"]
     ] + [
@@ -2572,7 +2575,58 @@ def test_partial_custom_manifest_cannot_issue_canonical_certification(tmp_path: 
     assert not (config.state_dir / "maka-smoke-receipt.json").exists()
 
 
-def test_adhd_continuation_rejects_failed_or_extra_skill_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("fault", [None, "bootstrap-extra", "bootstrap-failed", "new-session"])
+def test_adhd_flow_bootstraps_before_continued_activation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None) -> None:
+    binary = fake_maka(tmp_path)
+    database = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(database)
+    tier = tmp_path / "tier/relay-last-tier.json"
+    log = tmp_path / "argv.log"
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(database))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(log))
+    if fault == "bootstrap-extra":
+        monkeypatch.setenv("KHENRIX_FAKE_MAKA_BOOTSTRAP_EXTRA_SKILL", "brainstorming")
+    allow_fake_maka_environment(monkeypatch)
+    execute = maka_smoke._bounded_command
+
+    def command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        result = execute(argv, **kwargs)
+        if fault == "bootstrap-failed" and len(argv) > 2 and argv[2].startswith("/skill:using-superpowers"):
+            with sqlite3.connect(database) as connection:
+                connection.execute("UPDATE core_root_turn_admissions SET record_json=?",
+                    (json.dumps({"skillInvocation": {"loaded": [], "failed": [{"id": "using-superpowers"}], "receipts": []}}),))
+        if fault == "new-session" and len(argv) > 2 and "I have three things" in argv[2]:
+            with sqlite3.connect(database) as connection:
+                row = connection.execute("SELECT session_id,payload_json,created_at FROM session_metadata").fetchone()
+                connection.execute("UPDATE session_metadata SET payload_json=? WHERE session_id=?",
+                    (json.dumps({"cwd": "elsewhere"}), row[0]))
+                connection.execute("INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)", ("unexpected-session", row[1], row[2]))
+        return result
+
+    monkeypatch.setattr(maka_smoke, "_bounded_command", command)
+    flow = maka_smoke.load_cases(ROOT / "components/skills/maka-smoke.json")["flows"][0]
+    environment = maka_smoke.sanitized_environment()
+    host = maka_smoke.attest_existing_host(str(binary), tmp_path, database, environment, None)
+    if fault:
+        with pytest.raises(maka_smoke.SmokeError, match="unexpected|failed|another|unverified|target|successful explicit admission|session"):
+            maka_smoke.run_adhd_flow(str(binary), flow, database, environment, tier, host)
+        invocations = [json.loads(line) for line in log.read_text().splitlines()]
+        assert len(invocations) == (3 if fault == "new-session" else 1)
+        return
+    result = maka_smoke.run_adhd_flow(str(binary), flow, database, environment, tier, host)
+    invocations = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(invocations) == 4
+    assert invocations[0][1].startswith("/skill:using-superpowers Reply ready.\n")
+    assert invocations[1][1].startswith(flow["steps"][0]["prompt"])
+    assert all(row[row.index("--resume") + 1] == result["session_id"] for row in invocations)
+    assert result["session_bootstrap"]["event_evidence"]["skill_id"] == "using-superpowers"
+    assert result["activation_evidence"]["skill_id"] == "khenrix-quality"
+    assert [step["continued"] for step in result["steps"]] == [True, True, True]
+
+
+@pytest.mark.parametrize("fault", ["natural-failed", "natural-extra", "admission-failed", "admission-extra"])
+def test_adhd_continuation_rejects_failed_or_extra_skill_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str) -> None:
     binary = fake_maka(tmp_path)
     database = tmp_path / "runtime.sqlite"
     initialize_runtime_db(database)
@@ -2590,9 +2644,15 @@ def test_adhd_continuation_rejects_failed_or_extra_skill_load(tmp_path: Path, mo
                 session, sequence, encoded = connection.execute(
                     "SELECT session_id,sequence,record_json FROM core_agent_run_events ORDER BY rowid DESC LIMIT 1").fetchone()
                 record = json.loads(encoded)
-                record.update(id="failed-extra-load", type="skill_load_failed", data={"success": False})
-                connection.execute("INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
-                    (session, sequence + 1, record["id"], record["type"], json.dumps(record)))
+                if fault.startswith("natural"):
+                    record.update(id="failed-extra-load", type="skill_load_failed" if fault == "natural-failed" else "skill_loaded", data={"success": fault == "natural-extra"})
+                    connection.execute("INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                        (session, sequence + 1, record["id"], record["type"], json.dumps(record)))
+                else:
+                    invocation = {"loaded": [], "failed": [], "receipts": []}
+                    invocation["failed" if fault == "admission-failed" else "loaded"] = [{"id": "unexpected"}]
+                    connection.execute("UPDATE core_root_turn_admissions SET record_json=? WHERE session_id=? AND turn_id=?",
+                        (json.dumps({"skillInvocation": invocation}), session, record["turnId"]))
         return result
 
     monkeypatch.setattr(maka_smoke, "_bounded_command", command)
@@ -2635,9 +2695,320 @@ def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> Non
         maka_smoke.verify_flow_output(opt_out, "Understood. I can help with anything else.")
 
 
+@pytest.mark.parametrize("output", [
+    "Do not open the pull request. Wait for someone else.",
+    "Don't review the pull request yet.",
+    "I will review the pull request at some point.",
+    '"Open the pull request" is an example of an action.',
+])
+def test_action_flow_rejects_negated_promised_or_quoted_actions(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("line,ordinal", [
+    ("1. **Now — lunch:** take out the easiest food available. Leftovers, toast, or a sandwich count.", 2),
+    ("**Open the pull request** and read its description.", 1),
+    ("- **Email:** reply to the oldest email.", 1),
+    ("2) **Next — pull request:** read its description.", 2),
+    ("**First:** prepare lunch.", 1),
+    ("**Lunch:** take out a sandwich.", 1),
+    ("Now — email: open the oldest email.", 2),
+])
+def test_action_flow_accepts_bounded_formatted_imperatives(line: str, ordinal: int) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    output = line if ordinal == 1 else "\nLunch, then the pull request, then email.\n\n" + line
+    evidence = maka_smoke.verify_flow_output(step, output)
+    assert evidence == {
+        "check": "adhd_action_first",
+        "opening_actionable": True,
+        "action_line": ordinal,
+        "action_line_hash": "sha256:" + hashlib.sha256(line.encode()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("output", [
+    "**Do not open the pull request.**",
+    "1. **Now — lunch:** don't take out any food yet.",
+    "**Next — email:** I will reply to the email later.",
+    '**Now — pull request:** "Open the pull request" is an example.',
+    "**Example:** open the pull request.",
+    "**Now — email:** for example, reply to the oldest email.",
+    "**Now — lunch:** `take out a sandwich` is sample wording.",
+    "```text\nOpen the pull request.\n```",
+    "**Now — lunch:** lunch is one of your tasks.",
+    "**Now:** prepare a coffee.",
+    "Lunch, then email.\nYou can start small.\n**Open the pull request.**",
+    "I have three things on my plate: review a pull request, answer email, and prepare lunch.",
+])
+def test_action_flow_rejects_formatted_non_actions_and_late_actions(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("introduction", [
+    "For example:",
+    "**For instance:**",
+    "Here is an example:",
+    "Example action:",
+    "**Sample output:**",
+    "I will:",
+    "I'll do the following:",
+    "I promise to:",
+    "I plan to:",
+    "**Next — email:** I will:",
+    "**Now — lunch:** For example:",
+    "Quoted instruction:",
+    "Here is a quotation:",
+    '"',
+    "“",
+])
+def test_action_flow_rejects_action_under_non_action_introduction(introduction: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, introduction + "\n**Open the pull request.**")
+
+
+@pytest.mark.parametrize("output", [
+    "**Lunch:** take out",
+    "Email: reply",
+    "Lunch: open",
+    "PR: review.",
+    "**Now — lunch:** take out ...",
+    "**Email:** reply — !",
+    "**Lunch:** open `...`",
+    "Next — pull request: read ___",
+])
+def test_action_flow_rejects_task_label_with_objectless_action(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("line,ordinal", [
+    ("**First: get out something easy to eat.** Lunch doesn’t need to become a cooking project.", 1),
+    ("**Lunch:** take a sandwich from the fridge.", 2),
+    ("Grab a plate for lunch.", 1),
+    ("**Now — lunch:** put a bowl on the table.", 2),
+    ("Eat the leftovers for lunch.", 1),
+    ("Heat the soup for lunch.", 2),
+    ("Warm up the rice for lunch.", 1),
+    ("Have a sandwich for lunch.", 2),
+    ("Gather the lunch ingredients on the counter.", 1),
+    ("Assemble a simple lunch from leftovers.", 2),
+    ("Serve yourself a small lunch.", 1),
+    ("**Email:** answer the oldest message.", 2),
+    ("Send a brief reply to the email.", 1),
+    ("Write the first sentence of your email reply.", 2),
+    ("Check the pull request description.", 1),
+    ("Skim the pull request diff.", 2),
+    ("Scan the email subject lines.", 1),
+    ("**Next — PR:** look\tat the changed files.", 2),
+])
+def test_action_flow_accepts_ordinary_task_action_family(line: str, ordinal: int) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    output = line if ordinal == 1 else "Lunch, then email, then the pull request.\n" + line
+    evidence = maka_smoke.verify_flow_output(step, output)
+    assert evidence == {
+        "check": "adhd_action_first",
+        "opening_actionable": True,
+        "action_line": ordinal,
+        "action_line_hash": "sha256:" + hashlib.sha256(line.encode()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("output", [
+    "**Lunch:** do not get out any food.",
+    "**Do not grab lunch yet.**",
+    "Don't send the email.",
+    "**Now — lunch:** I will heat the soup later.",
+    "I can gather lunch ingredients if you want.",
+    "Would you like me to assemble lunch?",
+    '"Get out some food for lunch" is an example.',
+    "**Example:** eat the leftovers for lunch.",
+    "For example:\n**Skim the pull request.**",
+    "I promise to:\n**Write the email reply.**",
+    "Quoted instruction:\n**Serve lunch.**",
+    "```text\nCheck the pull request.\n```",
+    "**Lunch:** get",
+    "**Lunch:** get out ...",
+    "**Lunch:** take out",
+    "**Lunch:** grab !!!",
+    "**Lunch:** put down",
+    "**Lunch:** heat up",
+    "**Lunch:** have a",
+    "**Email:** answer ...",
+    "**Next — PR:** look at",
+    "**Email:** send the",
+    "Have you thought about lunch?",
+    "Have not prepared lunch yet.",
+    "Get a coffee.",
+    "Lunch, then email.\nStart small.\nGrab the leftovers for lunch.",
+    "Lunch, then email.\nStart small.\nLook at the pull request.",
+])
+def test_action_flow_rejects_non_actions_in_ordinary_task_action_family(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("output", [
+    "Have the lunch leftovers spoiled?",
+    "Have your leftovers gone bad before lunch?",
+    "**Lunch:** have a sandwich?",
+    "Have lunch ingredients arrived?",
+    "Have already eaten lunch.",
+    "Have just warmed lunch.",
+    "Have been preparing lunch.",
+    "Have eaten lunch.",
+    "**Lunch:** put together",
+    "**Lunch:** get in",
+    "**Lunch:** put together ...",
+    "**Lunch:** take apart!",
+    "**Lunch:** get through",
+    "**Lunch:** put into the ...",
+    "**Lunch:** take from",
+    "**Lunch:** gather around",
+    "**Lunch:** get over",
+    "**Lunch:** put aside",
+])
+def test_action_flow_rejects_auxiliary_have_and_particle_only_objects(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("output", [
+    "Have lunch.",
+    "Have some leftovers for lunch.",
+    "**Lunch:** have your sandwich.",
+    "Have the soup for lunch.",
+    "**Lunch:** put the sandwich together.",
+    "**Lunch:** get the leftovers in a bowl.",
+])
+def test_action_flow_keeps_affirmative_have_and_concrete_phrasal_actions(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    evidence = maka_smoke.verify_flow_output(step, output)
+    assert evidence["action_line"] == 1
+    assert evidence["action_line_hash"] == "sha256:" + hashlib.sha256(output.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("line,ordinal", [
+    ("**First: go to the kitchen and take out the easiest lunch option.** No need to solve all three tasks at once.", 1),
+    ("**Lunch:** go into the kitchen and choose leftovers.", 2),
+    ("Head to the counter to prepare lunch.", 1),
+    ("**Next — lunch:** head into the kitchen.", 2),
+    ("Walk to your desk and open the email.", 1),
+    ("**Lunch:** walk into the kitchen.", 2),
+    ("Step into the kitchen and make lunch.", 1),
+    ("**PR:** move\tto your desk and open the changed files.", 2),
+    ("Move into the kitchen to prepare lunch.", 1),
+    ("Bring a plate to the table for lunch.", 2),
+    ("Collect the ingredients for lunch.", 1),
+    ("Fetch the leftovers for lunch.", 2),
+    ("Return to your desk and open the pull request.", 1),
+    ("Clear the kitchen counter for lunch.", 2),
+    ("Stand at the counter and prepare lunch.", 1),
+    ("Sit at your desk and read the email.", 2),
+    ("Sit down at the table with your lunch.", 1),
+    ("Reheat the soup for lunch.", 2),
+    ("Microwave the leftovers for lunch.", 1),
+    ("Cut a slice of bread for lunch.", 2),
+    ("Slice the tomato for lunch.", 1),
+    ("Pour the soup into a bowl for lunch.", 2),
+])
+def test_action_flow_accepts_concrete_movement_and_physical_task_actions(line: str, ordinal: int) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    output = line if ordinal == 1 else "Lunch, then email, then the pull request.\n" + line
+    evidence = maka_smoke.verify_flow_output(step, output)
+    assert evidence == {
+        "check": "adhd_action_first",
+        "opening_actionable": True,
+        "action_line": ordinal,
+        "action_line_hash": "sha256:" + hashlib.sha256(line.encode()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("output", [
+    "**Lunch:** go to",
+    "**Lunch:** go into the ...",
+    "**Lunch:** head into",
+    "**Lunch:** walk to the",
+    "**Lunch:** step into ...",
+    "**Lunch:** move to",
+    "**Lunch:** bring the",
+    "**Lunch:** collect ...",
+    "**Lunch:** fetch from",
+    "**PR:** return to the",
+    "**Lunch:** clear",
+    "**Lunch:** stand at",
+    "**Email:** sit down at the",
+    "**Lunch:** reheat ...",
+    "**Lunch:** pour into",
+    "Should I go to the kitchen for lunch?",
+    "Can you head into the kitchen for lunch?",
+    "Will you bring a plate for lunch?",
+    "Do not go to the kitchen for lunch.",
+    "**Lunch:** don't fetch the leftovers yet.",
+    "**Email:** I will walk to my desk later.",
+    "I can microwave lunch if you want.",
+    '"Step into the kitchen for lunch" is sample wording.',
+    "For example:\n**Move to the counter to prepare lunch.**",
+    "I promise to:\n**Return to the desk and open the pull request.**",
+    "```text\nCollect ingredients for lunch.\n```",
+    "Lunch, then email.\nStart small.\nHead to the kitchen for lunch.",
+    "Lunch, then email.\nStart small.\nFetch the lunch leftovers.",
+    "Go to the front door.",
+    "Bring a glass of water.",
+    "Head movement can help with lunch stress.",
+    "A walk may clear your head before lunch.",
+    "Move forward with your lunch planning.",
+])
+def test_action_flow_rejects_non_actions_in_movement_family(output: str) -> None:
+    step = {"id": "action-first-follow-up", "check": "adhd_action_first"}
+    with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("output", [
+    "Normal mode is unavailable; ADHD mode remains active.",
+    "Normal mode enabled. ADHD mode remains active.",
+    "Normal mode enabled. ADHD mode is not off.",
+    "Normal mode is not enabled. ADHD mode disabled.",
+    "Normal mode is not enabled.",
+    "ADHD mode is not off.",
+    "I will switch to normal mode later.",
+    '"Normal mode is enabled" is the acknowledgement you requested.',
+])
+def test_normal_mode_flow_rejects_denied_promised_or_quoted_state(output: str) -> None:
+    step = {"id": "normal-mode-opt-out", "prompt": "Normal mode. Stop ADHD mode. Confirm briefly.",
+            "check": "normal_mode_ack"}
+    with pytest.raises(maka_smoke.SmokeError, match="bounded state"):
+        maka_smoke.verify_flow_output(step, output)
+
+
+@pytest.mark.parametrize("output", [
+    "Normal mode is enabled.",
+    "Normal mode enabled; ADHD mode is off.",
+    "Done — normal mode is enabled.",
+    "Normal mode is now on.",
+    "Switched to normal mode.",
+    "ADHD mode is now off.",
+    "ADHD mode disabled.",
+    "Understood.\nNormal mode is active.",
+])
+def test_normal_mode_flow_accepts_affirmative_state_acknowledgements(output: str) -> None:
+    step = {"id": "normal-mode-opt-out", "prompt": "Normal mode. Stop ADHD mode. Confirm briefly.",
+            "check": "normal_mode_ack"}
+    evidence = maka_smoke.verify_flow_output(step, output)
+    assert evidence["state_acknowledged"] is True
+
+
 @pytest.mark.parametrize("retain", [False, True])
 def test_dry_run_executes_no_model_cases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retain: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], retain: bool,
 ) -> None:
     repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
@@ -2668,6 +3039,9 @@ def test_dry_run_executes_no_model_cases(
         ],
     )
     assert result == 0
+    output = capsys.readouterr().out
+    assert "32 bounded turns" in output
+    assert "PLAN adhd-session-mode-bootstrap explicit using-superpowers" in output
     assert not log.exists()
     assert not (config.state_dir / "maka-smoke-receipt.json").exists()
 
@@ -3040,3 +3414,35 @@ def test_bootstrap_turn_rejects_extra_natural_skill_load(tmp_path: Path) -> None
                 connection, "session-1", "bootstrap",
                 natural_event_window(),
             )
+
+
+def test_admitted_wire_task_requires_selected_native_task_digest():
+    text = 'native admitted task\nReceipt nonce: maka:probe-' + 'a' * 32 + '-' + 'b' * 32
+    expected = hashlib.sha256(text.encode()).hexdigest()
+    assert hasattr(maka_smoke, 'verify_admitted_wire_task')
+    maka_smoke.verify_admitted_wire_task(text, [text], [expected])
+    for selected in ([], ['0' * 64], [expected, '0' * 64]):
+        with pytest.raises(maka_smoke.SmokeError, match='task digest'):
+            maka_smoke.verify_admitted_wire_task(text, [text], selected)
+    with pytest.raises(maka_smoke.SmokeError, match='task digest'):
+        maka_smoke.verify_admitted_wire_task(text, ['changed task'], [expected])
+
+
+def test_smoke_closure_binds_each_normal_native_support_file(tmp_path, monkeypatch):
+    module_path = tmp_path / 'components/skills/maka_smoke.py'
+    module_path.parent.mkdir(parents=True)
+    for relative in maka_smoke.NATIVE_SUPPORT_FILES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(relative.encode())
+    monkeypatch.setattr(maka_smoke, '__file__', str(module_path))
+    before = maka_smoke.native_support_hashes()
+    assert set(before) == set(maka_smoke.NATIVE_SUPPORT_FILES)
+    for relative in maka_smoke.NATIVE_SUPPORT_FILES:
+        path = tmp_path / relative
+        original = path.read_bytes()
+        path.write_bytes(original + b' changed')
+        after = maka_smoke.native_support_hashes()
+        assert after[relative] != before[relative]
+        assert all(after[other] == before[other] for other in before if other != relative)
+        path.write_bytes(original)

@@ -283,8 +283,19 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
                  "scripts/eval_harness.py",  # decides what the gate RUNS
+                 "scripts/eval_agy_read_policy.py",  # enforces installed-read authorization
+                 "scripts/eval_patch_acceptance.py",  # strict unchanged patch acceptance
                  "scripts/lib/portability.py",  # checks rendered vs native skill script delivery
                  "scripts/lib/checks.py",    # decides what the gate ACCEPTS
+                 "components/skills/maka_smoke.py",
+                 "components/skills/maka_native_host.py",
+                 "components/skills/maka_native_owned_host.mjs",
+                 "components/skills/maka_native_probe.mjs",
+                 "components/skills/maka_native_api.json",
+                 "components/skills/maka_read_aggregation.py",
+                 "components/maka/interactive/maka_skill_routing.mjs",
+                 "components/maka/interactive/configure_maka_openai_relay.mjs",
+                 "components/maka/scripts/apply_gpt6_compat.py",
                  "Makefile"]                 # names the suites a gate can name
 # Native evaluation loads the fanout provider/supervisor bridge and its runtime closure.
 GLOBAL_INPUT_DIRS = ["shared/lib/fanout"]
@@ -447,7 +458,9 @@ def delivered_behavior_manifest(root: Path, skill: str) -> list:
             directories.append(relative)
     if skill == "skill-tuneup":
         directories.append("shared/lib/fanout")
-        files.extend(root / p for p in ("scripts/lib/checks.py", "scripts/eval_harness.py")
+        files.extend(root / p for p in ("scripts/lib/checks.py", "scripts/eval_harness.py",
+                                        "scripts/eval_agy_read_policy.py",
+                                        "scripts/eval_patch_acceptance.py")
                      if (root / p).is_file())
     for directory in directories:
         runtime_files = _tree_files(root / directory)
@@ -469,6 +482,8 @@ def criteria_manifest(root: Path, skill: str) -> list:
     """The target's assertions and fixtures; grading/runner policy is instrument input."""
     directory = root / "evals" / skill
     files = _tree_files(directory / "fixtures")
+    if skill == "khenrix-quality" and (root / "scripts/eval_patch_acceptance.py").is_file():
+        files.append(root / "scripts/eval_patch_acceptance.py")
     if (directory / "evals.json").is_file():
         files.append(directory / "evals.json")
     gate = None

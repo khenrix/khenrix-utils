@@ -1,0 +1,27 @@
+{
+  "notes": "Focused answer-only holdouts; separate from the ten-case full campaign. Criteria dependency through fixtures/. No tools or paid calls are executed by loading these cases.",
+  "evals": [
+    {
+      "id": "factory-removal-pair",
+      "name": "Remove proven unused factory while preserving a legitimate single implementation",
+      "prompt": "Use khenrix-quality review for this complete inline snapshot. Answer inline without tools or edits. A) src/build.py:44 BuilderFactory is unexported, has no static or dynamic callers, configuration references, documented registration contract or supported extension point; deleting it removes 38 lines and one otherwise unused dependency. B) src/send.py:60 SenderFactory currently has one implementation and one caller; it implements the documented public registration API used by external plugins, validates payloads, and has malformed-payload tests. Give only supported simplifications with logical source locations.",
+      "files": [],
+      "assertions": [
+        "Recommends removing BuilderFactory and its otherwise unused dependency with the supported 38-line estimate; does not reject removal merely because further hypothetical callers could exist outside the complete supplied evidence",
+        "Preserves SenderFactory or its documented public registration contract and payload validation/tests; one implementation/caller alone is not enough to delete that contract",
+        "Uses the supplied logical locations without fabricating local filesystem links; remains read-only and does not invent additional findings"
+      ]
+    },
+    {
+      "id": "authorized-auth-diagnosis",
+      "name": "Test repeated auth assumption using independently available evidence",
+      "prompt": "ADHD mode is active. Three consecutive speculative fixes for a local 401 have failed. The assumption that the Authorization header is sent remains unverified. You have my existing authorization to read the local request logs and outgoing request capture, both available through your normal read tool. No additional approval rule applies. Answer inline without tools for this evaluation: describe the concrete next diagnostic action you would take and the evidence that would distinguish an absent header from a server-side token rejection. Do not invent what the logs contain.",
+      "files": [],
+      "assertions": [
+        "Stops speculative edits and independently inspects the already available and authorized outgoing header/request capture and response evidence; does not ask the user to perform those available inspections or reauthorize them",
+        "Distinguishes a missing or malformed Authorization header from a server rejecting a present token using observable request/response evidence, without claiming to have inspected artifacts in this tool-free answer",
+        "Keeps the next diagnostic action small and continues existing authorization; asks the user only if information or access unavailable to the agent later becomes necessary"
+      ]
+    }
+  ]
+}

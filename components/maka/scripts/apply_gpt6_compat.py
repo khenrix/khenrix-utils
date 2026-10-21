@@ -25,6 +25,19 @@ class OverlayError(RuntimeError):
 
 
 PATCHES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "node_modules/@maka/runtime/dist/ai-sdk-turn.js": (
+        "4f7361d0d3a42bfa3d4a89483c5d5949af4e3588986efe95ea424f4738a411b2",
+        ((
+            "                        const dispatchMessages = [...attemptMessages, ...dynamicContextMessages];\n",
+            "                        const dispatchMessages = this.deps.backend.header.toolProfile === 'khenrix-skill-routing-v1'\n"
+            "                            ? (() => {\n"
+            "                                const lastUserIndex = attemptMessages.findLastIndex((message) => message.role === 'user');\n"
+            "                                const contextIndex = lastUserIndex < 0 ? 0 : lastUserIndex;\n"
+            "                                return [...attemptMessages.slice(0, contextIndex), ...dynamicContextMessages, ...attemptMessages.slice(contextIndex)];\n"
+            "                            })()\n"
+            "                            : [...attemptMessages, ...dynamicContextMessages];\n"
+        ),),
+    ),
     "node_modules/@maka/runtime/dist/model-runtime.js": (
         "a8f069732226c670c3756a7fedc191d5a9fd56e14b05caaa6b034426bba9ec05",
         ((
@@ -151,8 +164,18 @@ PATCHES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
         "864d0f46c5716ede1e3f1208169a0b2fe6c15da8ee7f40fd1d6fedfb18a394d9",
         (("    'gpt-6-astra',\n", "    'gpt-6-astra',\n    'gpt-6-sol',\n    'gpt-6.1-sol',\n"),),
     ),
+    "node_modules/@maka/runtime/dist/ai-sdk-compaction.js": (
+        "1c33119944e43934ac231277b273b5da681dfbaa0a0b14674fc1043580434cec",
+        ((
+            "        if (policy.toolResultPrune?.enabled === true && services) {\n",
+            "        if (this.input.header.toolProfile !== 'khenrix-skill-routing-v1' &&\n"
+            "            policy.toolResultPrune?.enabled === true && services) {\n",
+        ),),
+    ),
 }
 PATCHED_HASHES = {
+    "node_modules/@maka/runtime/dist/ai-sdk-compaction.js": "09c0e533dcb865babc10d0b94fcb0c44eb1573c429d3ff7f3dc18f745bb6aea6",
+    'node_modules/@maka/runtime/dist/ai-sdk-turn.js': 'd30246f6c7281cba9f88a4deeb6167eb08199976be109eb4e9fe4a8b29d2cc35',
     "node_modules/@maka/runtime/dist/model-runtime.js": "d38130ccc2dbc03b759c4890a5c038161ea3997c437c8e6c90783673452734a4",
     "node_modules/@maka/core/dist/session.js": "94dc36d9af33a53475a13b22bb90df3c0efd7bad4247858d4fdb1258e477033d",
     "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": "cebbf7c82e934d2f328dad8e77270cc308356955ae315808cf7db334c7e98780",

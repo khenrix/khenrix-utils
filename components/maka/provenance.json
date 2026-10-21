@@ -16,6 +16,16 @@
     },
     "interactiveCompatibilityOverlays": [
       {
+        "target": "node_modules/@maka/runtime/dist/ai-sdk-compaction.js",
+        "baseSha256": "1c33119944e43934ac231277b273b5da681dfbaa0a0b14674fc1043580434cec",
+        "patchedSha256": "09c0e533dcb865babc10d0b94fcb0c44eb1573c429d3ff7f3dc18f745bb6aea6"
+      },
+      {
+        "target": "node_modules/@maka/runtime/dist/ai-sdk-turn.js",
+        "baseSha256": "4f7361d0d3a42bfa3d4a89483c5d5949af4e3588986efe95ea424f4738a411b2",
+        "patchedSha256": "d30246f6c7281cba9f88a4deeb6167eb08199976be109eb4e9fe4a8b29d2cc35"
+      },
+      {
         "target": "node_modules/@maka/runtime/dist/model-runtime.js",
         "baseSha256": "a8f069732226c670c3756a7fedc191d5a9fd56e14b05caaa6b034426bba9ec05",
         "patchedSha256": "d38130ccc2dbc03b759c4890a5c038161ea3997c437c8e6c90783673452734a4"

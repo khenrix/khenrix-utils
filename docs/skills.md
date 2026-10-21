@@ -41,11 +41,34 @@ normally or name a skill. For example:
 - “Use `systematic-debugging` to find the cause before changing anything.”
 - “Use `writing-plans` to turn this design into implementation steps.”
 
-`khenrix-quality` makes the smallest effective prose edit and preserves required
-code behavior, tests, safety, accessibility, observability, and repository
-conventions. Its review and audit modes stay read-only until fixes are requested.
+`khenrix-quality` makes the smallest effective prose edit, preserves technical
+spans, exact quotes, links, voice, and genuine uncertainty, and leaves clean prose
+unchanged. Detect mode reports supported patterns without rewriting or guessing
+authorship. Code modes preserve required behavior, tests, safety, accessibility,
+observability, and repository conventions; shared behavior is fixed at its existing
+owner and checked through affected callers.
+
+Explicit quality review and audit cover correctness, security, expected load,
+missing tests, performance, and safe simplification. They return ranked numbered
+findings with a concrete trigger, impact, smallest fix, and consequence of leaving
+the issue, and stay read-only until fixes are requested. An explicitly narrow
+simplification review stays narrow; generic specialist reviews keep their own
+workflow. Debt mode counts explicit markers in tracked source comments, including
+`TODO`, `FIXME`, `HACK`, `ponytail:`, `shortcut:`, and user-specified markers;
+strings, docstrings, documentation examples, and generated output do not count.
 ADHD mode can shape the surrounding response while another workflow skill owns
 the task.
+
+Benchmark mode cites the upstream 2026-10-07 Ponytail 5 report: 39 tasks with five
+runs per task and arm (Ponytail 5, Ponytail v4.13, and no skill), using geometric
+means of per-task median ratios. Its 53%
+less source code, 45% fewer output tokens, 26% lower cost, and 41% faster results
+are upstream measurements, not measured savings for this adaptation or a user's
+repository. Hidden checks cover 18 tasks (87/90 versus 86/90 without the skill);
+all three arms passed 30/30 runs on six security tasks. Bash was disabled, and the
+harness ran generated code and tests afterward. See the
+[upstream report](https://github.com/DietrichGebert/ponytail/blob/09c434ab73ca43761c5d8b0c5d341926c2fba710/benchmarks/results/2026-10-07-agentic.md)
+for the setup and limits.
 
 `khenrix-writing` owns deeper prose transformations. Its `humanize` mode
 preserves facts, formatting, code, links, citations, and metadata. Do not run its

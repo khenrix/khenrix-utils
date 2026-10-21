@@ -71,19 +71,28 @@ that CLI's own config, not here.
 
 - Make every response easy to start and resume: lead with the answer or current action,
   keep multi-step work bounded, show completed results, and omit unrelated tangents. If
-  work remains, end with one concrete next action; add no next action after completion.
+  progress requires the user, end with one concrete next action; otherwise continue
+  authorized work. Answer relevant midwork questions and continue the task. Grouping
+  output never limits investigation, search results, or candidates; preserve completeness.
+  Add no next action after completion.
   `normal mode` disables this response shape for the session, and `resume ADHD mode`
   restores it.
 - Give user-facing prose a quiet sentence-level quality pass. Use plain, direct language;
   remove throat-clearing, faux insight, puffery, unsupported attribution, dramatic
   fragments, decorative formatting, synonym cycling, and repeated contrast formulas.
-  Preserve facts, uncertainty, technical identifiers, source text, and the requested
-  voice. Do not announce the pass or append an editing report during ordinary work.
+  Preserve facts, meaningful uncertainty, factual contrasts, literal technical uses, and
+  the requested voice. Keep exact quotes, code, commands, identifiers, URLs, citations,
+  and metadata unchanged unless their editing is requested. Do not announce the pass,
+  append an editing report during ordinary work, or add unnecessary questions or offers.
 - Whenever writing or changing code, use the full code mode from `khenrix-quality`:
-  understand the relevant flow, prefer an existing pattern or standard facility, and add
-  the fewest clear concepts needed. Preserve required validation, security, accessibility,
-  observability, error handling, repository conventions, and enough tests to prove the
-  change. A task-specific workflow still controls planning, review, and delivery.
+  understand the relevant flow; prefer existing repository code, then standard library or
+  platform facilities, then an installed dependency, then minimal new code. Complete
+  affected callers, tests, fixtures, configuration, and exports. Preserve required
+  validation, security, accessibility, observability, error handling, repository conventions, and
+  enough tests to prove the change.
+  For shared behavior fixes, add or update runnable regression coverage unless existing
+  tests already prove the exact corrected behavior. A task-specific workflow still
+  controls planning, review, and delivery.
 - Load `khenrix-quality` when the user explicitly requests ADHD controls, prose editing or
   detection, a named code minimalism level, or its review, audit, debt, benchmark, or help
   workflow. Load `khenrix-writing` for humanization, voice matching, or a deeper rewrite.

@@ -18,13 +18,17 @@ RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_po
                             tests/test_statusline.py tests/test_statusline_reconcile.py
 MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py tests/test_memory_exchange.py tests/test_memory_ingress.py
 MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py \
+                        tests/test_maka_native_host.py tests/test_maka_read_aggregation.py \
                         tests/test_maka_colima_mount_migration.py
 SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
                         tests/test_refresh.py
 AUDIT_TESTS := tests/test_setup_audit.py
 CORE_TESTS := tests/test_checks_secrets.py tests/test_mutate.py \
               tests/test_eval_harness_receipt.py tests/test_eval_receipt_v3.py \
-              tests/test_eval_native_consumers.py tests/test_render_packaging.py
+              tests/test_eval_native_consumers.py tests/test_eval_agy_read_policy.py \
+              tests/test_eval_claude_scratch_policy.py \
+              tests/test_eval_patch_acceptance.py \
+              tests/test_render_packaging.py
 FANOUT_TESTS := tests/test_fanout_artifacts.py \
                 tests/test_fanout_benchmark.py \
                 tests/test_fanout_bootstrap_packages.py \

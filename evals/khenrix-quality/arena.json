@@ -23,6 +23,26 @@
     {
       "prompt": "what is the current weather in Stockholm?",
       "expected": "none"
+    },
+    {
+      "prompt": "use khenrix-quality review on this diff, including correctness, security, expected load and safe simplification",
+      "expected": "khenrix-quality"
+    },
+    {
+      "prompt": "use the former ponytail-audit workflow to rank engineering risks in this repository",
+      "expected": "khenrix-quality"
+    },
+    {
+      "prompt": "review this diff only for safe simplifications and YAGNI",
+      "expected": "khenrix-quality"
+    },
+    {
+      "prompt": "audit this database code for SQL injection vulnerabilities",
+      "expected": "none"
+    },
+    {
+      "prompt": "use khenrix-quality debt to inventory shortcut: and custom DEFER: comments",
+      "expected": "khenrix-quality"
     }
   ]
 }

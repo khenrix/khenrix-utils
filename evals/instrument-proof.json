@@ -1,18 +1,70 @@
 {
-  "schema_version": 1,
-  "instrument_hash": "6a244c91ca985218420791150acd3d5547d517f64205496fea230377f7e0887a",
+  "agy_answer_only_support": {
+    "native_read_denial_qualification_sha256": "b1baa48326039530aec465ab1c0ea72827ec56ce647aaaa1e5f0e646ca0292bf",
+    "post_fix_zero_tool_trial_sha256": "a0bf8c2cd49514f4fb4c0ae4fd88d15b79e1937b1a00566023c957909273c59d"
+  },
+  "agy_installed_read_support": {
+    "native_initial_resume_qualification_sha256": "fbc6e839816771874133ee5b97c0320d9cd5ba6dbafd9f30d8250e9e51761eb4",
+    "policy_helper_sha256": "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68",
+    "scope": "Exact-file consumer allowlist; actual initial/resumed allowed reads and denied read/write attempts. No OS confinement claim."
+  },
+  "instrument_hash": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
   "instrument_manifest": [
     [
       "Makefile",
-      "89847c4563a2bcb8bff2f406f62d6c2b15890ef44d9eef8c5c0a628a4b28974b"
+      "e5e778a17fb3f780f2101b388009c94061594437ff040a6905f1b25693fc69b4"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
     ],
     [
       "scripts/eval_harness.py",
-      "726c0851689d5f1465426c9c1532255c37f4019419d35b7e8ab7ccaa0c99ba05"
+      "a83610e1ce893b456ce1aabd13e2d0bc3a1ecbc0dc2c5b711e8622b34db84390"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
     ],
     [
       "scripts/lib/checks.py",
-      "2a61514bbddd57262172340ea9101c443029cd841775993a46dc9384e9809b56"
+      "28d730b75d391957814461f1920d6009d0df4b035ccaab1d2f028ea80e8dbd79"
     ],
     [
       "scripts/lib/portability.py",
@@ -395,6 +447,14 @@
       "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
     ],
     [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
       "tests/test_bootstrap_machine.bats",
       "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
     ],
@@ -423,12 +483,24 @@
       "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
     ],
     [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
+    ],
+    [
       "tests/test_eval_harness_receipt.py",
-      "4e92740886e2bfa171b8130ba78ba74e8d16fff5272492b378728feecad9fb5d"
+      "782fde1fcbcdb179e9152cc82caade9cc746625a1c6761999d86eb1b531c7943"
     ],
     [
       "tests/test_eval_native_consumers.py",
-      "ec515d96a978bfd79c03a6baa1c8212ad619bd38cc41b65ddd6a2eacca9587ab"
+      "8f265a046e21c69d32a7325453a598de83fdfdd285378d80a23a01937d06f6b3"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
     ],
     [
       "tests/test_eval_provider.py",
@@ -583,8 +655,16 @@
       "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
     ],
     [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
       "tests/test_maka_skill_smoke.py",
-      "1d0c2077c4f3aca3c2d232ad7241833b70fb9a75c37ded0395e9ceb3546b2abc"
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
     ],
     [
       "tests/test_memory_exchange.py",
@@ -651,63 +731,115 @@
       "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
     ]
   ],
-  "tests": [
-    {
-      "command": [
-        "make",
-        "eval-test"
-      ],
-      "counts": {
-        "tests_run": 453,
-        "failed": 0,
-        "skipped": 0
-      },
-      "evidence_sha256": "30317aef56843bc89b8d996deeba41505ae3a79e098327cbc83cc28853ac0b20"
-    }
-  ],
   "native_sessions": {
-    "claude": {
-      "valid": true,
-      "session_id": "ae7fce49-08bc-4402-b25f-2fd2b13c41bb",
-      "role": "evaluator",
-      "cli_version": "2.1.302",
-      "judge_config": {
-        "model": "claude-opus-5-5",
-        "thinking": "xhigh"
-      },
-      "raw_capture_sha256": "cd50c450a11cce27540c1dbf00edf9e20a4ce88ad14d3275a7a2643ff759edfd",
-      "read_tool_evidence_sha256": "34980545553219ed2133041a99041265d46b9245a7f812e56a6347036906c63c"
-    },
-    "codex": {
-      "valid": true,
-      "session_id": "01a1588e-006e-70a0-a255-b0dc2b92acf2",
-      "role": "evaluator",
-      "cli_version": "0.163.0",
-      "judge_config": {
-        "model": "gpt-6.1-sol",
-        "thinking": "xhigh"
-      },
-      "raw_capture_sha256": "520166dc28a35516353f3fbab40766a9745539ad555ea19cfd5358c9664e85a2",
-      "read_tool_evidence_sha256": "9c56c904c27193860f008b55bbbf3cbf6ad5141cdf561e3285f393bc789f8fb4"
-    },
     "agy": {
-      "valid": true,
-      "session_id": "eb9146f3-15f5-4efa-9ff0-0a4f7ba49072",
-      "role": "evaluator",
       "cli_version": "1.4.2",
+      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
       "judge_config": {
         "model": "gemini-3.8-flash-high",
         "thinking": "high"
       },
-      "raw_capture_sha256": "bac4740cfa56fb7a9baa0964f0a1a30b586d6ae0830929a2b00784b1f53b5eda",
-      "read_tool_evidence_sha256": "375a351865283b9ce731910ab92e408b0bc062b61ca358f90252eeb65be73718"
+      "observed_native_trace_coverage": "complete",
+      "raw_capture": "agy/native.raw.jsonl",
+      "raw_capture_sha256": "537b7619814573f8057f088488256c50e6ba0a83037fcdf863cefd3c3806c871",
+      "read_tool": "read_file",
+      "read_tool_evidence": "agy/read-tool-evidence.json",
+      "read_tool_evidence_sha256": "0d60e908a2bbe8f79fa5def424afd25aa56719406fee9112e7a13e572cf3c29f",
+      "reason": "ok",
+      "role": "evaluator",
+      "session_id": "e169ccba-e35e-43f3-9cce-8a3fc574542b",
+      "source_read_proven_from_native_records": true,
+      "source_sha256": "b0d8427b9856ddff3c9194fa042eb57dd91d54c90d8b0c16ce3f002ca2ae58cd",
+      "valid": true
+    },
+    "claude": {
+      "cli_version": "2.1.302",
+      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "judge_config": {
+        "model": "claude-opus-5-5",
+        "thinking": "xhigh"
+      },
+      "observed_native_trace_coverage": "complete",
+      "raw_capture": "claude/native.raw.jsonl",
+      "raw_capture_sha256": "c8dfa630f13fdd57e78072c2f16e259fb95589fa62a3aa8493e205ab9ce0a3b5",
+      "read_tool": "Read",
+      "read_tool_evidence": "claude/read-tool-evidence.json",
+      "read_tool_evidence_sha256": "804686f5e80f30a9d6fb912874147c754eeffd297e4d90b12724b2ef999a9f60",
+      "reason": "ok",
+      "role": "evaluator",
+      "session_id": "aff40c18-1613-4af7-b93a-1bd27bb5bc84",
+      "source_read_proven_from_native_records": true,
+      "source_sha256": "de6426bddbdcf7c59776a1f25ae60c047f0d2e8036a04528afcae78175691a93",
+      "valid": true
+    },
+    "codex": {
+      "cli_version": "0.163.0",
+      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "judge_config": {
+        "model": "gpt-6.1-sol",
+        "thinking": "xhigh"
+      },
+      "observed_native_trace_coverage": "complete",
+      "raw_capture": "codex/native.raw.jsonl",
+      "raw_capture_sha256": "6d1329dd86d9fc58efc88c078ecd8d520a375091aa1894893e8bfec7967a7f25",
+      "read_tool": "shell",
+      "read_tool_evidence": "codex/read-tool-evidence.json",
+      "read_tool_evidence_sha256": "b91e569602904156f71045e0168dfa1570dc6aa0b16475d23c87f5ee9ec56e81",
+      "reason": "ok",
+      "role": "evaluator",
+      "session_id": "01a15e74-29f1-7b60-b813-311eee0af947",
+      "source_read_proven_from_native_records": true,
+      "source_sha256": "7a12c0255c70675ad9cb89f920feaa615285d903b67afe6553abdd06f0b5c28b",
+      "valid": true
     }
   },
-  "private_artifact_manifest_sha256": "c2b60256fa203c0e1d9b9a1cef88ca18256930cb57372cf282566c5920035e15",
-  "scope": "Fresh current-source evaluator-role qualification in non-Git workspaces: complete installed quality/memory instructions, four original synthetic source reads and one selected successful native authenticated read per provider. Not all integrations authentication, OS confinement, test execution by models or served-model attestation.",
-  "qualifications": [
-    "Codex additionally read its required using-superpowers startup instruction. Native metadata discovery does not establish a separately serialized complete input schema; no failed local tools or extra MCP calls were observed.",
-    "Native tool evidence digests bind exact current captures/projections independently checked against original returned bytes. Historical trials and originally earned measured-instrument snapshots remain unchanged.",
-    "Five additional peer-framing/read-boundary regression cases passed with zero failures or skips; their exact private JUnit-bearing invocation and results are retained by the private artifact manifest."
+  "private_artifact_manifest_sha256": "373386b30f07d23f0f1a21c0a178f03991305bc6f272e58d521a406715a2b643",
+  "schema_version": 1,
+  "scope": "Current frozen instrument: completed zero-skip core-test and eval-test scopes and three fresh evaluator native fixture reads. Prior full verify and new affected Maka/delivery verification are separately retained; no new full-suite or installed-behavior claim is made here.",
+  "tests": [
+    {
+      "command": [
+        "mise",
+        "exec",
+        "--",
+        "make",
+        "--debug=b",
+        "core-test",
+        "eval-test",
+        "PY=uvx --offline --python 3.12.14 --from pytest==9.1.1 python"
+      ],
+      "count_basis": "Observed completed core-test pytest summary in a successful closed affected-target command.",
+      "counts": {
+        "failed": 0,
+        "skipped": 0,
+        "tests_run": 331
+      },
+      "enclosing_command_completion_claimed": false,
+      "evidence_sha256": "a1f2696543ae0bd5c822a27832c10fb8adbb602ca92ed99104cdeaba795c7d21",
+      "test_scope": "core-test"
+    },
+    {
+      "command": [
+        "mise",
+        "exec",
+        "--",
+        "make",
+        "--debug=b",
+        "core-test",
+        "eval-test",
+        "PY=uvx --offline --python 3.12.14 --from pytest==9.1.1 python"
+      ],
+      "count_basis": "Individual PASS and ok records inside actual completed eval-test target markers; summary records excluded; command exit 0.",
+      "counts": {
+        "failed": 0,
+        "skipped": 0,
+        "tests_run": 453
+      },
+      "evidence_sha256": "574b02d7813d32c35baf92f3afebd5d5e807a0a3f44165c45c94053a07e33e79",
+      "test_scope": "eval-test"
+    }
   ]
 }

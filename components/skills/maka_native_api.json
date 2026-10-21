@@ -1,0 +1,12 @@
+{
+  "package": "maka-agent",
+  "version": "0.2.0-dev.70.20261005",
+  "files": {
+    "node_modules/@maka/runtime-host/dist/client/connect-or-spawn.js": "8f908c0cc6e361a5897846e93ce8745944f59c97cc4c17ab17765c807da46601",
+    "node_modules/@maka/runtime-host/dist/client/launcher.js": "12485906c68a4dc13468d887d19b05f028f46c9f23be65512303cf04e443d157",
+    "node_modules/@maka/runtime-host/dist/client/connection.js": "98ce95b854367958f302e7c8ffa4be662928ad5e467334b88b2a8fc4aa82f28b",
+    "node_modules/@maka/storage/dist/root-authority.js": "f02b72788635825e412fb3ae61da5af93cb40e621c5f258f5804970f33bdd940",
+    "node_modules/@maka/runtime/dist/read-page.js": "c727cc05d33b7fd01621b49e3998c554850f57ecd5a7065774a291c41d0fc7c9",
+    "dist/runtime-host-run-command.js": "ef74b77693d043b6661a6d423d8556ca65da47d35ec90fa4397d3ff2c877b450"
+  }
+}

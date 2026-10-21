@@ -36,11 +36,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import importlib.util
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -65,6 +67,11 @@ from _khenrix_eval_fanout import eval_provider as eval_runtime  # noqa: E402
 EVALS_ROOT = ROOT / "evals"
 DEFAULT_JUDGE = "claude"
 MAX_CLI_VERSION_BYTES = 256
+
+# Native read_file denial was joined to its hook and result on this release.
+# A newer release requires a fresh bounded native qualification, not inference.
+AGY_ANSWER_ONLY_VERSION = "1.4.2"
+AGY_ANSWER_ONLY_QUALIFICATION = "b1baa48326039530aec465ab1c0ea72827ec56ce647aaaa1e5f0e646ca0292bf"
 
 
 def observe_cli_version(provider: str) -> bytes:
@@ -763,35 +770,448 @@ def guard_provider_artifacts(workdir: Path, env: dict, canary: str,
             "provider artifacts contained a tool canary or credential; artifacts were redacted")
 
 
+def _write_private_control(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(text)
+
+
+def _control_reference(path: Path) -> dict:
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def prepare_agy_installed_read_policy(cwd: Path, control_dir: Path, *,
+                                      installed_trees: Mapping,
+                                      instruction_files: Mapping | None = None,
+                                      fixtures: Mapping | None = None) -> dict:
+    """Create one condition-owned, unqualified policy for initial and resumed turns.
+
+    Callers supply reviewed SHA256 values, never paths obtained from model output.
+    Each installed tree maps relative file names to verified installed hashes.
+    This gates model tools only; automatic internal reads and OS access are unconfined.
+    """
+    from eval_agy_read_policy import config_text, regular_bytes, sha
+    cwd = Path(cwd).absolute()
+    control_dir = Path(control_dir).absolute()
+    hook_path = cwd / ".agents/hooks.json"
+    if os.path.lexists(hook_path):
+        raise RuntimeError("AGY project hook file already exists; refusing to overwrite it")
+    if (cwd / ".agents").is_symlink():
+        raise RuntimeError("AGY project hook directory is a symlink")
+    files = {}
+
+    def authorize(path, expected, kind):
+        path = Path(path)
+        if not path.is_absolute() or ".." in path.parts:
+            raise RuntimeError("AGY installed-read authorization needs an exact absolute path")
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise RuntimeError("AGY installed-read authorization needs a SHA256 hash")
+        try:
+            raw = regular_bytes(path)
+            raw.decode("utf-8")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("AGY installed-read source must be a regular UTF-8 file") from error
+        if sha(raw) != expected:
+            raise RuntimeError("AGY installed-read source hash mismatch")
+        entry = {"sha256": expected, "kind": kind}
+        if str(path) in files and files[str(path)] != entry:
+            raise RuntimeError("AGY installed-read duplicate authorization")
+        files[str(path)] = entry
+
+    for root, entries in installed_trees.items():
+        root = Path(root)
+        if not root.is_absolute():
+            raise RuntimeError("AGY installed tree must be absolute")
+        for relative, expected in entries.items():
+            relative = Path(relative)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError("AGY installed tree member escapes its root")
+            authorize(root / relative, expected, "installed-skill")
+    for mapping, kind in ((instruction_files or {}, "instruction"), (fixtures or {}, "fixture")):
+        for path, expected in mapping.items():
+            authorize(path, expected, kind)
+    control_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (cwd / ".agents").mkdir(parents=True, exist_ok=True, mode=0o700)
+    policy_path = control_dir / "agy-installed-read-policy.json"
+    handler = control_dir / "agy-installed-read-hook.py"
+    log_path = control_dir / "agy-installed-read-hook-events.jsonl"
+    policy = {"version": 1, "qualified": False, "cwd": str(cwd), "files": files,
+              "hook_log": str(log_path), "nonce": os.urandom(16).hex(),
+              "scope": "Condition-local model tools only; no OS confinement or automatic-read visibility"}
+    _write_private_control(policy_path, json.dumps(policy, indent=2) + "\n")
+    _write_private_control(handler, (ROOT / "scripts/eval_agy_read_policy.py").read_text())
+    _write_private_control(log_path, "")
+    command = shlex.join([sys.executable, "-I", str(handler), str(policy_path),
+                          _control_reference(policy_path)["sha256"], _control_reference(handler)["sha256"]])
+    _write_private_control(hook_path, config_text(command))
+    return {**policy, "policy": _control_reference(policy_path),
+            "handler": _control_reference(handler), "config": _control_reference(hook_path),
+            "command": command}
+
+
+def _check_agy_installed_read_policy(context, cwd):
+    from eval_agy_read_policy import regular_bytes, sha
+    for key in ("policy", "handler", "config", *(["admission"] if "admission" in context else [])):
+        reference = context[key]
+        if sha(regular_bytes(reference["path"])) != reference["sha256"]:
+            raise RuntimeError("AGY installed-read control drift")
+    policy = json.loads(regular_bytes(context["policy"]["path"]))
+    if policy["cwd"] != str(Path(cwd).absolute()) or any(context.get(k) != v for k, v in policy.items()):
+        raise RuntimeError("AGY installed-read context differs from its bound policy")
+    for path, expected in policy["files"].items():
+        if sha(regular_bytes(path)) != expected["sha256"]:
+            raise RuntimeError("AGY installed-read source hash drift")
+    return policy
+
+
+def _agy_answer_only_spec(spec, cwd: Path, workdir: Path, environment: dict):
+    observed = spec.registry._version_probe("agy")
+    help_result = subprocess.run([spec.argv[0], "--help"], input=b"", capture_output=True,
+                                 timeout=10, env=environment)
+    if (observed != AGY_ANSWER_ONLY_VERSION or help_result.returncode
+            or b"--disable-slash-commands" not in help_result.stdout + help_result.stderr):
+        raise RuntimeError(f"AGY answer-only control UNQUALIFIED for CLI {observed}")
+    directory = cwd / ".agents"
+    hook_path = directory / "hooks.json"
+    if os.path.lexists(hook_path):
+        raise RuntimeError("AGY project hook file already exists; refusing to overwrite it")
+    if directory.is_symlink():
+        raise RuntimeError("AGY project hook directory already exists as a symlink")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    reason = "AGY inline evaluation " + os.urandom(16).hex() + ": model tool execution denied."
+    log_path = workdir / "agy-answer-only-hook-events.jsonl"
+    handler = workdir / "agy-answer-only-deny.py"
+    handler_text = '''import hashlib, json, os, sys
+raw = sys.stdin.buffer.read(1048577)
+reason = REASON
+record = {"raw_stdin": raw.decode("utf-8", errors="replace"),
+          "raw_stdin_sha256": hashlib.sha256(raw).hexdigest(), "decision": "deny", "reason": reason}
+try:
+    descriptor = os.open(LOG_PATH, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(json.dumps(record) + "\\n")
+except OSError:
+    pass
+print(json.dumps({"decision": "deny", "reason": reason}), flush=True)
+'''.replace("REASON", repr(reason)).replace("LOG_PATH", repr(str(log_path)))
+    _write_private_control(handler, handler_text)
+    _write_private_control(log_path, "")
+    command = shlex.join([sys.executable, "-I", str(handler)])
+    config = {"inline-evaluation": {"enabled": True, "PreToolUse": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 10}]}]}}
+    config_text = json.dumps(config, indent=2) + "\n"
+    _write_private_control(hook_path, config_text)
+    config_copy = workdir / "agy-answer-only-hooks.json"
+    _write_private_control(config_copy, config_text)
+    preflight = subprocess.run(shlex.split(command), input=json.dumps({"conversationId": "hook-preflight"}),
+                               capture_output=True, text=True, timeout=10, env=environment)
+    if preflight.returncode or json.loads(preflight.stdout) != {"decision": "deny", "reason": reason}:
+        raise RuntimeError("AGY answer-only handler preflight failed")
+    flag = "--disable-slash-commands"
+    profile = replace(spec.profile, initial_argv=spec.profile.initial_argv + (flag,),
+                      resume_argv=spec.profile.resume_argv + (flag,),
+                      cli_version=observed, profile_sha256=None)
+    request = replace(spec.native_request, profile=profile)
+    native_command = profile.adapter.build_command(request)
+    derived = replace(spec, argv=list(native_command.argv), stdin=native_command.stdin,
+                      profile=profile, native_request=request)
+    policy = {"provider": "agy", "answer_only": True, "qualified_cli_version": observed,
+              "qualification_sha256": AGY_ANSWER_ONLY_QUALIFICATION,
+              "base_profile_sha256": spec.profile.digest, "profile_sha256": profile.digest,
+              "profile": profile.to_dict(), "reason": reason,
+              "config": _control_reference(config_copy), "handler": _control_reference(handler),
+              "scope": "Condition-local model-tool denial; no OS confinement claim"}
+    policy_path = workdir / "agy-answer-only-policy.json"
+    _write_private_control(policy_path, json.dumps(policy, indent=2) + "\n")
+    return derived, {**policy, "policy": _control_reference(policy_path),
+                     "project_config": _control_reference(hook_path), "hook_log": str(log_path)}
+
+
+def _verify_agy_answer_only(spec, record, policy, workdir, real_home):
+    from _khenrix_eval_fanout.native_trace import MAX_TRACE_BYTES, project_native_trace
+    session = record.get("session_id")
+    if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+        raise RuntimeError("AGY answer-only denial evidence lacks a native session")
+    source = real_home / ".gemini/antigravity-cli/brain" / session / ".system_generated/logs/transcript_full.jsonl"
+    with source.open("rb") as stream:
+        raw = stream.read(MAX_TRACE_BYTES + 1)
+    _write_private_control(workdir / "agy-answer-only-native.jsonl", raw.decode())
+    answer = Path(record["result_file"]).read_text()
+    trace = project_native_trace("agy", raw, prompt=spec.native_request.prompt_bytes,
+                                 session_id=session, cwd=spec.cwd, answer=answer)
+    _write_private_control(workdir / "agy-answer-only-trace.json", json.dumps(trace, indent=2) + "\n")
+    if trace["coverage"] != "complete":
+        raise RuntimeError("AGY answer-only denial evidence has incomplete native turn coverage")
+    rows = [json.loads(line) for line in raw.splitlines()]
+    start, end = trace["bounds"]
+    rows = rows[start:end + 1]
+    hooks = [json.loads(line) for line in Path(policy["hook_log"]).read_text().splitlines()]
+    hooks = [(item, json.loads(item["raw_stdin"])) for item in hooks]
+    hooks = [(item, payload) for item, payload in hooks if payload.get("conversationId") != "hook-preflight"]
+    steps = [json.loads(line)["step_update"] for line in Path(record["stdout_file"]).read_text().splitlines()
+             if json.loads(line).get("event") == "step_update" and json.loads(line)["step_update"].get("step_type") == "tool"]
+    terminal = [step for step in steps if step.get("state") != "ACTIVE"]
+    if len(hooks) != len(trace["calls"]) or len(terminal) != len(trace["calls"]):
+        raise RuntimeError("AGY answer-only denial evidence has unmatched tools or hooks")
+    if any(not any(step.get("step_index") == result.get("step_index")
+                   and step.get("conversation_id") == session
+                   and step.get("tool_info", {}).get("name") == result.get("tool_info", {}).get("name")
+                   and step.get("tool_info", {}).get("parameters") == result.get("tool_info", {}).get("parameters")
+                   for result in terminal) for step in steps):
+        raise RuntimeError("AGY answer-only denial evidence has an unmatched active tool")
+    expected_error = "tool call denied by pre-tool hook: " + policy["reason"]
+    used = set()
+    remaining = list(hooks)
+    joins = []
+    for call in trace["calls"]:
+        candidates = [(index, hook, payload) for index, (hook, payload) in enumerate(remaining)
+                      if payload.get("conversationId") == session
+                      and payload.get("toolCall", {}).get("name") == call["name"]
+                      and payload.get("toolCall", {}).get("args") == call["arguments"]]
+        if not candidates:
+            raise RuntimeError("AGY answer-only denial evidence does not join its native call")
+        index, hook, payload = candidates[0]
+        del remaining[index]
+        tool_call = payload.get("toolCall", {})
+        matches = [step for step in terminal if step.get("step_index") == payload.get("stepIdx")]
+        generic = [row for row in rows if row.get("type") == "GENERIC" and row.get("step_index") == payload.get("stepIdx")]
+        if (payload.get("conversationId") != session or tool_call.get("name") != call["name"]
+                or tool_call.get("args") != call["arguments"] or hook.get("decision") != "deny"
+                or hook.get("reason") != policy["reason"] or len(matches) != 1 or len(generic) != 1
+                or payload.get("stepIdx") in used):
+            raise RuntimeError("AGY answer-only denial evidence does not join its native call")
+        step = matches[0]
+        info = step.get("tool_info", {})
+        if (step.get("conversation_id") != session or step.get("state") != "ERROR"
+                or step.get("tool_name") != call["name"] or info.get("name") != call["name"]
+                or info.get("parameters") != call["arguments"] or info.get("error", {}).get("message") != expected_error
+                or generic[0].get("status") != "ERROR" or generic[0].get("error") != expected_error):
+            raise RuntimeError("AGY answer-only denial evidence includes a successful or unrelated tool result")
+        used.add(payload["stepIdx"])
+        joins.append({"native_call_id": call["id"], "tool_step_index": payload["stepIdx"],
+                      "hook_input_sha256": hook["raw_stdin_sha256"]})
+    for key in ("config", "handler", "policy", "project_config"):
+        if _control_reference(Path(policy[key]["path"])) != policy[key]:
+            raise RuntimeError("AGY answer-only policy changed during execution")
+    return {**policy, "configured": True, "observed_hook_execution": bool(hooks),
+            "denied_tool_calls": len(hooks), "denial_joins": joins,
+            "native_source_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _verify_agy_installed_read(spec, record, context, workdir, real_home, log_before):
+    from eval_agy_read_policy import decide, minimal_input, regular_bytes, sha
+    from _khenrix_eval_fanout.native_trace import MAX_TRACE_BYTES, project_native_trace
+    policy = _check_agy_installed_read_policy(context, spec.cwd)
+    session = record.get("session_id")
+    if not record.get("valid") or not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+        raise RuntimeError("missing valid native session")
+    if spec.native_request.resume and session != spec.native_request.session_id:
+        raise RuntimeError("resumed native session changed")
+    source = real_home / ".gemini/antigravity-cli/brain" / session / ".system_generated/logs/transcript_full.jsonl"
+    with source.open("rb") as stream:
+        raw = stream.read(MAX_TRACE_BYTES + 1)
+    trace = project_native_trace("agy", raw, prompt=spec.native_request.prompt_bytes,
+                                 session_id=session, cwd=spec.cwd,
+                                 answer=Path(record["result_file"]).read_text())
+    if trace["coverage"] != "complete":
+        raise RuntimeError("incomplete native turn coverage")
+    # Retain native evidence privately; hook events themselves contain no source content.
+    _write_private_control(workdir / "agy-installed-read-native.jsonl", raw.decode())
+    _write_private_control(workdir / "agy-installed-read-trace.json", json.dumps(trace, indent=2) + "\n")
+    log_after = regular_bytes(context["hook_log"])
+    if not log_after.startswith(log_before) or log_after and not log_after.endswith(b"\n"):
+        raise RuntimeError("hook interval changed or truncated")
+    events = [json.loads(line) for line in log_after[len(log_before):].splitlines()]
+    start, end = trace["bounds"]
+    rows = [json.loads(line) for line in raw.splitlines()][start:end + 1]
+    steps = [row["step_update"] for row in (json.loads(line) for line in Path(record["stdout_file"]).read_text().splitlines())
+             if row.get("event") == "step_update" and row["step_update"].get("step_type") == "tool"]
+    terminal = [step for step in steps if step.get("state") != "ACTIVE"]
+    if len(events) != len(trace["calls"]) or len(terminal) != len(events):
+        raise RuntimeError("unmatched native tools or hooks")
+    if len({event["reason"] for event in events}) != len(events):
+        raise RuntimeError("hook reasons are not unique")
+    used, joins, remaining = set(), [], list(events)
+    for call in trace["calls"]:
+        expected_input = minimal_input({"toolCall": {"name": call["name"], "args": call["arguments"]}})["toolCall"]
+        candidates = [(index, event) for index, event in enumerate(remaining)
+                      if event["input"].get("conversationId") == session
+                      and event["input"].get("toolCall") == expected_input]
+        if not candidates:
+            raise RuntimeError("hook does not join its native call")
+        index, event = candidates[0]
+        del remaining[index]
+        step_id = event["input"].get("stepIdx")
+        matches = [step for step in terminal if step.get("step_index") == step_id]
+        generic = [row for row in rows if row.get("type") == "GENERIC" and row.get("step_index") == step_id]
+        if step_id in used or len(matches) != 1 or len(generic) != 1:
+            raise RuntimeError("native result does not join uniquely")
+        used.add(step_id)
+        step, result = matches[0], generic[0]
+        info = step.get("tool_info", {})
+        terminal_arguments = [call["arguments"]]
+        # CLI 1.4.2 displays only CommandLine for denied run_command calls.
+        # The hook still joins the complete planner arguments by their exact hash.
+        if (call["name"] == "run_command"
+                and set(call["arguments"]) <= {"CommandLine", "WaitMsBeforeAsync", "toolSummary"}
+                and isinstance(call["arguments"].get("CommandLine"), str)):
+            terminal_arguments.append({"CommandLine": call["arguments"]["CommandLine"]})
+        if (step.get("conversation_id") != session or step.get("tool_name") != call["name"]
+                or info.get("name") != call["name"] or info.get("parameters") not in terminal_arguments
+                or event.get("policy_sha256") != context["policy"]["sha256"]):
+            raise RuntimeError("native result identity differs")
+        expected_decision, source_sha = decide({"toolCall": {"name": call["name"], "args": call["arguments"]}}, policy)
+        if event["decision"] != expected_decision or event.get("source_sha256") != source_sha:
+            raise RuntimeError("hook decision differs from bound authorization")
+        join = {"native_call_id": call["id"], "tool_step_index": step_id,
+                "decision": expected_decision, "hook_event_sha256": sha(json.dumps(event, sort_keys=True).encode())}
+        if expected_decision == "deny":
+            error = "tool call denied by pre-tool hook: " + event["reason"]
+            if (step.get("state") != "ERROR" or info.get("error", {}).get("message") != error
+                    or result.get("status") != "ERROR" or result.get("error") != error):
+                raise RuntimeError("denied call lacks its unique native hook error")
+        else:
+            if step.get("state") != "DONE" or result.get("status") != "DONE" or info.get("error") or result.get("error"):
+                raise RuntimeError("authorized read did not complete")
+            args = call["arguments"]
+            source_lines = regular_bytes(args["Path"]).decode("utf-8").splitlines()
+            content = result.get("content", "")
+            header = re.search(r"^Showing lines (\d+)-(\d+) of (\d+)$", content, re.MULTILINE)
+            if not header:
+                raise RuntimeError("native read lacks bounded numbered source output")
+            first, last, total = map(int, header.groups())
+            requested_first = args.get("StartLine", 1)
+            requested_last = min(args.get("EndLine", len(source_lines)), len(source_lines))
+            content_lines = content.splitlines()
+            header_index = content_lines.index(header.group(0))
+            metadata = content_lines[:header_index]
+            if (len(metadata) > 2 or any(not re.fullmatch(
+                    r"(?:Created|Completed) At: [0-9T:+.Z-]+", line) for line in metadata)):
+                raise RuntimeError("native read has unexpected metadata")
+            numbered_lines = content_lines[header_index + 1:]
+            numbered = [(int(match.group(1)), match.group(2)) for line in numbered_lines
+                        if (match := re.fullmatch(r"(\d+): (.*)", line))]
+            if len(numbered) != len(numbered_lines):
+                raise RuntimeError("native read has unverified extra content")
+            expected = list(enumerate(source_lines[requested_first - 1:requested_last], requested_first))
+            if (first != requested_first or last != requested_last or total != len(source_lines)
+                    or numbered != expected or not expected):
+                raise RuntimeError("native read content differs from authorized source")
+            join.update({"source_path": args["Path"], "source_sha256": source_sha,
+                         "line_range": [first, last], "complete_source_read": first == 1 and last == total})
+        joins.append(join)
+    if any(not any(active.get("step_index") == final.get("step_index")
+                       and active.get("conversation_id") == final.get("conversation_id")
+                       and active.get("tool_info", {}).get("name") == final.get("tool_info", {}).get("name")
+                       and active.get("tool_info", {}).get("parameters") == final.get("tool_info", {}).get("parameters")
+                       for final in terminal) for active in steps):
+        raise RuntimeError("unmatched active native tool")
+    _check_agy_installed_read_policy(context, spec.cwd)
+    context["_hook_log_sha256"] = sha(log_after)
+    return {"configured": True, "qualified": False, "observed_hook_execution": bool(events),
+            "allowed_tool_calls": sum(event["decision"] == "allow" for event in events),
+            "denied_tool_calls": sum(event["decision"] == "deny" for event in events), "joins": joins,
+            "hook_interval": [len(log_before.splitlines()), len(log_after.splitlines())],
+            "hook_interval_sha256": sha(log_after[len(log_before):]), "policy": context["policy"],
+            "handler": context["handler"], "config": context["config"], "admission": context["admission"],
+            "native_source_sha256": sha(raw), "scope": policy["scope"]}
+
+
 def run_text(provider: str, prompt: str, cfg: dict, workdir: Path, *,
              timeout: int, retries: int, readonly: bool,
              exec_cwd: Path | None = None, base_env: dict | None = None,
              real_home: Path = REAL_HOME, tool_canary: str | None = None,
-             role: str = "executor"):
+             role: str = "executor", installed_read_policy: dict | None = None,
+             session_id: str | None = None):
     """Run one trusted native read turn, retaining installed skills and authentication.
 
     Native role controls deny known writers but are not OS confinement. The caller
     owns any subsequent writes. Transport failures are terminal, never replayed.
     """
+    if installed_read_policy is not None and exec_cwd is None:
+        exec_cwd = Path(installed_read_policy["cwd"])
     if exec_cwd is None:
         with tempfile.TemporaryDirectory(prefix=f"khenrix-eval-{provider}-") as td:
             return run_text(provider, prompt, cfg, workdir, timeout=timeout,
                             retries=retries, readonly=readonly,
                             exec_cwd=Path(td) / "cwd", base_env=base_env,
-                            real_home=real_home, tool_canary=tool_canary, role=role)
-    if readonly:
+                            real_home=real_home, tool_canary=tool_canary, role=role,
+                            installed_read_policy=installed_read_policy, session_id=session_id)
+    answer_only = cfg.get(provider, {}).get("answer_only", False)
+    if type(answer_only) is not bool or answer_only and provider != "agy":
+        raise RuntimeError("answer_only is an explicit boolean AGY-only eval policy")
+    if installed_read_policy is not None and (provider != "agy" or answer_only):
+        raise RuntimeError("AGY installed-read and answer_only policies are mutually exclusive")
+    if session_id is not None and installed_read_policy is None:
+        raise RuntimeError("resumed eval turns require an owned installed-read policy context")
+    if installed_read_policy is not None:
+        workdir = workdir.resolve()
+    if answer_only:
+        workdir = workdir.resolve()
+        prompt = "Answer from the complete supplied inline task; model tools are denied for this AGY evaluation.\n\n" + prompt
+    elif readonly:
         prompt = ("Use your installed read tools and skills when relevant. Do not write "
                   "repository or service data, send messages, or change configuration.\n\n" + prompt)
     exec_cwd.mkdir(parents=True, exist_ok=True, mode=0o700)
     child_env = dict(os.environ if base_env is None else base_env)
-    spec = eval_runtime.build_native_spec(provider, prompt, cfg, cwd=exec_cwd, role=role)
+    spec = eval_runtime.build_native_spec(provider, prompt, cfg, cwd=exec_cwd, role=role,
+                                          session_id=session_id, resume=session_id is not None)
     workdir.mkdir(parents=True, exist_ok=True)
     preexisting = {path.relative_to(workdir).as_posix()
                    for path in _artifact_files(workdir)}
     try:
+        policy = None
+        log_before = None
+        if installed_read_policy is not None:
+            from eval_agy_read_policy import regular_bytes, sha
+            _check_agy_installed_read_policy(installed_read_policy, exec_cwd)
+            if installed_read_policy.get("_active"):
+                raise RuntimeError("AGY installed-read context already has an active turn")
+            observed = spec.registry._version_probe("agy")
+            if observed != "1.4.2":
+                raise RuntimeError("AGY installed-read control UNQUALIFIED for CLI " + observed)
+            admission = {"cli_version": observed, "profile_sha256": spec.profile.digest,
+                         "policy_sha256": installed_read_policy["policy"]["sha256"]}
+            if "admission" not in installed_read_policy:
+                admission_path = Path(installed_read_policy["policy"]["path"]).parent / "agy-installed-read-admission.json"
+                _write_private_control(admission_path, json.dumps(admission, indent=2) + "\n")
+                installed_read_policy["admission"] = _control_reference(admission_path)
+            reference = installed_read_policy["admission"]
+            admission_raw = regular_bytes(reference["path"])
+            if sha(admission_raw) != reference["sha256"] or json.loads(admission_raw) != admission:
+                raise RuntimeError("AGY installed-read admission drift")
+            log_before = regular_bytes(installed_read_policy["hook_log"])
+            if sha(log_before) != installed_read_policy.get("_hook_log_sha256", sha(b"")):
+                raise RuntimeError("AGY installed-read hook log drift")
+            installed_read_policy["_active"] = True
+        if answer_only:
+            spec, policy = _agy_answer_only_spec(spec, exec_cwd, workdir, child_env)
         rec = eval_runtime.run(spec, workdir, retries=0, timeout=timeout,
                                environment=child_env, real_home=real_home)
+        if installed_read_policy is not None:
+            try:
+                native_home = Path(child_env.get("HOME", str(real_home)))
+                rec["agy_installed_read"] = _verify_agy_installed_read(
+                    spec, rec, installed_read_policy, workdir, native_home, log_before)
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+                rec["agy_installed_read"] = {"configured": True, "qualified": False,
+                    "evidence_valid": False, "error": str(error)}
+                (workdir / "manifest.json").write_text(json.dumps({"providers": [rec]}, indent=2) + "\n")
+                raise RuntimeError("AGY installed-read evidence failed: " + str(error)) from error
+            (workdir / "manifest.json").write_text(json.dumps({"providers": [rec]}, indent=2) + "\n")
+        if policy is not None:
+            try:
+                native_home = Path(child_env.get("HOME", str(real_home)))
+                rec["agy_answer_only"] = _verify_agy_answer_only(spec, rec, policy, workdir, native_home)
+            except (OSError, ValueError, RuntimeError) as error:
+                rec["agy_answer_only"] = {**policy, "configured": True, "denial_evidence_valid": False, "error": str(error)}
+                (workdir / "manifest.json").write_text(json.dumps({"providers": [rec]}, indent=2) + "\n")
+                raise RuntimeError("AGY answer-only denial evidence failed: " + str(error)) from error
+            (workdir / "manifest.json").write_text(json.dumps({"providers": [rec]}, indent=2) + "\n")
     finally:
+        if installed_read_policy is not None and log_before is not None:
+            installed_read_policy["_active"] = False
         guard_provider_artifacts(workdir, child_env, tool_canary or "", preexisting)
     text = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
     return text, rec
@@ -989,9 +1409,14 @@ def build_run_result(rec: dict, g: dict) -> dict:
     }
 
 
-def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: dict,
-                          itdir: Path, *, timeout: int, retries: int,
-                          readonly: bool) -> list:
+def capture_eval_for_provider(skill: str, provider: str, ev: dict, cfg: dict,
+                              itdir: Path, *, timeout: int, retries: int,
+                              readonly: bool) -> dict:
+    """Capture a pair without publishing derived answers or invoking judges.
+
+    Native private captures remain on disk; this is a publication boundary, not
+    operating-system confinement. Each executor runs exactly once through run_text.
+    """
     source = skill_source_dir(skill, provider)
     body = strip_frontmatter((source / "SKILL.md").read_text())
     base = itdir / f"eval-{ev['id']}-{ev['name']}"
@@ -999,8 +1424,7 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
     fixture_text = inline_eval_fixtures(ev, fixtures_src)
     eval_prompt = render_prompt(ev, fixture_text)
     rendered_ev = {**ev, "prompt": eval_prompt}
-    runs = []
-    outputs = {}
+    captures = {}
     for condition in ("with_skill", "without_skill"):
         wd = base / f"{provider}__{condition}"
         wd.mkdir(parents=True, exist_ok=True)
@@ -1014,6 +1438,18 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
             (wd / "prompt.txt").write_text(prompt)
             text, rec = run_text(provider, prompt, cfg, wd, timeout=timeout,
                                  retries=retries, readonly=readonly, exec_cwd=exec_cwd)
+        captures[condition] = {"answer": text, "record": rec, "workdir": wd}
+    return {"provider": provider, "eval": rendered_ev, "base": base, "captures": captures}
+
+
+def evaluate_captured_pair(captured: dict, judge: str, cfg: dict, *, timeout: int) -> tuple:
+    """Publish and evaluate already captured work; never invoke an executor again."""
+    provider, rendered_ev, base = captured["provider"], captured["eval"], captured["base"]
+    ev = rendered_ev
+    runs = []
+    outputs = {}
+    for condition, capture in captured["captures"].items():
+        text, rec, wd = capture["answer"], capture["record"], capture["workdir"]
         (wd / "answer.md").write_text(text)
         outputs[condition] = text
         error = None
@@ -1053,6 +1489,15 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
         error.runs, error.comparison = runs, cmp
         raise error
     return runs, cmp
+
+
+def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: dict,
+                          itdir: Path, *, timeout: int, retries: int,
+                          readonly: bool) -> tuple:
+    """Convenience API for one pair, with publication deferred until both captures."""
+    captured = capture_eval_for_provider(skill, provider, ev, cfg, itdir,
+                                         timeout=timeout, retries=retries, readonly=readonly)
+    return evaluate_captured_pair(captured, judge, cfg, timeout=timeout)
 
 
 def _checks():
@@ -1195,8 +1640,14 @@ def seed_receipts(args) -> int:
 def run(args) -> int:
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
     cfg = eval_runtime.resolve_mode_config(_mode_args(args))
+    if getattr(args, "agy_answer_only", False):
+        cfg["agy"]["answer_only"] = True
     timeout = eval_runtime.effective_timeout(_mode_args(args))
     itdir = EVALS_ROOT / args.skill / "workspace" / f"iteration-{args.iteration}"
+    if itdir.exists() and any(itdir.iterdir()):
+        print("  ✗ iteration already contains evidence; choose a fresh iteration; no executors replayed",
+              file=sys.stderr)
+        return 1
     itdir.mkdir(parents=True, exist_ok=True)
 
     judge_config = _judge_config(args.judge, cfg)[args.judge]
@@ -1220,15 +1671,19 @@ def run(args) -> int:
     all_runs = []
     comparisons = []
     judge_error = None
+    # Complete the entire executor phase before publishing any peer answer or grade.
+    captured_pairs = []
+    for provider in providers:
+        for ev in evals:
+            print(f"  · capture {provider} / eval-{ev['id']}-{ev['name']} …", flush=True)
+            captured_pairs.append(capture_eval_for_provider(
+                args.skill, provider, ev, cfg, itdir,
+                timeout=timeout, retries=args.retries, readonly=args.readonly))
     try:
-        for provider in providers:
-            for ev in evals:
-                print(f"  · {provider} / eval-{ev['id']}-{ev['name']} …", flush=True)
-                runs, cmp = run_eval_for_provider(
-                    args.skill, provider, ev, args.judge, cfg, itdir,
-                    timeout=timeout, retries=args.retries, readonly=args.readonly)
-                all_runs.extend(runs)
-                comparisons.append(cmp)
+        for captured in captured_pairs:
+            runs, cmp = evaluate_captured_pair(captured, args.judge, cfg, timeout=timeout)
+            all_runs.extend(runs)
+            comparisons.append(cmp)
     except JudgeVerdictError as exc:
         all_runs.extend(exc.runs)
         if exc.comparison is not None:
@@ -1724,6 +2179,8 @@ def parse_args(argv=None):
                     "(e.g. claude-opus-4-8 when the profile default is unavailable)")
     ap.add_argument("--model-codex", help="override the codex executor model")
     ap.add_argument("--model-agy", help="override the agy executor model")
+    ap.add_argument("--agy-answer-only", action="store_true",
+                    help="deny AGY model tools for complete inline evals; requires native-qualified CLI 1.4.2")
     ap.add_argument("--iteration", type=int, default=1, help="workspace iteration-N")
     ap.add_argument("--retries", type=int, choices=(0,), default=0,
                     help="native turns never retry automatically")

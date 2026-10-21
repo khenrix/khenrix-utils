@@ -955,6 +955,23 @@ def load_cases(path: Path) -> dict[str, Any]:
     return data
 
 
+NATIVE_SUPPORT_FILES = (
+    "components/skills/maka_native_host.py",
+    "components/skills/maka_native_owned_host.mjs",
+    "components/skills/maka_native_probe.mjs",
+    "components/skills/maka_native_api.json",
+    "components/skills/maka_read_aggregation.py",
+    "components/maka/interactive/maka_skill_routing.mjs",
+    "components/maka/interactive/configure_maka_openai_relay.mjs",
+    "components/maka/scripts/apply_gpt6_compat.py",
+)
+
+
+def native_support_hashes() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2]
+    return {relative: digest((root / relative).read_bytes()) for relative in NATIVE_SUPPORT_FILES}
+
+
 def installed_closure(config: skillctl.Configuration, manifest: dict[str, Any]) -> dict[str, Any]:
     _, entries = skillctl.plan(config)
     drift = [entry.key for entry in entries if entry.action != "MATCH"]
@@ -990,6 +1007,7 @@ def installed_closure(config: skillctl.Configuration, manifest: dict[str, Any]) 
     return {
         "manifest_hash": digest(canonical(manifest)),
         "runner_hash": digest(Path(__file__).read_bytes()),
+        "runner_dependencies": native_support_hashes(),
         "skill_hashes": skills,
         "install_plan_id": receipt.get("plan_id"),
     }
@@ -1219,6 +1237,8 @@ def verified_model_route(
         "provider_request_count": len(receipts),
         "provider_no_tool_request_count": len(no_tool_request_times),
         "provider_receipt_hashes": [digest(canonical(receipt)) for receipt in receipts],
+        "provider_task_sha256": sorted({receipt["prompt_sha256"] for receipt in receipts
+                                        if receipt["binding"] == "nonce"}),
         **({"provider_content": content_inputs} if require_content else {}),
     }
 
@@ -2131,8 +2151,9 @@ def run_command(
         if (len(set(ids)) != len(ids) or any(name not in private_host.canonical_skills for name in ids)):
             raise SmokeError("Maka routing explicit instruction content is unknown or duplicate")
         normalized = explicit_instruction_text(prompt, private_host.canonical_skills, ids) if ids else prompt
-        if admission.get("normalizedInput", {}).get("text") != normalized or normalized not in users:
+        if admission.get("normalizedInput", {}).get("text") != normalized:
             raise SmokeError("Maka routing explicit admitted or outbound instruction content changed")
+        verify_admitted_wire_task(normalized, users, route.get("provider_task_sha256", []))
         for name in ids:
             original = private_host.canonical_skills[name]
             instruction_evidence.append({"skill_id": name, "invocation": "explicit",
@@ -2144,6 +2165,12 @@ def run_command(
     route["provider_attempt_through_rowid"] = attempt_through_rowid
     route["host_tool_evidence"] = host_tool_evidence
     return completed, route
+
+
+def verify_admitted_wire_task(normalized: str, users: list[str], selected_hashes: list[str]) -> None:
+    expected = hashlib.sha256(normalized.encode()).hexdigest()
+    if normalized not in users or not selected_hashes or any(value != expected for value in selected_hashes):
+        raise SmokeError("Maka routing admitted task digest differs from the selected wire task digest")
 
 
 def retain_private_turn_output(
@@ -2182,7 +2209,7 @@ def verify_flow_output(step: dict[str, Any], stdout: str) -> dict[str, Any]:
         raise SmokeError(f"flow step {step['id']} returned no non-empty lines")
     check = step.get("check")
     if check == "adhd_action_first":
-        task_terms = ("pull request", "pr", "email", "lunch")
+        task_label = r"(?:pull request|pr|email|lunch)"
         action_verbs = (
             "open",
             "review",
@@ -2194,19 +2221,97 @@ def verify_flow_output(step: dict[str, Any], stdout: str) -> dict[str, Any]:
             "prepare",
             "set",
             "make",
+            "get",
+            "take",
+            "grab",
+            "put",
+            "eat",
+            "heat",
+            "warm",
+            "have",
+            "gather",
+            "assemble",
+            "serve",
+            "answer",
+            "send",
+            "write",
+            "check",
+            "skim",
+            "scan",
+            "look at",
+            "go to",
+            "go into",
+            "head to",
+            "head into",
+            "walk to",
+            "walk into",
+            "step into",
+            "move to",
+            "move into",
+            "bring",
+            "collect",
+            "fetch",
+            "return to",
+            "clear",
+            "stand at",
+            "sit at",
+            "sit down at",
+            "reheat",
+            "microwave",
+            "cut",
+            "slice",
+            "pour",
         )
-        action_line = next(
-            (
-                (index, line)
-                for index, line in enumerate(lines[:2])
-                if any(term in line.casefold() for term in task_terms)
-                and re.search(
-                    r"\b(" + "|".join(action_verbs) + r")\b",
-                    line.casefold(),
-                )
-            ),
-            None,
+        # An imperative opening provides an action; a mention, promise, or
+        # quoted example of one does not. This is a bounded smoke heuristic.
+        opening_prefix = (
+            r"^(?:[-*] |\d+[.)] )?"
+            r"(?:(?:now|first|next(?: step)?)(?:\s+[—–-]\s+" + task_label + r")?[,:]?\s+"
+            r"|" + task_label + r"[,:]\s+)?"
         )
+        action_opening = re.compile(
+            opening_prefix + r"(?P<verb>"
+            + "|".join(re.escape(verb).replace(r"\ ", r"\s+") for verb in action_verbs)
+            + r")\b\s+(?P<object>.*)$"
+        )
+        non_action_introduction = re.compile(
+            opening_prefix + r"(?:"
+            r"(?:for (?:example|instance)|example|sample|quoted?|quotation)\b"
+            r"|(?:here(?: is|['’]s)|this is) (?:an? )?(?:example|sample|quote|quotation)\b"
+            r"|i(?: (?:will|promise|plan|intend)|['’]ll)\b|[\"“'‘])"
+        )
+        non_object_words = {
+            "a", "an", "the", "about", "above", "across", "after", "against", "ahead",
+            "along", "alongside", "amid", "among", "apart", "around", "as", "aside", "at",
+            "away", "back", "before", "behind", "below", "beneath", "beside", "between",
+            "beyond", "by", "down", "during", "for", "forth", "forward", "from", "in",
+            "inside", "into", "near", "of", "off", "on", "onto", "out", "outside", "over",
+            "past", "round", "through", "throughout", "till", "to", "together", "toward",
+            "towards", "under", "underneath", "until", "up", "upon", "via", "with",
+            "within", "without",
+        }
+        action_line = None
+        for index, line in enumerate(lines[:2]):
+            if re.match(r"^(?:`{3,}|~{3,})", line):
+                break
+            opening = re.sub(r"\*\*([^*]+)\*\*", r"\1", line.casefold())
+            if non_action_introduction.search(opening):
+                break
+            action = action_opening.search(opening)
+            if action is None:
+                continue
+            object_words = re.findall(r"[^\W_]+", action["object"])
+            # Particles and articles alone do not supply a concrete object.
+            if not any(word not in non_object_words for word in object_words):
+                continue
+            if action["verb"] == "have" and (
+                object_words[0] not in {"a", "an", "some", "your", "the", "this", "that", "these", "those", "lunch"}
+                or re.match(r"^[^.!?]*\?", action["object"])
+            ):
+                continue
+            if re.search(r"\b" + task_label + r"\b", opening):
+                action_line = (index, line)
+                break
         if action_line is None:
             raise SmokeError(
                 "ADHD continuation opening did not include one concrete action from the neutral task"
@@ -2223,14 +2328,22 @@ def verify_flow_output(step: dict[str, Any], stdout: str) -> dict[str, Any]:
         normalized_prompt = " ".join(step["prompt"].split()).casefold()
         if normalized_output == normalized_prompt:
             raise SmokeError("normal-mode step merely echoed the opt-out prompt")
-        acknowledged = (
-            "normal mode" in normalized_output
-            or (
-                "adhd" in normalized_output
-                and any(word in normalized_output for word in ("off", "disabled", "stopped"))
-            )
+        acknowledged = re.search(
+            r"(?:^|[.!?;]\s+)(?:(?:done|understood)\s*[,:—–-]\s*)?"
+            r"(?:normal mode(?:(?: is)?(?: now)? (?:on|enabled|active))?"
+            r"|(?:i(?:'ve| have) )?switched to normal mode"
+            r"|adhd(?: mode)?(?: is)?(?: now)? (?:off|disabled|stopped))"
+            r"(?=[.!?;](?:\s|$)|$)",
+            normalized_output,
         )
-        if len(lines) > 2 or not acknowledged:
+        contradicted = re.search(
+            r"\b(?:normal mode(?: is)?(?: now)? "
+            r"(?:unavailable|off|disabled|not (?:on|enabled|active))"
+            r"|adhd(?: mode)?(?: is| remains)?(?: still| now)? "
+            r"(?:on|enabled|active|not (?:off|disabled|stopped)))\b",
+            normalized_output,
+        )
+        if len(lines) > 2 or not acknowledged or contradicted:
             raise SmokeError("normal-mode step did not give a bounded state acknowledgement")
         return {"check": check, "state_acknowledged": True, "line_count": len(lines)}
     raise SmokeError(f"flow step {step['id']} has unknown behavior check {check!r}")
@@ -2367,15 +2480,15 @@ def run_adhd_flow(
         )
         if prepared["host"] != host_identity:
             raise SmokeError("Maka routing Host changed before ADHD flow")
-        evidence: dict[str, Any] | None = None
-        for index, step in enumerate(flow["steps"]):
+
+        def run_step(step: dict[str, Any], continued: bool) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
             attest_routing_host(
                 binary, cwd, session_id, runtime_db, environment, host_identity, private_host,
             )
             with open_runtime_db(runtime_db) as connection:
                 verify_routing_session(connection, session_id, cwd)
             completed, model_route = run_command(
-                binary, step, cwd, runtime_db, continued=step["continue"],
+                binary, step, cwd, runtime_db, continued=continued,
                 resume_session_id=session_id, environment=environment,
                 tier_file=tier_file, host_identity=host_identity,
                 enforce_session_profile=True,
@@ -2384,6 +2497,27 @@ def run_adhd_flow(
             attest_routing_host(
                 binary, cwd, session_id, runtime_db, environment, host_identity, private_host,
             )
+            with open_runtime_db(runtime_db) as connection:
+                verify_routing_session(connection, session_id, cwd)
+            return completed, model_route
+
+        bootstrap_completed, bootstrap_model_route = run_step(SESSION_BOOTSTRAP, False)
+        with open_runtime_db(runtime_db) as connection:
+            observed = locate_session(connection, cwd, started_ms)
+            if observed != session_id:
+                raise SmokeError("ADHD bootstrap opened a new session")
+            verify_session_target(connection, session_id)
+            verify_model_session(bootstrap_model_route, session_id)
+            verify_provider_attempts(connection, session_id, bootstrap_model_route)
+            verify_no_natural_skill_events(
+                connection, session_id, "bootstrap", bootstrap_model_route["host_tool_evidence"],
+            )
+            bootstrap_evidence = verify_explicit_event(
+                connection, session_id, "using-superpowers", bootstrap_model_route["host_tool_evidence"],
+            )
+        evidence: dict[str, Any] | None = None
+        for index, step in enumerate(flow["steps"]):
+            completed, model_route = run_step(step, True)
             with open_runtime_db(runtime_db) as connection:
                 observed = locate_session(connection, cwd, started_ms)
                 verify_routing_session(connection, observed, cwd)
@@ -2413,7 +2547,7 @@ def run_adhd_flow(
             results.append(
                 {
                     "id": step["id"],
-                    "continued": step["continue"],
+                    "continued": True,
                     "prompt_hash": digest(step["prompt"].encode()),
                     "stdout_hash": digest(completed.stdout.encode()),
                     "stdout_bytes": len(completed.stdout.encode()),
@@ -2431,6 +2565,14 @@ def run_adhd_flow(
         "host_preflight": prepared,
         "skill": flow["skill"],
         "session_id": session_id,
+        "session_bootstrap": {
+            "prompt_hash": digest(SESSION_BOOTSTRAP["prompt"].encode()),
+            "stdout_hash": digest(bootstrap_completed.stdout.encode()),
+            "stdout_bytes": len(bootstrap_completed.stdout.encode()),
+            "stderr_hash": digest(bootstrap_completed.stderr.encode()),
+            "event_evidence": bootstrap_evidence,
+            "model_route": bootstrap_model_route,
+        },
         "activation_evidence": evidence,
         "steps": results,
         "status": "pass",
@@ -2660,7 +2802,7 @@ def main(
             total = (
                 len(manifest["cases"])
                 + bootstrap_turns
-                + sum(len(flow["steps"]) for flow in manifest["flows"])
+                + sum(1 + len(flow["steps"]) for flow in manifest["flows"])
                 + sum(len(scenario["steps"]) for scenario in manifest["matrix"])
             )
             print(f"Maka {version}; {total} bounded turns; --yolo absent")
@@ -2669,6 +2811,7 @@ def main(
                     print(f"PLAN {case['id']}-bootstrap explicit using-superpowers")
                 print(f"PLAN {case['id']} {case['route']} {case['skill']}")
             for flow in manifest["flows"]:
+                print(f"PLAN {flow['id']}-bootstrap explicit using-superpowers")
                 print(f"PLAN {flow['id']} multi-turn {flow['skill']}")
             for scenario in manifest["matrix"]:
                 print(f"PLAN {scenario['id']} validation-only matrix")

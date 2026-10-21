@@ -45,6 +45,30 @@ not create a local per-skill receipt for one vendored member.
    but may discover installed guidance. The comparison measures explicit guidance under
    native configuration, not target absence or causal skill uplift. Credential values
    are not copied into workspaces or capture metadata.
+
+   For a campaign whose task inputs and references are complete inline, the optional
+   `--agy-answer-only` flag sets `cfg.agy.answer_only`. It disables AGY slash/skill
+   expansion on initial and resumed commands and installs a private condition-local
+   wildcard `PreToolUse` denial hook. Other providers and ordinary `run_text` callers
+   retain native reads. AGY judges inherit this option through their provider config.
+   The control is qualified only for AGY 1.4.2; another version requires a new bounded
+   native canary. The observed canary proved `read_file` denial under native permission
+   bypass, while the hook config covers all model tools. Each captured turn must join
+   every attempted tool to its hook denial and native error; zero-call turns report no
+   observed hook execution. Policy, hook config, handler, hashes, and native evidence
+   remain in the capture. This is not OS confinement, and it is unsuitable for evals
+   that need tools or disk-only inputs.
+   A full campaign first captures every provider, case and condition. Only after the
+   final executor returns does it publish derived `answer.md`, `grading.json`, or
+   comparison outputs, or call a judge. The pair API `run_eval_for_provider` similarly
+   waits for both conditions; the full runner uses `capture_eval_for_provider` for all
+   pairs before calling `evaluate_captured_pair`. Judge retries evaluate retained
+   answers and never replay executors. A nonempty iteration directory is rejected so
+   retained historical answers cannot enter a fresh campaign's publication boundary.
+   Raw private native captures and prompts still exist during execution and need a
+   separate audit; this boundary does not provide OS confinement or prove the absence
+   of peer reads. Provider failures remain executor errors, while judge retry failures
+   retain their own classification and raw attempts and stop receipt issuance.
 4. **Grade.** An LLM judge scores each output against the assertions → `grading.json`
    (`text`/`passed`/`evidence`).
 5. **Blind A/B.** The two outputs are shuffled into A/B (with a hidden key) and the judge
@@ -370,3 +394,50 @@ skill: it researches upstream drift since the target's last substantive commit, 
 applies user-approved fixes, scaffolds a missing eval set per this doc, and iterates
 `make eval` to a fresh receipt before committing. Its per-target decisions live in
 `docs/tuneups/log/`.
+
+
+## Khenrix quality patch and grading acceptance
+
+The ten core quality cases remain the full panel. Focused factory and authorized-auth
+holdouts are separate in `evals/khenrix-quality/fixtures/holdouts.json`. Semantic judge
+calibration pairs in `fixtures/calibration.json` include equivalent benchmark mechanics
+and actual omissions, prior authorization versus unnecessary reapproval, and proven
+unused factories versus legitimate public extension contracts. Grade each supplied
+answer against its supplied task/assertions and compare the boolean list to
+`expected_passed`; these are semantic controls, not phrase-matching tests. Both files
+are bound through the criteria fixture tree. Loading them performs no model calls:
+
+```bash
+mise exec -- python3 scripts/eval_patch_acceptance.py --calibration
+mise exec -- python3 scripts/eval_patch_acceptance.py --holdouts
+```
+
+Run executable acceptance on a retained raw shared-helper answer, without editing it:
+
+```bash
+mise exec -- python3 scripts/eval_patch_acceptance.py /private/evidence/answer.md
+```
+
+The root-usable API is `eval_patch_acceptance.check_answer(answer, fixture=FIXTURE)`.
+It extracts exactly one fenced diff without changing hunk counts or repairing content,
+rejects extra/escaping paths and ambiguous diffs, and requires the exact test command
+and answer-only disclosure requested by this case. It copies the clean fixture, checks
+and applies the same patch with strict `git apply --check` and `git apply`, preserves
+original test statements in order while allowing added assertions and extended setup,
+runs the complete stdlib unittest suite and replays the untouched original suite against
+patched production, then restores the original implementation with the expanded tests
+to prove RED. It restores the patched
+implementation and independently checks Unicode, trimming, invalid inputs and retained
+lookup/order contracts at the helper and both public callers. JSON output retains
+commands, return codes and output for original, apply, retained-original, RED, GREEN
+and contract phases;
+exit 0 means accepted. A failed patch is rejected as emitted, never repaired for scoring.
+The semantic grader still checks the requested test coverage and smallest shared-owner
+fix; executable acceptance does not establish every qualitative criterion.
+
+Subprocesses use a minimal environment and a 20-second per-command timeout in disposable
+copied directories. Candidate Python executes locally: these controls are not an OS
+sandbox, and acceptance does not authorize unreviewed code, network operations, service
+writes or messages. Historical answer/grade artifacts and the original eight-case
+151/162 result remain immutable; corrected future criteria do not retroactively change
+those scores.

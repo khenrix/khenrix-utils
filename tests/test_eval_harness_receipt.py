@@ -781,7 +781,10 @@ def test_two_malformed_judge_replies_stop_campaign_without_receipt(
 
     assert eval_harness.run(args) == 1
     assert not (eval_dir / "receipt.json").exists()
-    assert not (eval_dir / "workspace" / "iteration-1" / "eval-1-second").exists()
+    second = eval_dir / "workspace" / "iteration-1" / "eval-1-second"
+    assert second.is_dir()  # all executors were retained before the judge failed
+    assert not list(second.rglob("answer.md"))
+    assert not list(second.rglob("grading.json"))
     assert len(malformed_artifacts) == 2
     assert malformed_artifacts[0].parent != malformed_artifacts[1].parent
     assert [path.read_text() for path in malformed_artifacts] == ["{malformed", "{malformed"]
@@ -858,7 +861,11 @@ def test_exhausted_judge_retains_completed_and_inflight_partial_benchmark(
     monkeypatch.setattr(eval_harness, "run_text", turn)
     assert eval_harness.run(args) == 1
     iteration = eval_dir / "workspace/iteration-1"
-    assert not (iteration / "eval-2-case-2").exists()
+    pending = iteration / "eval-2-case-2"
+    assert pending.is_dir()
+    assert len(list(pending.rglob("*.stdout.attempt-1.txt"))) == 2
+    assert not list(pending.rglob("answer.md"))
+    assert not list(pending.rglob("grading.json"))
     assert not (eval_dir / "receipt.json").exists()
     benchmark = json.loads((iteration / "benchmark.json").read_text())
     assert len(benchmark["runs"]) == 4
@@ -1049,3 +1056,62 @@ def test_xdist_controller_counts_preserve_strict_receipt_acceptance(summary, acc
     measured = eval_harness._pytest_counts(summary)
     assert measured == counts
     assert eval_harness._counts_are_evidence(measured) is accepted
+
+
+def test_campaign_captures_every_executor_before_any_derived_publication(tmp_path, monkeypatch):
+    """Moving grade/publication back inside capture exposes peer outputs mid-campaign."""
+    skill = "chunk-map"
+    directory = tmp_path / "evals" / skill
+    directory.mkdir(parents=True)
+    cases = [{"id": index, "name": f"case{index}", "prompt": "Answer",
+              "assertions": ["correct"]} for index in range(2)]
+    (directory / "evals.json").write_text(json.dumps({"evals": cases}))
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("# Synthetic guidance\n")
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", directory.parent)
+    monkeypatch.setattr(eval_harness, "skill_source_dir", lambda *_: source)
+    monkeypatch.setattr(eval_harness.eval_runtime, "resolve_mode_config", lambda _: {
+        "claude": {"model": "test"}, "codex": {"model": "test"}})
+    monkeypatch.setattr(eval_harness.eval_runtime, "effective_timeout", lambda _: 30)
+    monkeypatch.setattr(eval_harness, "observe_cli_version", lambda _: b"fixture 1.0")
+    monkeypatch.setattr(eval_harness, "_write_receipt", lambda *a, **kw: None)
+    captures = []
+    judges = []
+
+    def turn(provider, prompt, cfg, workdir, **kwargs):
+        judge = workdir.name.startswith(("judge", "compare-"))
+        if judge:
+            assert len(captures) == 8
+            judges.append(workdir)
+            text = ('{"winner":"A"}' if workdir.name.startswith("compare-") else
+                    '{"expectations":[{"passed":true}]}')
+        else:
+            assert not judges
+            assert not list(directory.rglob("answer.md"))
+            assert not list(directory.rglob("grading.json"))
+            assert not list(directory.rglob("comparison.*.json"))
+            captures.append((provider, workdir))
+            text = "raw answer"
+        workdir.mkdir(parents=True, exist_ok=True)
+        (workdir / "raw.txt").write_text(text)
+        return text, {"valid": True, "reason": "ok", "duration_sec": 0.01}
+
+    monkeypatch.setattr(eval_harness, "run_text", turn)
+    args = eval_harness.parse_args(["--skill", skill, "--providers", "claude,codex",
+                                   "--iteration", "1"])
+    assert eval_harness.run(args) == 0
+    assert len(captures) == len(set(captures)) == 8
+    assert len(list(directory.rglob("answer.md"))) == 8
+    assert len(list(directory.rglob("grading.json"))) == 8
+    assert len(list(directory.rglob("comparison.*.json"))) == 4
+
+
+def test_campaign_refuses_reused_iteration_before_executor(measured_campaign, monkeypatch):
+    args, directory, calls, artifacts = measured_campaign
+    prior = directory / "workspace/iteration-1/peer/answer.md"
+    prior.parent.mkdir(parents=True)
+    prior.write_text("retained historical answer")
+    assert eval_harness.run(args) == 1
+    assert calls == []
+    assert prior.read_text() == "retained historical answer"

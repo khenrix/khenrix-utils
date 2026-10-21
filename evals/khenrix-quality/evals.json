@@ -1,6 +1,6 @@
 {
   "skill_name": "khenrix-quality",
-  "notes": "Nine cases cover inherited behavior without conflating artifact owners: persistent ADHD shape and its exceptions, prose edit/detect separation, lite/full/ultra code scoping, focused code workflows with reuse and dynamic-reference safety, comment-only debt, and published benchmark provenance and handoffs. Prompts are answer-only and require no repository mutation.",
+  "notes": "Ten core answer-only cases cover the inherited quality contracts. Criteria-bound focused holdouts and semantic grading calibration live separately under fixtures/ to keep the full panel bounded. The shared-helper case emits an unchanged patch for independent strict execution, and explicitly discloses that its author did not execute tests. Historical iterations and their scores remain unchanged.",
   "evals": [
     {
       "id": "adhd-action-shape",
@@ -18,12 +18,12 @@
     {
       "id": "adhd-exceptions",
       "name": "ADHD shape yields to explanation, safety, diagnosis, ambiguity, options, and harness rules",
-      "prompt": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent. Use one labeled section per scenario and at most 650 words total.",
+      "prompt": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now; an active harness rule explicitly requires a separate final confirmation immediately before destructive production operations. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. I already authorized read-only local request-log and outgoing-header inspection, and those artifacts are available to you; continue that diagnosis without another approval request. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent. Use one labeled section per scenario and at most 650 words total.",
       "files": [],
       "assertions": [
         "Scenario A gives a complete explanation with resumable headings instead of compressing away needed detail",
-        "Scenario B pauses for the required confirmation before the irreversible production action",
-        "Scenario C stops proposing another fix, names the most likely wrong assumption, and asks one diagnostic question",
+        "Scenario B pauses for the separate final confirmation required by the explicitly supplied harness rule before the irreversible production action; it does not imply that ADHD mode itself creates an approval rule",
+        "Scenario C stops repeating fixes and independently inspects the available authorized request logs or actual outgoing header to test the unverified auth-header assumption; preserves prior authorization rather than requesting approval again or handing those inspections to the user",
         "Scenario D asks one short clarifying question rather than guessing the target environment",
         "Scenario E presents two to four ranked options with short tradeoffs and puts the recommendation first",
         "Scenario F follows the harness-required announcement while keeping the rest of the response action-first"
@@ -32,25 +32,26 @@
     {
       "id": "prose-detect-no-rewrite",
       "name": "Detect mode reports evidence without rewriting or guessing authorship",
-      "prompt": "Use the AI-pattern detect mode on this paragraph. Do not edit it: 'Let's dive in. This isn't just a dashboard; it's a transformative command center that marks a pivotal moment, showcasing our unwavering commitment to excellence. That is the real win.'",
+      "prompt": "Answer inline from the supplied paragraphs; do not run tools. Use the AI-pattern detect mode on each labeled paragraph. Do not edit either one. A) 'Let’s dive in. This isn’t just a dashboard; it’s a transformative command center that marks a pivotal moment, showcasing our unwavering commitment to excellence. That is the real win.' B) 'The importer processed 1,842 files in 11 minutes. We do not yet know why the last batch took longer. Run `mise run import:test` before changing `retry_count=3`.'",
       "files": [],
       "assertions": [
-        "Names concrete patterns from the skill, including the staged opener, not-X-but-Y contrast, inflated significance or sales language, shallow -ing rider, and one-line closer",
-        "Quotes the matching source line or phrase and gives a short proposed fix for each finding",
-        "Does not provide a rewritten paragraph",
-        "Does not score the text or claim that AI wrote it"
+        "For A, identifies the staged opener, not-X-but-Y contrast, inflated significance or sales language, shallow -ing rider, and dramatic closer using phrases actually present",
+        "Quotes the matching source phrase and gives a short proposed fix for each finding without providing a rewritten paragraph",
+        "For B, reports no matching AI-writing pattern; does not label genuine uncertainty, the command, or the configuration span as defects",
+        "Does not give an AI-likelihood score, infer authorship, or claim either paragraph proves who wrote it"
       ]
     },
     {
       "id": "prose-edit-preserves-voice-and-facts",
       "name": "Edit mode removes slop without flattening a distinctive voice",
-      "prompt": "Minimally edit this draft with the prose-edit mode. Keep my odd aside and all facts: 'Honestly, here's the thing: our tiny Malmö team shipped the importer on 14 September. It processed 1,842 files in 11 minutes, marking a pivotal moment in our ever-evolving data journey. I still call it the toaster because it overheated during the first demo (the name stuck, sorry). That is the real win.'",
+      "prompt": "Answer inline from the supplied drafts; do not run tools. Minimally edit draft A with prose-edit mode. Preserve all facts, my odd aside, technical spans, exact quoted text, URL, and genuine uncertainty. Then check draft B independently and leave it unchanged if no pattern needs removal. A) 'Honestly, here’s the thing: our tiny Malmö team shipped the importer on 14 September. It processed 1,842 files in 11 minutes, marking a pivotal moment in our ever-evolving data journey. I still call it the toaster because it overheated during the first demo (the name stuck, sorry). Run `mise run import:test` with `retry_count=3`; the API returned \"Do not retry this request.\" See https://example.com/import?mode=dry-run&limit=20. We may have hit a rate limit, but we have not confirmed that. That is the real win.' B) 'The importer rejected two empty IDs. The log does not identify the source file. I will check the next batch tomorrow.'",
       "files": [],
       "assertions": [
-        "Returns the complete edited draft followed by a short What changed section",
-        "Preserves Malmö, 14 September, 1,842 files, 11 minutes, the overheating first demo, and the nickname toaster without inventing any fact",
-        "Keeps the writer's informal aside and self-aware voice rather than making every sentence uniformly corporate",
-        "Removes the staged opener, inflated journey language, and repeated dramatic closer with only the minimum effective restructuring"
+        "Returns the complete edited A and complete unchanged B, with a short What changed report explaining the edits",
+        "Preserves Malmö, 14 September, 1,842 files, 11 minutes, the overheating first demo, nickname toaster, and the informal parenthetical without adding facts",
+        "Preserves `mise run import:test`, `retry_count=3`, the exact quote \"Do not retry this request.\", and the complete URL https://example.com/import?mode=dry-run&limit=20 verbatim",
+        "Keeps the rate-limit hypothesis explicitly unconfirmed rather than converting it to a fact or removing the useful uncertainty",
+        "Removes A’s staged opener, inflated journey language, and dramatic closer with minimal restructuring while reproducing B unchanged"
       ]
     },
     {
@@ -68,15 +69,18 @@
     },
     {
       "id": "focused-code-workflows",
-      "name": "Review, audit, debt, and help retain their distinct contracts",
-      "prompt": "Answer four labeled mini-requests from the supplied evidence only; do not run tools or edit files. REVIEW: src/send.ts adds SenderFactory at line 20 with one implementation and one caller, while keeping a payload validator; tests/send.test.ts has two malformed-payload cases. AUDIT: pkg/ext.py has a real Provider interface with two production implementations at line 12, while pkg/build.py has an unused BuilderFactory at line 44 and no callers; removing it would delete about 38 lines and one dependency. DEBT: api.py:8 '# TODO remove v1 after 2027-01-01'; cache.py:19 '# HACK global lock'; ui.ts:7 '// keep menu open while focused'. HELP: explain every khenrix-quality mode and the deep-humanization handoff.",
+      "name": "Explicit review and audit cover engineering risks while narrow simplification and other workflows keep scope",
+      "prompt": "Answer the labeled mini-requests from the supplied evidence only; do not run tools or edit files. REVIEW (use khenrix-quality review): src/search.py:20 interpolates the untrusted q parameter directly into SQL: execute(f\"SELECT * FROM orders WHERE name = '{q}'\"). src/send.ts:40 retries a payment after any timeout with no idempotency key; the payment API can commit before timing out. src/send.ts:60 adds SenderFactory with one implementation and one caller while preserving a payload validator. tests/send.test.ts has two malformed-payload tests, but no timeout/retry test. AUDIT (use khenrix-quality audit): pkg/export.py:15 loads every row into one list before streaming CSV; 2 million rows average 2 KB each, the worker memory limit is 512 MB, and no large-export test exists. pkg/ext.py:12 has a Provider interface with two production implementations. pkg/build.py:44 has an unused BuilderFactory with no callers; removing it deletes about 38 lines and one dependency. NARROW: now independently review that same supplied evidence only for safe simplifications and YAGNI; do not expand this request into other review categories. DEBT: api.py:8 '# TODO remove v1 after 2027-01-01'; cache.py:19 '# HACK global lock'; ui.ts:7 '// keep menu open while focused'. HELP: explain every khenrix-quality mode and the deep-humanization handoff. Give findings as ranked numbered items, each with path/line, concrete trigger, impact, smallest fix, and consequence if left unchanged; attach a missing test to its related issue rather than duplicating it.",
       "files": [],
       "assertions": [
-        "REVIEW reports a numbered actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix",
-        "AUDIT reports the unused BuilderFactory as a numbered finding in audit format with its supported 38-line and one-dependency estimate while preserving the two-implementation Provider extension point",
-        "AUDIT remains a read-only simplification supplement rather than becoming a general correctness, security, or architecture review",
-        "DEBT reports exactly the TODO and HACK, uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and gives totals of two markers and one missing trigger",
-        "HELP covers ADHD, prose edit, prose detect, lite/full/ultra code, review, audit, debt, benchmark, and help; names full as the shared code default; and routes deep humanization or voice matching to khenrix-writing"
+        "REVIEW prioritizes the untrusted SQL interpolation and duplicate-payment retry risks with numbered path/line findings grounded in the supplied triggers; does not present SenderFactory removal as established from implementation/caller counts alone",
+        "REVIEW proposes parameterized SQL and an idempotency-safe payment retry, ties a timeout-after-commit test to the payment issue, and preserves the payload validator and malformed-payload tests",
+        "AUDIT identifies the export memory problem at the expected 2-million-row load against the 512-MB limit, proposes bounded iteration/chunking and a large-export test, and does not call the existing materialization streaming-safe",
+        "AUDIT reports the unused BuilderFactory and only its supported 38-line/one-dependency reduction while preserving the Provider interface used by two implementations",
+        "Each review/audit finding states a concrete trigger, impact, minimal fix, and consequence of leaving it; prioritizes correctness/security/load risks and applies no changes",
+        "NARROW respects the explicit simplification-only scope: reports the supported unused BuilderFactory simplification, treats SenderFactory removal as unproven from implementation/caller counts alone or conditional on further contract/extension-point evidence, and preserves useful validators/tests/Provider without adding SQL, payment-correctness, or export-performance findings to that independent response",
+        "DEBT reports exactly TODO and HACK, uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and totals two markers with one missing trigger",
+        "HELP covers ADHD, prose edit/detect, lite/full/ultra code, review, audit, debt, benchmark, and help; names full as shared code default and routes deep humanization/voice matching to khenrix-writing"
       ]
     },
     {
@@ -88,31 +92,50 @@
         "Reports a numbered reuse finding for src/new_customer.py:18 and names src/id_utils.py:7 as the replacement rather than adding another helper or parser",
         "Preserves existing validation and useful tests; any line reduction estimate is tied to the supplied 13-line duplicate rather than an invented repository total",
         "Does not recommend deleting send_invoice merely because it lacks a static caller: the supplied configuration, dynamic invocation, and test prove a real use",
-        "Remains read-only and does not turn the audit into an implementation, blanket cleanup, or general correctness review"
+        "Remains read-only, reports only risks established by the complete snapshot, and does not invent correctness/security defects or turn the audit into implementation or blanket cleanup"
       ]
     },
     {
       "id": "debt-comment-syntax-and-generated-exclusions",
-      "name": "Debt inventory excludes string examples and generated markers",
-      "prompt": "Use khenrix-quality debt mode on this tracked snapshot only. Do not run tools or edit files. src/api.py:8 is '# TODO remove v1 after 2027-01-01'. src/cache.c:19 is '/* HACK global lock */'. src/sample.py:6 assigns note = '# TODO placeholder'; this is a string literal, not a comment. docs/example.md:4 says 'ponytail: is the convention used in source comments'. build/generated.py:2 is '# FIXME generated mapping' and the file header explicitly marks generated output. src/ui.ts:7 is '// keep menu open while focused'. Report the real debt markers, their triggers, and totals.",
+      "name": "Debt counts tracked source comments and custom markers without string or generated false positives",
+      "prompt": "Use khenrix-quality debt mode on this tracked snapshot only; include our custom marker DEFER:. Do not run tools or edit files. Tracked source: src/api.py:8 '# TODO remove v1 after 2027-01-01'; src/cache.c:19 '/* HACK global lock */'; src/compat.py:12 '# FIXME remove shim when API v3 is deployed'; src/worker.ts:21 '// shortcut: replace linear scan when active jobs exceed 500'; src/send.py:30 '# ponytail: inline queue until the second consumer ships'; src/store.rs:16 '// DEFER: add cache eviction'; src/sample.py:6 assigns note = '# TODO placeholder' (string literal); src/help.py:3 contains a triple-quoted module docstring with 'FIXME example only'. Tracked docs/example.md:4 says 'ponytail: and DEFER: are conventions used in source comments'. Tracked build/generated.py:2 '# FIXME generated mapping' has an explicit generated-output header. Untracked scratch.py:1 '# TODO local experiment'. Tracked src/ui.ts:7 '// keep menu open while focused'. Tracked src/palette.ts:9 '// shortcut: Ctrl+K opens the palette' describes a keyboard binding, not deferred work. Report the real markers, their triggers, and exact totals.",
       "files": [],
       "assertions": [
-        "Reports only the actual TODO in src/api.py:8 and block-comment HACK in src/cache.c:19",
-        "Uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and gives exactly two markers with one missing trigger",
-        "Excludes the marker-like string literal, prose example, generated build output, and ordinary UI comment without inventing additional debt",
-        "Does not write a ledger, change source, or infer debt from ordinary implementation choices"
+        "Reports exactly six tracked non-generated source-comment markers: TODO api.py:8, HACK cache.c:19, FIXME compat.py:12, shortcut worker.ts:21, ponytail send.py:30, and custom DEFER store.rs:16",
+        "Preserves explicit triggers: 2027-01-01 for TODO, API v3 deployment for FIXME, active jobs exceeding 500 for shortcut, second consumer shipping for ponytail; marks HACK and DEFER no-trigger",
+        "Gives totals of six markers and two missing triggers with no invented dates, owners, or deadlines",
+        "Excludes string literal, docstring, documentation example, generated output, untracked scratch file, ordinary UI comment, and the keyboard-shortcut comment that describes no deferral",
+        "Does not write a ledger, edit source, or infer additional debt from implementation choices"
       ]
     },
     {
       "id": "benchmark-provenance-and-handoffs",
       "name": "Benchmark mode states its method and routes local evidence correctly",
-      "prompt": "Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "prompt": "Answer inline using the supplied skill information and request; do not run tools. Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
       "files": [],
       "assertions": [
-        "Reports the published 12-task means: 54% less source code, 22% fewer tokens, 20% lower cost, and 27% faster",
-        "Reports 100% safe in the published safety tier and says the benchmark used real coding-agent sessions against seeded repositories",
-        "Labels the numbers as upstream benchmark results, refuses repository-specific savings without a measured baseline, and does not present the older 80-94% single-shot range as the default",
-        "Routes counted explicit debt markers to debt mode and repository-specific simplification findings to audit mode"
+        "Reports the upstream 2026-10-07 Ponytail 5 results versus no skill: 53% less source code, 45% fewer output tokens, 26% lower cost, and 41% faster; does not mislabel output tokens as all tokens",
+        "States 39 tasks, five runs per task per arm, and geometric means of per-task median ratios (equivalent mathematical explanations count); names the three arms Ponytail 5, Ponytail v4.13, and no skill rather than describing a two-arm or 12-task study",
+        "Limits hidden-check correctness claims to 18 tasks: Ponytail 5 87/90 versus no skill 86/90; clearly says each of the three arms passed 30/30 on six security tasks, with no universal-safety or improvement claim. Equivalent wording such as six security tasks times five runs all passed in every condition counts; omitting the security subset or the all-three scope does not",
+        "Explains the mechanics: executors had no Bash execution, and the harness executed delivered code/tests afterward. Equivalent descriptions of these two facts count without requiring the labels code-generation or autonomous debugging; merely claiming tests passed without the execution boundary does not",
+        "Labels the figures as upstream results, not measured khenrix-quality adaptation results or repository-specific savings; declines an unmeasured repository estimate and does not substitute older headline figures",
+        "Routes explicit comment-marker counts to debt mode and repository-specific engineering/simplification findings to audit mode"
+      ]
+    },
+    {
+      "id": "shared-helper-unicode-fix",
+      "name": "Full code fixes Unicode IDs once at the shared owner and proves both caller paths",
+      "prompt": "Use khenrix-quality full code mode. The complete Python source snapshot is in {fixture_dir}/shared-id. Our IDs must now be Unicode case-insensitive: a stored ID \"strasse\" must match incoming \" Straße \", while retaining the existing whitespace and invalid-input behavior. Update the supplied source and tests with the smallest complete fix. Answer inline without tools: give one unified diff with paths relative to shared-id, followed by the exact command to run the tests from that directory. Preserve every original test and add runnable regression tests for Unicode plus retained trim, non-string rejection and blank rejection at the helper and both public caller paths. Fence the single diff with ```diff; use only the existing four Python files. Give the exact command `python3 -m unittest -v` from shared-id and the explicit disclosure `Verification: not executed (answer-only).` Do not add any execution or passing-test claim. Treat shared-id paths as logical source labels, not local file links.",
+      "files": [
+        "shared-id"
+      ],
+      "assertions": [
+        "The patch changes the existing canonical_id helper to standard-library Unicode case folding while retaining whitespace trimming and TypeError/ValueError validation; it adds no duplicate canonicalizer, dependency, factory, or configurable normalization framework",
+        "Both find_customer and import_order still use the shared helper and now resolve Straße to existing strasse IDs; does not fix only one caller or duplicate case-folding at callers",
+        "Provides syntactically runnable regression tests exercising canonical_id, find_customer, and import_order with Straße/strasse, with real result assertions that fail against the original lower-based helper",
+        "Preserves existing ASCII and invalid-input tests and includes coverage that trimming, non-string rejection, and blank rejection still hold for the shared helper and public caller paths",
+        "Emits an applicable unified diff and an exact stdlib unittest command from the fixture root; accurately says tests were not executed rather than reporting invented passing output",
+        "Changes only the shared normalization behavior and necessary tests; preserves lookup failures, order payload validation, returned data shapes, and public signatures"
       ]
     }
   ]

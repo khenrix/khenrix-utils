@@ -4,12 +4,13 @@ description: >-
   Use when the user names khenrix-quality or the former natural-language modes
   i-have-adhd, no-ai-slop, ponytail, ponytail-review, ponytail-audit,
   ponytail-debt, ponytail-gain, or ponytail-help. Handles ADHD mode, AI-slop
-  edit/detect, lite/full/ultra code minimalism, simplification review or audit,
-  debt markers, benchmark figures, and help. Do not use for general
-  correctness/security reviews or deep humanization.
+  edit/detect, lite/full/ultra code minimalism, explicitly requested quality
+  reviews or audits, debt markers, benchmark figures, and help. Generic
+  correctness/security reviews stay with their specialist workflow; deep
+  humanization belongs to khenrix-writing.
 license: MIT
 metadata:
-  version: "1.0.0"
+  version: "1.1.1"
 ---
 
 # Khenrix quality
@@ -34,25 +35,33 @@ rewrite passes over the same artifact.
 
 ## Mode contracts
 
-- `adhd`: lead with the answer or smallest action, number bounded steps, keep visible
-  state, and leave exactly one next action only while work remains. When activation and
-  a task arrive together, put the first task action before the mode confirmation; then
+- `adhd`: lead with the answer or smallest action, number bounded steps in visible groups
+  of at most five, keep visible
+  state, and leave one next action only when reader input is needed; otherwise continue
+  authorized work. When activation and a task arrive together, put the first task action
+  before the mode confirmation; then
   state that the mode remains active until the user disables it.
 - `prose-edit`: make the minimum effective edit, preserve the writer's voice and every
-  supported fact, remove every named pattern found in the draft, return the complete
-  edited draft, then a short `What changed` section. A repeated dramatic closer is a
+  supported fact, remove empty or staged uses of the named patterns, return the complete
+  edited draft inline unless the user names a file to update, then a short `What changed`
+  section. Work directly from the supplied draft. A repeated dramatic closer is a
   pattern to delete, not voice to preserve.
 - `prose-detect`: name each observed pattern, quote its line, and state a short fix. Do
   not rewrite, score the text, or guess who or what wrote it.
-- `code`: apply the selected minimalism level after reading the relevant flow. Preserve
-  required validation, security, accessibility, observability, error handling, requested
+- `code`: apply the selected minimalism level after reading the relevant flow and mapping
+  affected callers, tests, fixtures, configuration, and exports. Preserve required
+  validation, security, accessibility, observability, error handling, requested
   behavior, repository conventions, and the tests needed to prove the change. When a
   shared behavior fix changes a boundary or its callers, add or update runnable coverage
   that asserts the corrected shared behavior; rerunning existing tests alone is enough
   only when they already prove that exact fix.
-- `code-workflow`: review and audit modes are read-only unless the user requests fixes;
-  debt mode reports only explicit markers; benchmark mode labels published figures as
-  upstream results rather than project-specific measurements.
+- `code-workflow`: explicitly requested quality review and audit cover correctness,
+  security, expected load, missing tests, performance, and safe simplification. Honor
+  narrower requests and remain read-only unless fixes are requested. In each review,
+  audit, or simplification-only response, base deletion findings on use and contract
+  evidence; implementation/caller counts alone call for inspection or a conditional
+  recommendation. Debt reports only explicit comment markers; benchmark figures are
+  upstream results, not measurements of this adaptation or the user's repository.
 
 ## Composition and precedence
 

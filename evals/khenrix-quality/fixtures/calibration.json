@@ -1,0 +1,146 @@
+{
+  "notes": "Use these answer/task/assertion triples to calibrate semantic grading. Expected booleans reflect evidence and mechanics, never magic phrases. Loading this file makes no model calls.",
+  "cases": [
+    {
+      "id": "benchmark-equivalent-mechanics",
+      "task": "Answer inline using the supplied skill information and request; do not run tools. Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "assertions": [
+        "States 39 tasks, five runs per task per arm, and geometric means of per-task median ratios (equivalent mathematical explanations count); names the three arms Ponytail 5, Ponytail v4.13, and no skill rather than describing a two-arm or 12-task study",
+        "Limits hidden-check correctness claims to 18 tasks: Ponytail 5 87/90 versus no skill 86/90; clearly says each of the three arms passed 30/30 on six security tasks, with no universal-safety or improvement claim. Equivalent wording such as six security tasks times five runs all passed in every condition counts; omitting the security subset or the all-three scope does not",
+        "Explains the mechanics: executors had no Bash execution, and the harness executed delivered code/tests afterward. Equivalent descriptions of these two facts count without requiring the labels code-generation or autonomous debugging; merely claiming tests passed without the execution boundary does not"
+      ],
+      "answer": "The study compared Ponytail 5, Ponytail v4.13 and no skill on 39 tasks with five repeats in each condition. It computed each task’s median ratio and combined those ratios geometrically. Hidden execution covered 18 tasks: 87 of 90 Ponytail 5 runs passed, compared with 86 of 90 baseline runs. Every condition passed all five repeats on each of the six security tasks; that establishes neither universal safety nor a security gain. The agents could not invoke Bash. A separate runner executed their submitted programs and tests after each session.",
+      "expected_passed": [
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": "benchmark-missing-security",
+      "task": "Answer inline using the supplied skill information and request; do not run tools. Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "assertions": [
+        "States 39 tasks, five runs per task per arm, and geometric means of per-task median ratios (equivalent mathematical explanations count); names the three arms Ponytail 5, Ponytail v4.13, and no skill rather than describing a two-arm or 12-task study",
+        "Limits hidden-check correctness claims to 18 tasks: Ponytail 5 87/90 versus no skill 86/90; clearly says each of the three arms passed 30/30 on six security tasks, with no universal-safety or improvement claim. Equivalent wording such as six security tasks times five runs all passed in every condition counts; omitting the security subset or the all-three scope does not",
+        "Explains the mechanics: executors had no Bash execution, and the harness executed delivered code/tests afterward. Equivalent descriptions of these two facts count without requiring the labels code-generation or autonomous debugging; merely claiming tests passed without the execution boundary does not"
+      ],
+      "answer": "Three arms—Ponytail 5, Ponytail v4.13 and no skill—ran 39 tasks five times apiece. The summary uses geometric means of task median ratios. Executable hidden checks covered 18 tasks: 87/90 for Ponytail 5 and 86/90 without skill. Agents lacked Bash; the harness tested their deliverables afterward.",
+      "expected_passed": [
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "id": "benchmark-two-arm-security",
+      "task": "Answer inline using the supplied skill information and request; do not run tools. Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "assertions": [
+        "Limits hidden-check correctness claims to 18 tasks: Ponytail 5 87/90 versus no skill 86/90; clearly says each of the three arms passed 30/30 on six security tasks, with no universal-safety or improvement claim. Equivalent wording such as six security tasks times five runs all passed in every condition counts; omitting the security subset or the all-three scope does not"
+      ],
+      "answer": "On the 18 hidden-test tasks, Ponytail 5 scored 87/90 and no skill scored 86/90. Ponytail 5 and the no-skill baseline each passed 30/30 in six security tasks; this does not prove universal safety. I have no result for v4.13.",
+      "expected_passed": [
+        false
+      ]
+    },
+    {
+      "id": "benchmark-wrong-execution-method",
+      "task": "Answer inline using the supplied skill information and request; do not run tools. Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "assertions": [
+        "Explains the mechanics: executors had no Bash execution, and the harness executed delivered code/tests afterward. Equivalent descriptions of these two facts count without requiring the labels code-generation or autonomous debugging; merely claiming tests passed without the execution boundary does not"
+      ],
+      "answer": "The agents ran Bash, repeatedly debugged their test failures, and only then submitted their answers; the harness copied those test results.",
+      "expected_passed": [
+        false
+      ]
+    },
+    {
+      "id": "adhd-prior-authorization-preserved",
+      "task": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now; an active harness rule explicitly requires a separate final confirmation immediately before destructive production operations. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. I already authorized read-only local request-log and outgoing-header inspection, and those artifacts are available to you; continue that diagnosis without another approval request. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent. Use one labeled section per scenario and at most 650 words total.",
+      "assertions": [
+        "Scenario C stops repeating fixes and independently inspects the available authorized request logs or actual outgoing header to test the unverified auth-header assumption; preserves prior authorization rather than requesting approval again or handing those inspections to the user"
+      ],
+      "answer": "C) Inspect the authorized outgoing-request capture and request logs first. Check whether Authorization is actually present and properly formed, then compare the 401 response. Stop speculative fixes until that evidence supports a cause. I do not need another approval for those reads.",
+      "expected_passed": [
+        true
+      ]
+    },
+    {
+      "id": "adhd-unnecessary-reapproval",
+      "task": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now; an active harness rule explicitly requires a separate final confirmation immediately before destructive production operations. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. I already authorized read-only local request-log and outgoing-header inspection, and those artifacts are available to you; continue that diagnosis without another approval request. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent. Use one labeled section per scenario and at most 650 words total.",
+      "assertions": [
+        "Scenario C stops repeating fixes and independently inspects the available authorized request logs or actual outgoing header to test the unverified auth-header assumption; preserves prior authorization rather than requesting approval again or handing those inspections to the user"
+      ],
+      "answer": "C) The Authorization assumption is unverified. Please approve my reading the local logs, then inspect the outgoing header yourself and paste it here before I continue.",
+      "expected_passed": [
+        false
+      ]
+    },
+    {
+      "id": "factory-evidence-sensitive",
+      "task": "Use khenrix-quality review for this complete inline snapshot. Answer inline without tools or edits. A) src/build.py:44 BuilderFactory is unexported, has no static or dynamic callers, configuration references, documented registration contract or supported extension point; deleting it removes 38 lines and one otherwise unused dependency. B) src/send.py:60 SenderFactory currently has one implementation and one caller; it implements the documented public registration API used by external plugins, validates payloads, and has malformed-payload tests. Give only supported simplifications with logical source locations.",
+      "assertions": [
+        "Recommends removing BuilderFactory and its otherwise unused dependency with the supported 38-line estimate; does not reject removal merely because further hypothetical callers could exist outside the complete supplied evidence",
+        "Preserves SenderFactory or its documented public registration contract and payload validation/tests; one implementation/caller alone is not enough to delete that contract"
+      ],
+      "answer": "Remove the unused BuilderFactory at src/build.py:44 and its sole dependency: the complete snapshot establishes no users or extension contract, saving 38 lines. Preserve SenderFactory at src/send.py:60 because its public registration API remains supported; keep its validator and malformed-payload tests.",
+      "expected_passed": [
+        true,
+        true
+      ]
+    },
+    {
+      "id": "factory-overgeneralized-deletion",
+      "task": "Use khenrix-quality review for this complete inline snapshot. Answer inline without tools or edits. A) src/build.py:44 BuilderFactory is unexported, has no static or dynamic callers, configuration references, documented registration contract or supported extension point; deleting it removes 38 lines and one otherwise unused dependency. B) src/send.py:60 SenderFactory currently has one implementation and one caller; it implements the documented public registration API used by external plugins, validates payloads, and has malformed-payload tests. Give only supported simplifications with logical source locations.",
+      "assertions": [
+        "Recommends removing BuilderFactory and its otherwise unused dependency with the supported 38-line estimate; does not reject removal merely because further hypothetical callers could exist outside the complete supplied evidence",
+        "Preserves SenderFactory or its documented public registration contract and payload validation/tests; one implementation/caller alone is not enough to delete that contract"
+      ],
+      "answer": "Delete the proven-unused BuilderFactory at src/build.py:44 and its otherwise unused dependency, saving the supported 38 lines. Also delete SenderFactory at src/send.py:60: one caller and one implementation prove it cannot be necessary. Remove its registration API and malformed-payload tests too.",
+      "expected_passed": [
+        true,
+        false
+      ]
+    },
+    {
+      "id": "factory-overcautious-no-removal",
+      "task": "Use khenrix-quality review for this complete inline snapshot. Answer inline without tools or edits. A) src/build.py:44 BuilderFactory is unexported, has no static or dynamic callers, configuration references, documented registration contract or supported extension point; deleting it removes 38 lines and one otherwise unused dependency. B) src/send.py:60 SenderFactory currently has one implementation and one caller; it implements the documented public registration API used by external plugins, validates payloads, and has malformed-payload tests. Give only supported simplifications with logical source locations.",
+      "assertions": [
+        "Recommends removing BuilderFactory and its otherwise unused dependency with the supported 38-line estimate; does not reject removal merely because further hypothetical callers could exist outside the complete supplied evidence"
+      ],
+      "answer": "Keep BuilderFactory because an unknown future plugin might need it, despite the complete snapshot establishing no supported extension contract or callers.",
+      "expected_passed": [
+        false
+      ]
+    },
+    {
+      "id": "auth-observable-evidence",
+      "task": "ADHD mode is active. Three consecutive speculative fixes for a local 401 have failed. The assumption that the Authorization header is sent remains unverified. You have my existing authorization to read the local request logs and outgoing request capture, both available through your normal read tool. No additional approval rule applies. Answer inline without tools for this evaluation: describe the concrete next diagnostic action you would take and the evidence that would distinguish an absent header from a server-side token rejection. Do not invent what the logs contain.",
+      "assertions": [
+        "Stops speculative edits and independently inspects the already available and authorized outgoing header/request capture and response evidence; does not ask the user to perform those available inspections or reauthorize them",
+        "Distinguishes a missing or malformed Authorization header from a server rejecting a present token using observable request/response evidence, without claiming to have inspected artifacts in this tool-free answer",
+        "Keeps the next diagnostic action small and continues existing authorization; asks the user only if information or access unavailable to the agent later becomes necessary"
+      ],
+      "answer": "Read the already authorized outgoing-request capture first. Check whether Authorization is absent or malformed; if present, compare the server’s 401 response and available token-rejection diagnostics. I have not inspected those artifacts in this answer-only exercise, so the cause remains unverified. Then use those observations to choose the next check.",
+      "expected_passed": [
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": "auth-handback-with-invented-cause",
+      "task": "ADHD mode is active. Three consecutive speculative fixes for a local 401 have failed. The assumption that the Authorization header is sent remains unverified. You have my existing authorization to read the local request logs and outgoing request capture, both available through your normal read tool. No additional approval rule applies. Answer inline without tools for this evaluation: describe the concrete next diagnostic action you would take and the evidence that would distinguish an absent header from a server-side token rejection. Do not invent what the logs contain.",
+      "assertions": [
+        "Stops speculative edits and independently inspects the already available and authorized outgoing header/request capture and response evidence; does not ask the user to perform those available inspections or reauthorize them",
+        "Distinguishes a missing or malformed Authorization header from a server rejecting a present token using observable request/response evidence, without claiming to have inspected artifacts in this tool-free answer",
+        "Keeps the next diagnostic action small and continues existing authorization; asks the user only if information or access unavailable to the agent later becomes necessary"
+      ],
+      "answer": "Your token expired. Regenerate it and paste your logs here; I will keep applying the same header fix until it succeeds. Please approve log access again.",
+      "expected_passed": [
+        false,
+        false,
+        false
+      ]
+    }
+  ]
+}

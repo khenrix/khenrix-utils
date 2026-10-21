@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "skill": "khenrix-upgrade",
-  "source_hash": "734464bbeb638080746b90e049455278547b94844b8f389d44068538b631ddea",
+  "source_hash": "d98648fdb62055181af9476d0b7d433ad514d185e48e65108a0226367f3ada27",
   "eval_set_hash": "2c952517f60275808a86cf57379bc45c2f176ed277f75d1be32c1928e77e06af",
   "providers": [
     "claude",
@@ -9,25 +9,25 @@
     "agy"
   ],
   "mode": "normal",
-  "judge": "codex",
-  "delta_pass_rate": 0.6796,
+  "judge": "claude",
+  "delta_pass_rate": 0.6315,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.6722,
+      "delta": 0.5778,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.7389,
+      "delta": 0.8222,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.6278,
+      "delta": 0.4944,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
@@ -37,10 +37,10 @@
     "claude": "claude-opus-5-5",
     "codex": "gpt-6.1-sol",
     "agy": "gemini-3.8-flash-high",
-    "judge": "gpt-6.1-sol"
+    "judge": "claude-opus-5-5"
   },
   "judge_config": {
-    "model": "gpt-6.1-sol",
+    "model": "claude-opus-5-5",
     "thinking": "xhigh"
   },
   "source_manifest": [
@@ -50,7 +50,7 @@
     ],
     [
       "house-style.md",
-      "6a1da322b7d78481b8ab97271d003255ba62bde12035da791100b891513f80c2"
+      "5abc65e9ada2442b07930a5c0796acda7695c2d6897e807d5df440033fbfdf70"
     ],
     [
       "overlays/claude.md",
@@ -538,7 +538,7 @@
     ],
     [
       "tests/test_fanout_collaboration.py",
-      "1c7df80b125f1c308ae1a4b532293c393ddc950b2af672714d4fd9dbe987d509"
+      "63fce4237717cf568122e226104bc1081e05044c9c4b581cafd73fc79ec48300"
     ],
     [
       "tests/test_fanout_compiler.py",
@@ -662,7 +662,7 @@
     ],
     [
       "tests/test_maka_skill_smoke.py",
-      "1d0c2077c4f3aca3c2d232ad7241833b70fb9a75c37ded0395e9ceb3546b2abc"
+      "3e26dcc028e8f1e87e6e850117548eff917f5888844901856532d0d8719825af"
     ],
     [
       "tests/test_memory_exchange.py",
@@ -769,983 +769,983 @@
   ],
   "selected_input_hash": "fe471af20dd2cc0a782616dc0194d8323f3c7b30c9bfd0fb6e4d0f1bc8788b66",
   "criteria_hash": "f90f76bab3b66e8da3fae3b483da6d800f296d95c627e5ee78f26cf10fb72ab5",
-  "instrument_hash": "3133207cc4cbfc7c7a505242d555b59ad0541b8ddc37c1911a2e0d1ac7d1a20f",
+  "instrument_hash": "c360ea3d242d39a95ddf59f2a1eea9839d11e43653c934c5ff65f691ccc918c8",
   "raw_refs": [
     {
-      "path": "workspace/iteration-5/benchmark.json",
-      "sha256": "8e2e8c746a63557805e0e2b06af3a8ce7a6d0ca1ccf0bc5c6bcfb50663c597a4"
+      "path": "workspace/iteration-1/benchmark.json",
+      "sha256": "49d54fbd756d9cf5a7ce2e140a13a9ecfe2496468e32a13fe756d825a069dc0d"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.result.txt",
-      "sha256": "d5c0fcfe0a4c316d08b52e7f914460ea4adae151bb5d373a66495505a53c5479"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/agy.result.txt",
+      "sha256": "399f4003aaf5d82c77b9e5a174b9ecf6ae6ecd238a7c30511950c3f220d298a5"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "2b2f404c4d3cf8420dc1c29f0bf88b1fff0e2969a32997058e89b08d82ca92b7"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "52f3a998797e04acae1a903ef9d950dd50f87b8eb09cd6e3d830f0e0fc7ba27b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/answer.md",
-      "sha256": "d5c0fcfe0a4c316d08b52e7f914460ea4adae151bb5d373a66495505a53c5479"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/answer.md",
+      "sha256": "399f4003aaf5d82c77b9e5a174b9ecf6ae6ecd238a7c30511950c3f220d298a5"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/grading.json",
-      "sha256": "1cc19dd75504cd81c626d6b0b97ccbc6b7689fe28033142cc0febf5055d21875"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/grading.json",
+      "sha256": "e56a903aa4835289f26c5eef62face047b40260f01d18bf70e8f4656e0d2d9ea"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.result.txt",
-      "sha256": "7ad5012ba00f0a9b454fcbdd955b8cd26b2c9caeceadd31feb143d0997814aad"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/judge/claude.result.txt",
+      "sha256": "dafa0631fc36888e08a6eb2f55ee8589b81dcd481bced522939b62d8c6befda9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "f2fbb54ad002b0a0b0980c3a6b6dd0caa5ac0487e9ddd56400333f6d93beb4ae"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "3b921f191dce266771cd9cc02708c2bdf1d5d6942f125d9d2339ba484e12a1a7"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/judge/manifest.json",
-      "sha256": "be49879ccf0b25bfe29f55ec92eef6d85acd678582abe9d678c8064841e3f659"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/judge/manifest.json",
+      "sha256": "e2267e4dd25a91a56593b68627d6d4c55de64329bae34f3b6eea9860720399c2"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/manifest.json",
-      "sha256": "d71bfda8ffbb5da9c41e48df79955f7befaed587de15361f3c114e53891bd169"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/manifest.json",
+      "sha256": "6c817572cf4d9c824d85b2c8662a3aa3cb36f422232d74a2a2abe6a82c081c5e"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__with_skill/prompt.txt",
-      "sha256": "2fdb29542c98d5f5f1925d42c7ebaefa4977a8b57e2daf08c5fd84834bb55e61"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__with_skill/prompt.txt",
+      "sha256": "2c88ff136aad19a1f4ead610ef358dd6f6fe09bd8801f34daab127b02f611919"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.result.txt",
-      "sha256": "cb0c3af707c8759f7979becaaeea79937e3e51491899cd369d81aa65816f26fb"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/agy.result.txt",
+      "sha256": "f732635230a9bed8648386281b7fce46a469571017f071fe7cda0fb6da1fd8ed"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "08815fbf86ad9b98954e087c3f8a2b94b84c999a9da5edcb9df9a0bd4d566570"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "95a7489cb9f5a44a29d51f4136279d9cff5d85be9058bc2f4217de8770f43936"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/answer.md",
-      "sha256": "cb0c3af707c8759f7979becaaeea79937e3e51491899cd369d81aa65816f26fb"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/answer.md",
+      "sha256": "f732635230a9bed8648386281b7fce46a469571017f071fe7cda0fb6da1fd8ed"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/grading.json",
-      "sha256": "9c199985a47a4e081e2777e25d94d27878e2e0f0a378c58612546e9331c11d60"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/grading.json",
+      "sha256": "c43dc80eff92ff83820ef8899cf706e19ec8437d747624bb9e24167df572a907"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.result.txt",
-      "sha256": "e07d0a234752a1d1791ba6218230c61e0f80f226eb3c033bf0e88a131b19a4c9"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/judge/claude.result.txt",
+      "sha256": "9dcd095b906ecf72762d397b0a6f972fd58fba26987a1d232b001a5ae646c70b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "df42b073543f0242241938f3a1fe860cab26bcae9def15318ad7eca028292ac9"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "d02a076c789af7f314d5e29aacfc3f7aa18738662cef8048e9cdc8c70314c451"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/judge/manifest.json",
-      "sha256": "f63ce51748f50667694d9fa80c31760717a40b42aea769b950269012e86b98bc"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/judge/manifest.json",
+      "sha256": "81beaa9f3e7d3077381e3f4256aa5bc3a2708c15ab455d7ddcce2cb15d81826a"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/manifest.json",
-      "sha256": "5ec2f591ce8ca6edc84541f2481805b36397af51628a5e66414cfccf39d64114"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/manifest.json",
+      "sha256": "a8b92abf92042b305aea5d3a0343c734be92fdcfcabd8bff5c0bb84e8a553a5b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/agy__without_skill/prompt.txt",
       "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/answer.md",
-      "sha256": "d765197cb6581e8333c4ce75098d521ddc0abb40c4e89800f56e243e53af5c91"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/answer.md",
+      "sha256": "a9ad2e77b38aaa15cb03c7d40c6dd474a381376b1606b36c173384aa989a9136"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.result.txt",
-      "sha256": "d765197cb6581e8333c4ce75098d521ddc0abb40c4e89800f56e243e53af5c91"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/claude.result.txt",
+      "sha256": "a9ad2e77b38aaa15cb03c7d40c6dd474a381376b1606b36c173384aa989a9136"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "95e91e52decfc1e33c10e4179b9ad267e17fcf4c56616432a47b962a9d3aa4ef"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "93d00ef5b26a4e6c9451331020f78b14e1172f7e17ed317589a1a6b6b6390a27"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/grading.json",
-      "sha256": "3556529040a0498a23663bad342bd24b7fb092b21ecc898e437c51ba1a3fdd15"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/grading.json",
+      "sha256": "c99b7f12a39c5fdece1f5f3d3e055033cb69c995c739178888775a97ddce5a64"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.result.txt",
-      "sha256": "9859320c3d80902f1305adb661690392af7aef7e4dad2fc6f54f2ba689a24416"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/judge/claude.result.txt",
+      "sha256": "12b0990052c09586a40cd76f384de75f83bd4c7a23f1d01041e10e76d7808e5e"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "e920a7a296e742a6d94fedcf49affbaa19c7e404b984fa70404ce0aa6fd50088"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "81e36d0a809fd1e033fd5df0474bcae5b4c0b3d208fa0801c7399f4f701905e2"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/judge/manifest.json",
-      "sha256": "c367f57feed4b0bc72fde004793f6a0799f7adcc67cec50e6e97dd5cce740432"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/judge/manifest.json",
+      "sha256": "41c76bbc64f328dd684bfef77a9cc633e8e83e5aab561f4aa8580b0602710b01"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/manifest.json",
-      "sha256": "e9846eb1a855a3393c51f73b7bd96046badf225cb50c334dfb6cfb826f5b6b45"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/manifest.json",
+      "sha256": "116a376517ed1dc9ade35eb190ccea77634c4aebe77ed9747b7f24dcadc96013"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__with_skill/prompt.txt",
-      "sha256": "711e1fb56bb48280ef8bd8526f0e3b795d26ff11002e5877dfdb53b01dd7d6cd"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__with_skill/prompt.txt",
+      "sha256": "b16f7d9de6c469d10fe7bd1da8323ea71fa349b7c81101f6a7b7d726836a9bb3"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/answer.md",
-      "sha256": "b04a2bfc9b77f972209234d5e9b7cc35f99b738a643b04542496d5ac7e76eb27"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/answer.md",
+      "sha256": "474a4b46c7221a5215a15a75af30cbc0b62a30d5457d89cbc3b4aa009ea8b6f9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.result.txt",
-      "sha256": "b04a2bfc9b77f972209234d5e9b7cc35f99b738a643b04542496d5ac7e76eb27"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/claude.result.txt",
+      "sha256": "474a4b46c7221a5215a15a75af30cbc0b62a30d5457d89cbc3b4aa009ea8b6f9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "97da0dc66e6b9ebcb9fa0c2b729e1182df3ef6c341b7809fa59844f1058da21d"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "839270047f15b14f08a2d35377bb287d3ecd7f1582185ac506248816d064039b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/grading.json",
-      "sha256": "790296102e56840b019f4d908462fcc23c557506ad3386c9eb63b95436bdae9d"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/grading.json",
+      "sha256": "7753c5f8ea8e9e9769b8313bba6ad902dba48f24288281be9b61bdb3f17fa52c"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.result.txt",
-      "sha256": "bd0ef2ea9680357b733741e32f878b2463f978fe3eea09bcd475d56ce862d370"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/judge/claude.result.txt",
+      "sha256": "791763b39edbd6f4e6e966f82d378bb180096674606dec97783f06700ce04037"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "6f937c9adcf53b16266f0b3ef08f97fe9480c3250b05c85de03cb94c363c1ad3"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6fa8289dfc792925488c6f2cfe8aa4d6184415412d5b96a0958c5743c13c6f87"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/judge/manifest.json",
-      "sha256": "c65865df30f2efe7e469a0b4d85a1e66b513ba2767ab68eb4a70601287cbefb1"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/judge/manifest.json",
+      "sha256": "0b23282aa818142e100f44dc7ceb3aa0271ff91ac69bc1087b646d4d5bc33667"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/manifest.json",
-      "sha256": "5fae80c9203e58f64a81a3f26aaf67295521751d611728ada17f2dc9fd6807d5"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/manifest.json",
+      "sha256": "8ad89c9a84de8939369c934771e17c8fcaede8b74c4818ca930418e250941f5a"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/claude__without_skill/prompt.txt",
       "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/answer.md",
-      "sha256": "30f44c2b06c4d852a637ed0ae4196f9405a19ebb88dbbbbf76f6140bee40d8b1"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/answer.md",
+      "sha256": "208ec76f7b872e5f95f663fe538890c4da20ed67b34bb6b46430a8d5f02d591b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.result.txt",
-      "sha256": "30f44c2b06c4d852a637ed0ae4196f9405a19ebb88dbbbbf76f6140bee40d8b1"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/codex.result.txt",
+      "sha256": "208ec76f7b872e5f95f663fe538890c4da20ed67b34bb6b46430a8d5f02d591b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e9642134243bf8c4f54ec693215a0d39e95bcf9399c1df73ccadd85844cc04bb"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "e84a39a35fac7a6985cedce9a026eaab0d8f2bd7d78f50324c4725a8a99f7adb"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/grading.json",
+      "sha256": "70abc9638da1c8e8ec1a8f0c5b29479cb1201d60fb954d4914720a7c0dcf47e4"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/judge/claude.result.txt",
+      "sha256": "62e458b12982d1d31f655ce59bf0837dc2b9f577fbda45fab7789b17181078c5"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "212da36a89456491a93e90e855738992847de15f3724a690d18a13c1ec9182a3"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9652b9caa2a252777676877ffadfb9fabc2638488c2779001f4ab631ddf08874"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/grading.json",
-      "sha256": "24c697fe54250120ab9bdb0029af9e70e750df65cc977937a1a561046cb98205"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/judge/manifest.json",
+      "sha256": "c23d8e881bc963b570ef09264377da90ed34157daa075c4e112629f7229bf00d"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.result.txt",
-      "sha256": "584cdeaf22792f669013d4ea5eb815459f5b1cbdf0df9ad4ae4c62cc9d481863"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/manifest.json",
+      "sha256": "03ff8a5fdbf54bb607f9d9454b9b0fd48851d719cd9a0e411d133b7afea74be9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__with_skill/prompt.txt",
+      "sha256": "52118b1860165a3df55439212614284c1e82f43b7f98ab0800067fe8e88619ba"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/answer.md",
+      "sha256": "4da115ca7edc065887228e1f3e5e1b7ae6d8024980cfbf2f261a1558940dbc5f"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/codex.result.txt",
+      "sha256": "4da115ca7edc065887228e1f3e5e1b7ae6d8024980cfbf2f261a1558940dbc5f"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "b77503f38941257ee656ded5d9898d98dd2221c1a80dc0fb0d660e423ae842ec"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "4358db5b135516fd2ec18773b0ecccb2c9bbbac1daa7734478c9fca09725c706"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/grading.json",
+      "sha256": "162310a77973c8947d6a849792352bc0ca429477fac46af379e63d78b10f6416"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/judge/claude.result.txt",
+      "sha256": "73cc622b84bcd8c30d9edf797cedec579155a128b04052badfceb68cebc6cf39"
+    },
+    {
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "8730b48e48013f669570bc9ff3f9d35aac999f718d91ed94a841ceb5f2b82fd9"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "2b6171676f5aca88c0db384e9e58bb13df976163116e17f847295763f07e6ded"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/judge/manifest.json",
-      "sha256": "6818e2f249b608b7129c48f556e8b5c478a5a6cba1301bbc1ada2fa49f50c958"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/judge/manifest.json",
+      "sha256": "c898786ff4b5143a4c53a304e7a784b7b8a8acf756b29c7580f2452bf28d5f14"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/manifest.json",
-      "sha256": "3a520f3ec470d6b1cad6618f2060ebac62d0a2cf31d6debc80e224be05cf98d6"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/manifest.json",
+      "sha256": "48a506f8c2978660dcaf371bcdafa50694b672c92186ae442fd438d64317179b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__with_skill/prompt.txt",
-      "sha256": "61817d8688a2c20f22a2343728629c654a4654bf2672336f92a09104210bc2e1"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/answer.md",
-      "sha256": "8129c6ffe6dea9d97d35c8a17cb6afc0d8c4b3d6d45aa58d1f91a0669eb3c970"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.result.txt",
-      "sha256": "8129c6ffe6dea9d97d35c8a17cb6afc0d8c4b3d6d45aa58d1f91a0669eb3c970"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.stderr.attempt-1.txt",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "983fdfec23989e1ac9e3fe2708f05981d2483c1cd3db2e18fa5d4a1b545dea07"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/grading.json",
-      "sha256": "c36803aff8de046efb5166ff5671a1cbfd88318af957bded79e2ea3f84fbb922"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.result.txt",
-      "sha256": "743f83ec07c51b3a09ea4ad4dfa1729475c45e9da62d5cacb2c23121687bc852"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.stderr.attempt-1.txt",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "5d00609c36d9a39a5ed24968ab7a72b27abb2dfa0d54451693a915a7e16b4857"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/judge/manifest.json",
-      "sha256": "96d638cd7d461684f57d2f604747db3c5d5b2073da2a49617e012946a8294b3c"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/manifest.json",
-      "sha256": "0c5171d3b1592894b45aee7e8e7d09ff5721b623d5648ce0b940f6dfaae2316b"
-    },
-    {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/codex__without_skill/prompt.txt",
       "sha256": "e28486ca9b47f431e90872502d1c33527a9859b1b85439b1b7656982e07d332b"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.result.txt",
-      "sha256": "dd4a58604070911a984a3efe01fca0df7a66edff76adce6d2309424ce13d812a"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-agy/claude.result.txt",
+      "sha256": "54a4cd9ec9d77270773927cfe2b3648b7110cbed91cbd4e54f4e1292de65e816"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/codex.stdout.attempt-1.txt",
-      "sha256": "58445734696bedcd6de5ca1ef93d54e6ec02b7c325136ff4e68bd85d98c8d416"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "21eecf8cbff428944c4a7a7010e3b46e58b2110e31d83d5415f7e07e2677a2b9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-agy/manifest.json",
-      "sha256": "ac48ad0dc0249cadfe789a8b71ddfbee83d97b9de62979d7286a22cf538e9cb9"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-agy/manifest.json",
+      "sha256": "18d502a423b354a26e70db2e30b1599017b1405656fbd5526f19d44c040253de"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.result.txt",
-      "sha256": "95430e266811c0293083d2f21e97431a719d82425d0e402df4dd3ad9075210a8"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-claude/claude.result.txt",
+      "sha256": "346e4e4d9af5c0cf8b307a46467f692ee987853ed33b8b066815ee216ec48d71"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/codex.stdout.attempt-1.txt",
-      "sha256": "9d248d1f7417b64e8f2bbcf027ed00ccf5ec3f223f53d63fef81812de36f7f1b"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "e83e20f77ab1d529032cd4f4a7a6343c0b9a7378290d8e85bb622588f3683d7a"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-claude/manifest.json",
-      "sha256": "d5717473810f4c356677aecb36918944f5e3244dc7264e0162ba3af9c3c76754"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-claude/manifest.json",
+      "sha256": "7a625aff3831458b86cd2795f6ae65741fcb563e06d9959d3b2001506e82d73e"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.result.txt",
-      "sha256": "04400c509c7cff0d31b05771bbc0fc2d2eeadaeae5f8d60720f06668c8e99686"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-codex/claude.result.txt",
+      "sha256": "f30738bacab9c768f9647873c7df99d1882ade952a46da469af9cfe211c643fe"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/codex.stdout.attempt-1.txt",
-      "sha256": "1aea20ddcdbb0da6688d7c49909caf64aff58e0f07f98836548e1cc73c3e2b10"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "220ae622507ce763a5f8d6011d488bfea0e098b7610de517be3b0370832e4a03"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/compare-codex/manifest.json",
-      "sha256": "e6389aa37a5c7a7ec6570e65c620919fccb3b329a05f8ed3c2c32b52a8d327d9"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/compare-codex/manifest.json",
+      "sha256": "c9b5664f2f857df5b029be58c3dd7a2f64d362db859df16bc8bbdf045e8b02a3"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.agy.json",
-      "sha256": "8fdc762071f25fdda740df84cc7b7392940881085d84e420809fc4baf8b58b91"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/comparison.agy.json",
+      "sha256": "390f53ebf51fb047fa9b25fe9c9af067d93274200586ab6e8b24d3277b0ec2a9"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.claude.json",
-      "sha256": "000f3647c059a787debb0e7dbb21d7f2b8630e783bed369576a703a1008d1008"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/comparison.claude.json",
+      "sha256": "2fe87fc131c1e9cba1f82fdb24c2f0249243a91e731599b9841f1afef1c55010"
     },
     {
-      "path": "workspace/iteration-5/eval-0-modernize-claude-setup/comparison.codex.json",
-      "sha256": "417da1c6e986f6d612678447edda37f0a8bf98e23ae1e3b69bcc1308837f06e8"
+      "path": "workspace/iteration-1/eval-0-modernize-claude-setup/comparison.codex.json",
+      "sha256": "d7b438aee9f3172d9ab6407788f4ebb8aacc93dda1b9a9bdd29b9b2153d417ef"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.result.txt",
-      "sha256": "667847a7a2079a209e28c1e152db201cac8b116547302bcc5375e5e4e826c0c7"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.result.txt",
+      "sha256": "d17a72426b2df9e80c1e6e12244e444d398efc32211608bea47a76a2be2512c0"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "eb717e54dfab7a9c8401b8906d7d6e4af8c4691dee91132c5760844571026a68"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "7df937f9c4c337b77a788f2ef32619a21e18311343d1e1bec9dfb971277abba1"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/answer.md",
-      "sha256": "667847a7a2079a209e28c1e152db201cac8b116547302bcc5375e5e4e826c0c7"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/answer.md",
+      "sha256": "d17a72426b2df9e80c1e6e12244e444d398efc32211608bea47a76a2be2512c0"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/grading.json",
-      "sha256": "e76b72c44a8a2700b1b9aa6b254f970d3bc7cc15823e2390fcb1fa346ba0b76e"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/grading.json",
+      "sha256": "36e5e4509ba2cb2192badfa887a6b3992211eeb6d1acf48d3102ed25965b01cd"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.result.txt",
-      "sha256": "4ef4234f2f5a5f70dad6f4025f7659583e299ef088660e9a0731cb6f7b3fb9e3"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/claude.result.txt",
+      "sha256": "616938cf1120c7bcd51c65e3c5fc63cf86c25256f5262dcc4aba5ccf674620ea"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "4b9ec05be40b0704330d531096607431b4a5644b615e642a00ae64e49e295293"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4d50f8eaecfc308131df0acd05c86335d4b5a6a90f44baba433f49c2c195a0a6"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/manifest.json",
-      "sha256": "d809d1d414cf9f8b205a28c62e2ab68e81ae99f397ffc7b675516c73a128019c"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/judge/manifest.json",
+      "sha256": "27da4d8207fe7c15fe4a75d8e77e397968dee475e45a86195508fed3c655cb8a"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/manifest.json",
-      "sha256": "4cac53e2b1764eb037cbe172d05256aabe8f601e064e7a61cfe04f3508dfb119"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/manifest.json",
+      "sha256": "38cb0840f3780aed74e9f0a01bec1cbf9348edd2991584c4feca3f967c27d224"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__with_skill/prompt.txt",
-      "sha256": "feffc136e96606f2c716f18d088909b57e99ca5a944b69a6a48a2663cd067ba8"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__with_skill/prompt.txt",
+      "sha256": "9e3733b66eda64fb628701620067a1edbb93b672b81043af83e7ce61cb262228"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.result.txt",
-      "sha256": "299dfcf725594f6b7923ae7b9e4cb35cad6d1de6a876b7f76a0829bf6ebb5f71"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.result.txt",
+      "sha256": "c163187629db63475b94a6a9f832a1cef20b36c4d94e66ed462af33b58cad299"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "74538a073c6f8efbbecd42d3aa7282f4359571ac8758eb6b0b19f4f5c178c979"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "6b7fc37b8e56748bd00f862d3d72ff3833c95eff6d743fa3d04c8c05565e5dd1"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/answer.md",
-      "sha256": "299dfcf725594f6b7923ae7b9e4cb35cad6d1de6a876b7f76a0829bf6ebb5f71"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/answer.md",
+      "sha256": "c163187629db63475b94a6a9f832a1cef20b36c4d94e66ed462af33b58cad299"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/grading.json",
-      "sha256": "25845ef6b1e40e9092a1bf308617a6d3d0f4fbdb6205a898dea386273f55126a"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/grading.json",
+      "sha256": "a92ce2a9fc3fcf6526e738a580bb573648352485d54053e287e4477560e165bf"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.result.txt",
-      "sha256": "e991c500752a08e19cdcae8cff63a06d32417cdcdea1c393fb6da271f929c098"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/claude.result.txt",
+      "sha256": "d4da29ae4f8bd2cb40d7c8ddffaca83bf609c512bee911684b489f86f7efd5dd"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "18ef6ccc7884ffdd4d5fcb038e62481e880ffae6c432e1ea5e0d136f71c9b366"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "124116fc18ebea96dcdbc28bf46c7858508b40b8c720578c7cf3bd5a0c18d3b6"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/manifest.json",
-      "sha256": "1d090f455917a17d2c74646cace1849dd02c5984bfb42448ec720e4e763a0336"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/judge/manifest.json",
+      "sha256": "c9c33244f493f54cb0866fc9dc1a72c6a1835d5e17a78e70eb813c9bcb476ea0"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/manifest.json",
-      "sha256": "fbd48269aece1fccc55aa5ec9853e48cec4f902cf8a3bdbadec4c3d4bae64f62"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/manifest.json",
+      "sha256": "6b7d62ff6664c54ff79c668333fea7ff2510f654e1d9812a6fe5a76a1aee1407"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/agy__without_skill/prompt.txt",
       "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/answer.md",
-      "sha256": "0ece5f66ddc7813df9411b6db4a38a94fd56a162e2f873e18f8583d08082671c"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/answer.md",
+      "sha256": "9ea68cf2015442d55613903114500a73e8e846404ef2c4f45c1686e3c79cc755"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.result.txt",
-      "sha256": "0ece5f66ddc7813df9411b6db4a38a94fd56a162e2f873e18f8583d08082671c"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.result.txt",
+      "sha256": "9ea68cf2015442d55613903114500a73e8e846404ef2c4f45c1686e3c79cc755"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "5bfb068c2bd7e925ef6772f00c027810a03a656d2217e984e772115e89bccfd1"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "14a6d21b03427c06461fd8b194ac80b50e1ce4798ebeb03a0db7c3b9258ca8ac"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/grading.json",
-      "sha256": "ff385d7314de42708528b4e9b8c98a7f8adccb40b4ccfb103284514ee7b770a9"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/grading.json",
+      "sha256": "74873f00fead8a22f6716be89c489223d7d5253ad731026d953cc98d18ac2c05"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.result.txt",
-      "sha256": "460c490a5445056224dbe3765ebe9ad984ee24c8a18c553a537f3475c54d7eab"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/claude.result.txt",
+      "sha256": "dfa006f15e09c170b3e9851216a60ccbda2d4c0d8dcd1a89270de395fd0ea8c0"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "ee61fc497eca308074e8cd19b529721b7b9343bbf89b024a5c7581ac5f3d1127"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "7ba6bf92d56112d1a33c042e5d05a1c9f5d8e0fc191a33b4dd91d4de511f2e15"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/manifest.json",
-      "sha256": "94e5dc5a57f459281655d961abfc7b45a5b1a0773b322616cd80629539d1d598"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/judge/manifest.json",
+      "sha256": "19507effe484affc5e50ee401c8b80c1566a7ffdabae9bc1011601bc2bcd81bc"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/manifest.json",
-      "sha256": "e8da26156400867403257071b23cc271dac315c3e41445663edec21d48272f87"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/manifest.json",
+      "sha256": "a04b55f48771a615d371427b1d36466c9316b5be778bddac1b15f81c3e6e2f46"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__with_skill/prompt.txt",
-      "sha256": "55744cc4a1170884667bc79a8dfe693940acaf3592b85b4f2b532c3058c203e6"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__with_skill/prompt.txt",
+      "sha256": "57aea1b642f0f3a49ddf1453edad942e3fa38a16f56b0c11eab663cff642017a"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/answer.md",
-      "sha256": "efab904c267517341dc0a15d1946617545e469559f130f869122fb1e1f265b1d"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/answer.md",
+      "sha256": "cbf569b06ae60c6259aafaf94b11151cd6faaebeb9ee56c973447b648b888367"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.result.txt",
-      "sha256": "efab904c267517341dc0a15d1946617545e469559f130f869122fb1e1f265b1d"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.result.txt",
+      "sha256": "cbf569b06ae60c6259aafaf94b11151cd6faaebeb9ee56c973447b648b888367"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "f7677f07c1050c52b706bd8a16bcf54623515c2e0e07eb0e2f98c372a08c9556"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "a4e0f6310cfb6791a1986f1875b23e91b72fb29f3ab0e4f60e0165f3f374be6a"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/grading.json",
-      "sha256": "144db713a0d282f76f48bf3437f44a8b0043a3129ebb6c6f23dd45604c038149"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/grading.json",
+      "sha256": "85a71c8e9bfe59ef5711e80b366d78b9a84dd92090c1958b07b15580b776dbae"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.result.txt",
-      "sha256": "f8e14814154421c5fe18e82acb0e6dd179f84114fb5876a348d58687cb453738"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/claude.result.txt",
+      "sha256": "953934b351ac0d66d093978c76391da96567f91f8eac502e01f6d0d25d2dff34"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "06af3a9cc04cced1d5b4da5548c1f5cf5fb75a2a629c306cb5250fb92ae3ede8"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "08d32e1b7c809e5bed5f232fb4bf15f02070f7cb0aad1a2d0a0ef7af3d1c97e2"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/manifest.json",
-      "sha256": "a8b287d1fd0388f4e386a35ce7f5d6c96da0e2a384ca27d66d68e039e9fcc6d0"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/judge/manifest.json",
+      "sha256": "05dbb4f60aa586e138621213eacd45b0de4d187ef6ac8ec64c3e4142dc7c06ad"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/manifest.json",
-      "sha256": "20e54588756e85007afcc16b085b7c4b0823a10e6714bd594347433a5409b8fb"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/manifest.json",
+      "sha256": "16942ae597d90cdf77373eac438f523775ae7466b3db2de5affb8df30ffcc509"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/claude__without_skill/prompt.txt",
       "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/answer.md",
-      "sha256": "725b8ab592593f2b2d31085266cff384e933c6b1bdd0fd373e72b33f245da2f5"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/answer.md",
+      "sha256": "e589c76fb330105b5d484b202295d5e0456913bbd624801d38fb82d64cf763de"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.result.txt",
-      "sha256": "725b8ab592593f2b2d31085266cff384e933c6b1bdd0fd373e72b33f245da2f5"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.result.txt",
+      "sha256": "e589c76fb330105b5d484b202295d5e0456913bbd624801d38fb82d64cf763de"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "62438c10e0684a262b92c57e6d7695ad9009f90e99a9ab48d0ae324963a02020"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "778347d056c311444369c57933f30a55d0617285dc776623493254f56b0957c3"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/grading.json",
+      "sha256": "cdb496f4f8f22869474b7e76ffb3267c1725bc079f30663e093d05b4efa7f3ab"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/claude.result.txt",
+      "sha256": "e0173b84d81a05a4b417d8eada2985d8e12d68dcb172bd54bc23814b507fc80b"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "0cf35adec7888bc286898d5f82611e9d1c3c215a9e6f495038a13792f0a63979"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "96c7a7195c1d859b70b364a439f7d8ae5ddf8df396331d185395fc1cf073c856"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/grading.json",
-      "sha256": "91cc1ec91efaa2f3086b155d5ba06e18cf8dfaff6d8faeb9139b128b3535fc4c"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/manifest.json",
+      "sha256": "62ec6c4ab28ce80274f6e78a17e93cdd8b11fa7beddde474e548165983edec88"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.result.txt",
-      "sha256": "bb8ac8d871f5253fab66b69b86203e4ebfb583e1bc1b457f953409e3437c11f6"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/manifest.json",
+      "sha256": "f953ea501584dd2451157999fb8ab10cebddc63fb88e4b84318596579176516e"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__with_skill/prompt.txt",
+      "sha256": "ec133d11747cdf6e20bfd32c305f496a3db876ea623f49741a0c9301f2649bdc"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/answer.md",
+      "sha256": "05ac763150d6f05f8eee73a41c53272683d650c604667d32479b9ad03dbcfe37"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.result.txt",
+      "sha256": "05ac763150d6f05f8eee73a41c53272683d650c604667d32479b9ad03dbcfe37"
+    },
+    {
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "e4d1848a788e1ce5d06ee23f92d758da889e9c307dc593688d513a5b2c1d135a"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "10c152d5e640f390327069a4842f00008d989e02f4e71ed5f630af3e4683af6a"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/judge/manifest.json",
-      "sha256": "42a126de28357a29e41839f49f540b6703b27cfdfcfd856fb3e78da3b3677b5f"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/grading.json",
+      "sha256": "c85107e5496f0bc9e355d4dbad07d88fe59413c63d50a474ede3bf581c265ff3"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/manifest.json",
-      "sha256": "0359e2ad986ecb57bc12aa956c2d5656549e9aeee3e971bb8032f92c2308c656"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/claude.result.txt",
+      "sha256": "d8b9c922649601c30acdf50add27a34fcd827d7c931e58e4a029b30cdf78f9bc"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__with_skill/prompt.txt",
-      "sha256": "087e424f93d38f859923cb5a06bebfdd069bd0ce046a17de62e7c1b278c52b9a"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/answer.md",
-      "sha256": "b114a158a4950d4e07aa21e77ce4dd0cfb29a948bdafaddae638b1ffbc48a9fa"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.result.txt",
-      "sha256": "b114a158a4950d4e07aa21e77ce4dd0cfb29a948bdafaddae638b1ffbc48a9fa"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "046182f3593074f1a64a3f073a6a52c6c3c6db2480cbed03bff847498511f067"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9bf8e78559bc92a3fa14b67f5598f9b3605c5afefa33fdb4a94d2b5e92830943"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/grading.json",
-      "sha256": "c3cd6deb9ae7b0abc7ea422c8c0316417b784e88fc137939fa7b50dcbe61187e"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/manifest.json",
+      "sha256": "30637db5b2357b440612fd3f2317ca44d4b541616c853da90d84606f0e28afb2"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.result.txt",
-      "sha256": "7a9a152eb0db4e7d68bc1bde1762f2ee9b10d89d6fd0dbbffa7ec974bd9cf1f7"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/manifest.json",
+      "sha256": "04e1d0527428b8161547876ed76d65682a8f5ad28650e53d26cb26e91305751c"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.stderr.attempt-1.txt",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "28d5b4af6fb57741eb1927979a8e25f571fde9cec3a895fd37f3a566f19de0d9"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/judge/manifest.json",
-      "sha256": "c9f64bf55f240a1f38b2a19a014ca2ff6a1280ff6e06c9ba1f70be975fbc6335"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/manifest.json",
-      "sha256": "548441c42bf25a38c8122fb6a40c3400fa4a57e67c449e9c5f34cfc7c3c5d0a6"
-    },
-    {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/codex__without_skill/prompt.txt",
       "sha256": "15862c9644a74cb9b1b9c0f7d25052255bfb3b6d5ab8bfce69d6751f1fe4caa9"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.result.txt",
-      "sha256": "709b42000f175f154107046d084532b9e2f28b507ce30a272ae365083108fec3"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-agy/claude.result.txt",
+      "sha256": "bdbde9c13eb10eb3084b65c598e3cd3135cf4210551e2d0ed1fc1c24d5bb40b6"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/codex.stdout.attempt-1.txt",
-      "sha256": "271bb9a42ab466ee07854f76421a0e8c24c97e58d82495a59b42d9cd953f72d6"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "0f63075ec3683cf60bc6eb21121919f267e05e605256e2e281f9467ffddae867"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-agy/manifest.json",
-      "sha256": "bbf7da5dd9344a1f0bbe06cc883781cbb65ad1a457236cd2a3f831ef04951e1e"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-agy/manifest.json",
+      "sha256": "71163503eebea57b09794380f84fa7d66c20a40a62368a58dd87331e555e21bb"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.result.txt",
-      "sha256": "ff4a8ca14e771cbca7c8df11fb3517c49280c3d315b7d56ae254b37ab7fb3ee4"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-claude/claude.result.txt",
+      "sha256": "05898a0017afe42b18598e5da3337f63cefb595df390361d9d1782631bdd89d8"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/codex.stdout.attempt-1.txt",
-      "sha256": "92573601a26447148e1783e577c69f5390b32a1a6d422986a14c50d9a2b6958e"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "05335fd437d9f9679fcdcb1e9f30ca4bfa2c80078719b1dee1e86ff169ea48a3"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-claude/manifest.json",
-      "sha256": "e9c8d79d875fa4f97ecce56204a2c000f6367512c23e9f597b04f430f4cb2b52"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-claude/manifest.json",
+      "sha256": "b15d89fa3337c33cae0bed199670aa9f41f99fc8c93ca2135b2f20176c85aa06"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.result.txt",
-      "sha256": "85ea2b05066e1565a1b580f687ed1e8defaf225d4298619b657f9871af87361f"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-codex/claude.result.txt",
+      "sha256": "a7be422de229b412383493407783b9a1ad5d3bd07ca6c0248c25158060602aaa"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/codex.stdout.attempt-1.txt",
-      "sha256": "049e9821e6c8e68d4faae35cc3908e9b33cca44019bdba63412032e6dacdb920"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "517cf943c7f5732ffeef56e3c55b98b99b23fc24e8770c0ffdc6e78b653926db"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/compare-codex/manifest.json",
-      "sha256": "cbb1b6d70571a8c76f848181249acf00c887488a9ce66de19ef187b9d21684c2"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/compare-codex/manifest.json",
+      "sha256": "e61fb9226f63a1f8b443f1028ccd8e9f12a66a4f76324136625db22b44962254"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.agy.json",
-      "sha256": "969a8f3a29f9714ca803c5cedb3c618d42a0460864b4bd1bf0e61160a9bb1562"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/comparison.agy.json",
+      "sha256": "c351b69d63832df0c8c370086994b7180ae0bd4b81912d6a2384524e4743fbf8"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.claude.json",
-      "sha256": "61a9b13e34708ce4370731e5e6d40d7c2335b91e6d88ba647c3a7c13db18cfe2"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/comparison.claude.json",
+      "sha256": "e03b92c6a89412107e9ca30e2b6717627fbc44d6a86cea7a93942497956d156a"
     },
     {
-      "path": "workspace/iteration-5/eval-1-model-change-is-recommendation-only/comparison.codex.json",
-      "sha256": "6209d11e712407d21127f4ae95cc3e88b9395085dfa33d8a20eb5d230079d3b7"
+      "path": "workspace/iteration-1/eval-1-model-change-is-recommendation-only/comparison.codex.json",
+      "sha256": "5aa19c90c66682db69b6d1a3bbc6a9d584f3acd54ec51f1f3164372819254ee0"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.result.txt",
-      "sha256": "34e63e9e571dafdcf63fae20daed118295c7e8f18087b04f7d7d368a7f299cde"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.result.txt",
+      "sha256": "5153b334fa9468df2b26cd307dbb38dceb3f8c955fd0a23790ac9eebebdbbace"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "5277c884b2336407518e67010db35ff906bcb62f82f72a6813a992ef76da09aa"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "74bc900ec661e6f6e34a7651df304cddce0186a3c2cb6aa9016177e720b6ea8c"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/answer.md",
-      "sha256": "34e63e9e571dafdcf63fae20daed118295c7e8f18087b04f7d7d368a7f299cde"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/answer.md",
+      "sha256": "5153b334fa9468df2b26cd307dbb38dceb3f8c955fd0a23790ac9eebebdbbace"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/grading.json",
-      "sha256": "1b5901b1418cf793e38b4cd5f2564a8bbb7e0b2f7367176f2cf2fd12e211cfa0"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/grading.json",
+      "sha256": "ce5a01b2e541bd01d3abd77ab5b35ff8767fd2558dbcfb2354be5a8683fb3d2d"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.result.txt",
-      "sha256": "ea46639f1cbb6e9a78aa966f73a93b07c91ea9dbfb0dc67b73c689e11bd23c76"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/claude.result.txt",
+      "sha256": "7e10cab3e1339b8bd6520c42ab801ccb9d98d71a9a909a61ca534a5e18735615"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "d2366db83362e8a5752f494f6aaf2ff6afdb2046010998e3920b91f079378d5d"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "91d3d0dec8a0274ade7403a3d0a980cbdd304816881be5752884fec120a315f6"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/manifest.json",
-      "sha256": "9bbf5d749b41fc18f81d1e5f6d0bb4f415b6f1ff24b74ac10f3846f2f56e6f16"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/judge/manifest.json",
+      "sha256": "07ada2d442bf76a1b4a7199fb791b050a834f027fefcfa1f9582d27da1e17795"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/manifest.json",
-      "sha256": "bdabac9271b02972b9d2aad92d5a87407f85fea0ae38abeb50a335412a738047"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/manifest.json",
+      "sha256": "5bdfef892fc5e98d9d346ab23775b80a8e237af412299590ddf8727a20545361"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/prompt.txt",
-      "sha256": "b478b2993534f1a7503ff63218a53011dd69fc773df9a570b626614da3f5c2b1"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__with_skill/prompt.txt",
+      "sha256": "fd54272dde261146544a1d8fd7af528e9bd8baa244187ab6750930da8f06bd92"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.result.txt",
-      "sha256": "acb913ca81a12cad71ee4a66ec1152d69b13a77592053b774f04bf15bca6f1a1"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.result.txt",
+      "sha256": "6d7ab00ef366d9a404907b8d7a1212ffa57c5700f9e0d7a9fb7a1e56fddaacc1"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "3c22b29346d7ddd73bc88512d54bb3f3fadf805f7135f7668bc0f3edffd051a3"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "8a1136bd6965af42955a3ce1f86be821abf8fccdc89a8ca66bce3054d857dbfb"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/answer.md",
-      "sha256": "acb913ca81a12cad71ee4a66ec1152d69b13a77592053b774f04bf15bca6f1a1"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/answer.md",
+      "sha256": "6d7ab00ef366d9a404907b8d7a1212ffa57c5700f9e0d7a9fb7a1e56fddaacc1"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/grading.json",
-      "sha256": "36fa8c798c2d2c63b39783c44fff804585f4b217b5834b8e89d0b8f621ac6e2e"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/grading.json",
+      "sha256": "9b839ea287a55e96cdca6d8efa238c6df29860c9fc64d4bc03c5c604d1f029dc"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.result.txt",
-      "sha256": "a26eeaffe3ce8e986f608e85b4ee5342e5c8a1038ef884f0493dba9df8fc0960"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/claude.result.txt",
+      "sha256": "1720a4f66502bffcf03a7440d47c9d7c785a71ff31acc50adad0d0ffc3553c2a"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "f215c0cd54f9e570447353a7ba70cd6e0d4b4a532c88c3df67fda310dd9b8a73"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9300d2d1686c7bc0485aec16e3a622ec5df458d2f270541725f4f5da6bcfa879"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/manifest.json",
-      "sha256": "ac4302dc1e1e0a8a28a76decfed9234c1d7f27da867e45a5cfb7f2a533c9c0ae"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/judge/manifest.json",
+      "sha256": "bfba1aade0e6cc2bd9b87bb4e85bb211231147ce04cb5e40fa9a642a1016bf6b"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/manifest.json",
-      "sha256": "9d57c4a2bb4fb8819c43fd0fe51eaae587d253e85f7a6f0e3e2793e0c980a4c2"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/manifest.json",
+      "sha256": "5dd7882e199dfd4bec1f26ae7602ffcd980639a5363ec6eaa14cca6d2b1c7f9f"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/agy__without_skill/prompt.txt",
       "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/answer.md",
-      "sha256": "bb38c2711acaf078ec42438afed1bbf3efc21ce499582c4d869bc7947a6f1cbc"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/answer.md",
+      "sha256": "fcef1f6abd1fb3107bbcbb2178066b25a112f9cd8f064f1eebc0e2dc94b3d0d6"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.result.txt",
-      "sha256": "bb38c2711acaf078ec42438afed1bbf3efc21ce499582c4d869bc7947a6f1cbc"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.result.txt",
+      "sha256": "fcef1f6abd1fb3107bbcbb2178066b25a112f9cd8f064f1eebc0e2dc94b3d0d6"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "4658e3492dcaf815d220dcd27c53eb8da23ad3fb9d6fa11ff3682d3bb91ef289"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "c77566eae190fb27902fa9208c69888830ddb9b7b5020702d049cd77a927f065"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/grading.json",
-      "sha256": "a3bac417076bd7dc82039ec976fc89e15796d1e4c0a69385a632fed6ba4e2cf9"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/grading.json",
+      "sha256": "846ee9dc162f28a87b93eb9a52b1757321d25193ff1e73bffc91ddbd2c706c17"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.result.txt",
-      "sha256": "02018d4db2043fcdb2f401e45bf9fe76d78759f9c7fff9798ea137f787545105"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/claude.result.txt",
+      "sha256": "1b48840f7f04d87f378302debc85c0b3b965e3b0f36358a165ba47ef10199ae6"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "c2e81431aa8f73286c81bb65fe8946ef1272f05d15b5c7632ba33e29dd4688bb"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "28aa7ab0c7a001a7f5df1dbf61467705824b5cb27b00d55980b1d5ae9f7ac2f0"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/manifest.json",
-      "sha256": "ccbcf2fbc2d8065f200f12cfe8e94ebf5acd647bb19b97c949e9ee0b640fbf0f"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/judge/manifest.json",
+      "sha256": "8e41a8a030dda657e4e90922abed08decb0c6bfa388d0f92cba94cd6bee87477"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/manifest.json",
-      "sha256": "3b78575af5bab126c00b6ceafa9bacb5d6f052dcff29b25af6e1710cc7d02be3"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/manifest.json",
+      "sha256": "68e17ff38c50172d83ed926ceb0363e43daa85b0b99daad4eb904cba84fa8be9"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/prompt.txt",
-      "sha256": "4e40695cca27b8e92a7b1b739eab4425badffd1195f8070d06c4b06ddb5971ca"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__with_skill/prompt.txt",
+      "sha256": "905062d395062dea2668109bf6ff7c32b846f81e580baf2d442f66a270c8f890"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/answer.md",
-      "sha256": "2f36f090c6eac39d489664be6cb4ddef2a80a7ebaac25e2000f199ada0f37a5b"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/answer.md",
+      "sha256": "88fb8d901710111d299714ac29f85e89cc32478c710b74298012a96c443d6342"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.result.txt",
-      "sha256": "2f36f090c6eac39d489664be6cb4ddef2a80a7ebaac25e2000f199ada0f37a5b"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.result.txt",
+      "sha256": "88fb8d901710111d299714ac29f85e89cc32478c710b74298012a96c443d6342"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "4b7219edb3e3f02a235ddc63b9c344cb68fa2d28693a02407a78bb83e4ab2cca"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "1319fb573adf64b6d5742d1ee4616afca0ba2ba435e406ca76100b2cc549fe96"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/grading.json",
-      "sha256": "7bf77d5115c7d5913807fedef7d0069177162f4bf941b8cebac19575c2782b38"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/grading.json",
+      "sha256": "8bd073cf4ecd418981af29e3350edf5feb87592f4705aa688725a014af0e405e"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.result.txt",
-      "sha256": "96762b69a360c940b63fbae6a078cb519cf57d356c01eb8164410e5c5ad6a2ba"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/claude.result.txt",
+      "sha256": "5ff02ce6663c5a336a6a6db8efab861a1c0870c63c3b3638291061344c5f817e"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "d742ffc638ed9b47036fcfb39ac4fd7ea9412c60f1484ce097aaa0a1dc860b61"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "a4c62c2e318c9ffc39ebe2570a6380165afe8a5940d1c6eb0c882c1adf679660"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/manifest.json",
-      "sha256": "ad37afafa5017fb3926f25b25a205b06e23a8f728a14d9ce84018837c0ed5384"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/judge/manifest.json",
+      "sha256": "88b3373cefa0b1b6a1d8ef79f7d528af6d8a8e8793e0b02ca4587e7bf53ba55a"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/manifest.json",
-      "sha256": "6b76ee069e05615b88fa5623ee556ed013312ac0d527c8514e9ce097caf26ca6"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/manifest.json",
+      "sha256": "013445d2f4705affafcb11e13dd0981a3c2af992cbe40fe1cf38aec99850a40b"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/claude__without_skill/prompt.txt",
       "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/answer.md",
-      "sha256": "ef3287ca911716f9227c9f648d1d7cfe5f95431e4b0f42c6fae27da106a88748"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/answer.md",
+      "sha256": "33c40e54ba9643866a39d1c3b018cc0c69b10faa6288d577a9605bc408f944ce"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.result.txt",
-      "sha256": "ef3287ca911716f9227c9f648d1d7cfe5f95431e4b0f42c6fae27da106a88748"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.result.txt",
+      "sha256": "33c40e54ba9643866a39d1c3b018cc0c69b10faa6288d577a9605bc408f944ce"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "e159b1d4664fdcf871121276a990a5a293e4e3a042d48795692212f7b7113c8f"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "aab357d7be04248b4d855229b9d7a3f132598a55aaa8f6d34c2766fb122ffcf8"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/grading.json",
-      "sha256": "08089097e83e0eb47a216c2393dde0e655f904334be6612f2b2be0a465f362ea"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/grading.json",
+      "sha256": "48d028f4f252a61afcf1aaaf023973b7d573367c0e54f7e0341d4da7e148dba8"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.result.txt",
-      "sha256": "505c479c2102bc91cee6e5042ae4a2045be44072fce39a600d1e88f5c8b8a425"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/claude.result.txt",
+      "sha256": "f0fffc2dce4c0fbb15c3facf933daa1cf2815ed154827445e2b4aba36644ce3d"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "4fb356a8f9c083a6c5b0f8bc9c2740866a9fa15d856728e57af78cc5df0774fc"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "664b467e78723dc817e388d2effd64af9ad473cb12089e92ccff0327b3f71bd5"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/manifest.json",
-      "sha256": "0f7364aff9ecb60fc7e602e0adc73fc2121a86e877c58dd7bb18568c62aab03f"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/judge/manifest.json",
+      "sha256": "9966546d4e69e24ba576322fcf1afd9931d81db34d8a3aa6d62449a96ea9bbd6"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/manifest.json",
-      "sha256": "6ed2a475525a5e81c9b6d481c8ad7a71915d36e9668f8f6e52d4a9e5d8c28ee2"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/manifest.json",
+      "sha256": "2973baeb2c11d72eb856ebe90a0d3522d05d2b6ff9193d895fc54f6ef1567a37"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/prompt.txt",
-      "sha256": "52596c2459deedd5a78d4d5d9947024539b49dc5a62e9d1baa65c8e86e9c232c"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__with_skill/prompt.txt",
+      "sha256": "95d54c490ca2401e209c1ad8ea4fd75945a92242873ca850bc2d86f6cf25e56e"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/answer.md",
-      "sha256": "157210e9a06a73793db72ebffedd832e90ce7fa5510b0ff1363ad6f70f2b766c"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/answer.md",
+      "sha256": "6227db21d45442d364dd5dd854847bccfcf53b91cf72a57dd27ffa0c19b993fc"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.result.txt",
-      "sha256": "157210e9a06a73793db72ebffedd832e90ce7fa5510b0ff1363ad6f70f2b766c"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.result.txt",
+      "sha256": "6227db21d45442d364dd5dd854847bccfcf53b91cf72a57dd27ffa0c19b993fc"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "f3bf311688d69142223873635c0c99ee9bfef1f9a58a5f1d7a1232f69fad87ec"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "a1c0efbec9189c1f905a3dc0947f94f48e6367445f2a92bdb2602fbe0bff42ad"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/grading.json",
-      "sha256": "f178c091c1709f051e378dd5307fdda13716defa5816a2f357f47ee7a61dcb61"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/grading.json",
+      "sha256": "368c064f30dc8b8d8d9bfff8d6a30748e5f88d5163c697ec3afec220d007ec99"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.result.txt",
-      "sha256": "05975f778454246aca3cf50011e3d0b75cfff5a88fcfb2d2926e23aa4ed4e33e"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/claude.result.txt",
+      "sha256": "726f3329c51dbd81548cb95d08ce516cab45f95d6e1fb5dfeda4438d8d04f6dd"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/codex.stdout.attempt-1.txt",
-      "sha256": "88cede93fce3c6cb4485e7622e4767542c214fc7b794a67b69d3cc2e50489665"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "e8dddde79b23dfaa2d498b1715cee06d13279f1520f5010ff6a65b6294bf1150"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/manifest.json",
-      "sha256": "b7a88ab90f946310d366a57c6cbe7844608768646f7cf881a2251a9c6b71b425"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/judge/manifest.json",
+      "sha256": "2ace2b237dc7cabfe708a5b66d2d9f1282a9f6409f1bb439e90be79d41fbd384"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/manifest.json",
-      "sha256": "5c62534b1a751db33f72c72c58c2806a637c0460703b113adc747d308d9f09e6"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/manifest.json",
+      "sha256": "c44906c08a0b0a03e28f699f34298cecbe8447bfa8263ef5b3afe3f0814257f0"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/codex__without_skill/prompt.txt",
       "sha256": "b4c6b9d21907ee82da2db4cde663a3a278977b2e15e1ab75ff05014ac5f64fbb"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.result.txt",
-      "sha256": "e87467eb3a0f5e474b93c3719a6f4282dc5553d7e34ee714b1ae174a92edc9b6"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/claude.result.txt",
+      "sha256": "dc12dc7461608d94fc3195e9d002839934326f6a0413c3725679e67e9f664449"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/codex.stdout.attempt-1.txt",
-      "sha256": "eb003987049f1a97a9938ec4f3e49daa4557094f077fc1507329028fe3dc3cc6"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "4d83364166524dc2a8e6d6477dbf348a1a6808111165d6b8e26fbad3971e356f"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/manifest.json",
-      "sha256": "c81072b958ef24447989ba58fc458cbb1b8fdcc6533f2a0390e16c2b54280283"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-agy/manifest.json",
+      "sha256": "44e43d98d80d72b643cde002d22fd354dee043cf96e69a935bd1a45a2d3c0691"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.result.txt",
-      "sha256": "4f6e51b300c082363df02d4f87108f942acf9254ba7706a23a83756c1d7cbf15"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/claude.result.txt",
+      "sha256": "749517b5b719b1344ae5557984522ce0cbde4a700ee038d66fb30359ff7e7a6e"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/codex.stdout.attempt-1.txt",
-      "sha256": "a8499418547e732704e9b03be9a9e801d67518902ceaa6d2da2f1aa87d406eb8"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "ca66e66966b74eda2469aa1b557cdb542fde89509ef7c08d00e94cb885c2212a"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/manifest.json",
-      "sha256": "9132dde3fdc2ffab2b857420d0dc502b8750625f9c4e7a7554b044dc1e556f33"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-claude/manifest.json",
+      "sha256": "65ff8d774689fae5cd90d3523c076a78ed0b8c44a78e95463f96aa6bb65d531b"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.result.txt",
-      "sha256": "0cd4d1accab8ce4d74c2429a7eb62113e6552d68b94d49c86b207cf0071db959"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/claude.result.txt",
+      "sha256": "03432e1a62e8f5c2bb30c6b8eb9d9b17f36b4213a35dcefb93a002db506efcd5"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/codex.stdout.attempt-1.txt",
-      "sha256": "3bd878403f62e8958380676c4aa447f5bf9a21d76174d2471a00e3a432b1398a"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "06823edbd9b23120fedfe79b39f0a2c00bc225b1ecfad11cb6102d6de0857e5c"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/manifest.json",
-      "sha256": "3d37aebf74ef4ae7e9f3a1bbd8e1d65dc731536ff974e243c5719a0caa740537"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/compare-codex/manifest.json",
+      "sha256": "84faea686b49a6a40cf1c39e55d50f9bb71cab88ae966bce18ef8067d162553c"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.agy.json",
-      "sha256": "c11edbdfa07faf977ee26991b4fb043612500ffdff50242afb507110d9cfebfe"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.agy.json",
+      "sha256": "aef5db3d856458baf7f0662cb6c376ebe04ba73dcd472fe2ddf8eaf7d86c7cf1"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.claude.json",
-      "sha256": "886a1bdcfb234fe91bf35891cf6effd07de3ae147d01ec0872c5493ca376d12d"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.claude.json",
+      "sha256": "0c499fe95210de9087d0deef4fc33cc84a457d1f8da9e71e10a425233dc23917"
     },
     {
-      "path": "workspace/iteration-5/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.codex.json",
-      "sha256": "d2e98aa02d4ef2ae4b135f7708956aabe6e0aaf5c0fa24880c9830a5d0f3871d"
+      "path": "workspace/iteration-1/eval-2-introducing-a-model-id-touches-two-manifests-or-it-breaks/comparison.codex.json",
+      "sha256": "2e697b9ec62e738e85b65239b68637f47aaadd32e0287ddda2ce11209f61b38c"
     }
   ],
   "native_counts": null,

@@ -138,3 +138,19 @@ records SkillSearch shadow candidates, the loaded skill must be the first-ranked
 candidate; malformed, missing, or lower-ranked shadow evidence fails closed. Raw
 prompts and outputs stay out of the receipt; only their hashes, bounded sizes,
 session/event IDs, routing evidence, and evidence hashes are retained.
+
+Supplemental normal-use probes use `maka_native_host.owned_normal_host` and
+`run_normal_probe`. Callers supply the pinned Node/package paths, relay helper,
+caller-token and attestation paths, default root, and a fresh private evidence
+directory. The owned child verifies its PID, root ID, and epoch; probes use native
+bot Sessions with explore permissions and ordinary tools. Settlement waits for
+zero running turns before closing and settling that exact child. Default Host
+and Session identities are observed before and after, and workspace metadata is
+preserved. These observations are separate from the restricted routing smoke.
+
+`maka_native_api.json` guards the licensed package version and internal Host,
+launcher, CLI, and Read APIs. `maka_read_aggregation.complete_reference_chains`
+checks native Read call/result identities, source paths and hashes, UTF16 cursor
+positions, LF boundaries, page order, and terminal coverage before accepting
+reconstructed source bytes. The smoke and instrument manifests bind these
+helpers and the normal probe runner.

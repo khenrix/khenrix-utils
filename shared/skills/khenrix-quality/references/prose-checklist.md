@@ -1,6 +1,6 @@
 # Prose quality checklist
 
-Use this after the rewrite. Answer each check with pass or fail. If any check fails, fix the draft before returning it.
+Use this internally after the minimum effective edit. Check each applicable item; if it fails, fix the draft before returning it. Judge language in context, not by word matching.
 
 For detect requests, make sure the response names each pattern found with a quoted line and a short fix, without rewriting the draft.
 
@@ -14,22 +14,23 @@ For detect requests, make sure the response names each pattern found with a quot
 6. Are points front-loaded where that improves clarity without forcing every unit into the same structure?
 7. Do sentences earn their place, with concrete facts, protected details, and direct verbs where the draft supports them?
 8. Does every generic sentence pass the portability test, or was it cut or made specific to this subject?
-9. Does the draft use active voice with human subjects where possible?
+9. Does active voice clarify responsibility where useful while accurate technical subjects remain intact?
 10. Does the edit keep useful edge and preserve structure unless the structure was hurting the piece?
 11. Are genuinely tangled sentences fixed while clear spoken cadence, fragments, and changes in pace remain intact?
+12. Are exact quotes, code, commands, identifiers, URLs, citations, and metadata unchanged unless their editing was explicitly requested?
 
 ## Words to cut
 
-1. Are banned words, filler phrases, often-empty adverbs, and inflated claims removed unless quoted as examples?
+1. Are inflated uses, empty adverbs, and filler phrases removed while literal technical uses, meaningful emphasis, uncertainty, factual contrast, and recognizable voice remain intact?
 
 ## Patterns to cut
 
-1. Are binary contrasts, negative listings, rhetorical setups, and throat-clearing openers removed?
+1. Are empty binary contrasts, negative listings, rhetorical setups, and throat-clearing openers removed while necessary factual distinctions and corrections remain intact?
 2. Are faux-insight setups, colon reveals, superficial analysis, fake-strong verbs, synonym cycling, dramatic fragments, and robotic rhythm fixed?
 3. Are importance puffery and weasel attribution replaced with plain facts and named sources, or flagged for the user when no source exists?
-4. Is interpretive metadiscourse removed, including authorial metacommentary, reader guidance, emphasis markers, and redundant glossing?
+4. Is empty interpretive metadiscourse removed while useful explanation, meaningful uncertainty, and personal asides remain intact?
 5. Are fake-profound kicker lines deleted instead of rewritten into better metaphors?
-6. Are summary-recap endings cut so the piece ends on a concrete point, takeaway, or next action?
+6. Are redundant summary-recap endings cut so the piece ends on a concrete point, with a takeaway or next action only when supported and needed?
 7. Is formatting slop removed: Emoji headings, decorative bold, bullets that should be prose, headers over tiny sections?
 8. Are colons sentence case unless grammar, a proper noun, a title, or code requires otherwise?
 9. Are em dashes used sparingly: Usually none in short copy, and only 1-2 in longer drafts when they clearly help?
@@ -41,3 +42,4 @@ For detect requests, make sure the response names each pattern found with a quot
 3. Would the edited draft sound natural if read to a sharp colleague?
 4. Does the final output include the full edited draft and a short **What changed** section?
 5. For detect requests, does the response name each pattern with a quoted line and a short fix, without rewriting, scoring, or claiming AI authorship?
+6. Does the response avoid unnecessary editorial questions and closing offers, and keep the checklist internal unless requested?
