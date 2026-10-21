@@ -33,10 +33,23 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
+
+# Installed skills carry these stdlib helpers beside this file. Source-tree runs
+# load the same module directly, without importing the fanout package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from native_context import resolve_native_roots
+except ModuleNotFoundError as error:
+    if error.name != "native_context":
+        raise
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared" / "lib"))
+    from native_context import resolve_native_roots
 
 CLIS = ("claude", "codex", "agy")
 # Only these declared leaves may appear in the machine-readable model report.
@@ -145,34 +158,66 @@ class ReconcileReadError(RuntimeError):
     """A config file this engine will not treat as data it may replace."""
 
 
-def read_json_object(path: Path) -> dict:
-    """The JSON object at `path`, or `{}` when there is genuinely nothing there.
+_UNREAD = object()
 
-    ABSENT AND UNPARSEABLE ARE DIFFERENT ANSWERS AND THIS IS WHERE THEY DIVERGE. Every
-    caller reads `{}` as "this CLI has none of the desired keys yet" and builds a full ADD
-    list from it; the apply path then hands that list to `write_json_object`, which does an
-    unconditional `write_text` over the whole file. So a settings file that exists and does
-    not parse — a half-written save, a merge conflict marker, a hand edit — used to be
-    silently replaced with a file containing only what khenrix wanted, and the user's
-    machine-specific configuration was gone. Reconcile is non-destructive by design; the
-    only way to keep that promise here is to refuse a file this engine cannot read.
 
-    ZERO-LENGTH IS DELIBERATELY STILL `{}`, which is the contract this reader has had since
-    the first commit (and had a second copy of in `agy_mcp_load`). A file created but not yet
-    written to is an ordinary state on a fresh machine — `write_json_object` itself passes
-    through it, since `write_text` truncates before it writes — and refusing it would refuse
-    the machine this engine exists to set up. A file with bytes in it that are not a JSON
-    object is not that state.
+def config_preimage(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
-    A NON-OBJECT REFUSES THROUGH THE SAME DOOR, and it is the input that made the old
-    `isinstance` line load-bearing in the wrong direction: `[1, 2]` and `"hello"` PARSE, so
-    the decode-error branch never saw them, and the old `return ... else {}` turned a file
-    with contents into the same `{}` an absent one returns. One refusal, both routes.
+
+def require_preimage(path: Path, expected: bytes | None):
+    if path.is_symlink():
+        raise ReconcileReadError(f"{path} is a symlink; refusing config mutation.")
+    if config_preimage(path) != expected:
+        raise ReconcileReadError(f"{path} changed since review; re-plan before applying.")
+
+
+def publish_config(path: Path, text: str, expected: bytes | None, *, published=None) -> bytes:
+    """Publish a complete config, checking stale plans before replacing the file.
+
+    The last comparison narrows the editor race; it is not an atomic CAS with
+    uncooperative external writers. Failure before replacement keeps the original.
+    Composed reports carry our exact output in ``published``; rereading the file
+    would incorrectly adopt an editor's intervening changes as our own output.
     """
-    if not path.exists() or path.stat().st_size == 0:
+    require_preimage(path, expected)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = stat.S_IMODE(path.stat().st_mode) if expected is not None else 0o600
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    payload = text.encode("utf-8")
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        require_preimage(path, expected)
+        backup(path)
+        require_preimage(path, expected)
+        os.replace(temporary, path)
+        if published is not None:
+            published[path] = payload
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return payload
+
+
+def read_json_object(path: Path, *, preimage=_UNREAD) -> dict:
+    """Read an object from the exact reviewed bytes, or read the live file directly.
+
+    Missing and zero-length files retain the bootstrap contract of an empty object.
+    Malformed and non-object JSON must refuse: treating them as empty would erase
+    unrelated user data when a caller publishes its managed additions.
+    """
+    raw = config_preimage(path) if preimage is _UNREAD else preimage
+    if not raw:
         return {}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ReconcileReadError(
             f"{path} exists but is not readable as JSON ({e}). Reconcile will not treat an "
@@ -187,9 +232,11 @@ def read_json_object(path: Path) -> dict:
     return data
 
 
-def write_json_object(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+def write_json_object(path: Path, data: dict, *, expected=_UNREAD, published=None) -> bytes:
+    if expected is _UNREAD:
+        expected = config_preimage(path)
+        read_json_object(path, preimage=expected)
+    return publish_config(path, json.dumps(data, indent=2) + "\n", expected, published=published)
 
 
 def shell_command_executable(command: str) -> Path | None:
@@ -272,7 +319,21 @@ def is_http(spec: dict) -> bool:
 
 # ----- live state: MCP -------------------------------------------------------
 def claude_mcp_path() -> Path:
-    return Path(expand("${HOME}/.claude.json"))
+    roots = resolve_native_roots()
+    suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
+    base = roots.claude if os.environ.get("CLAUDE_CONFIG_DIR") else roots.home
+    modern = base / f".claude{suffix}.json"
+    legacy = roots.claude / ".config.json"
+    # Licensed production CLI 2.1.302: Y_ prefers a nonempty legacy file, or
+    # a writable empty legacy file while B()'s modern destination is absent.
+    try:
+        info = legacy.stat()
+        if stat.S_ISREG(info.st_mode) and (
+                info.st_size > 0 or (info.st_mode & 0o222 and not modern.exists())):
+            return legacy
+    except OSError:
+        pass
+    return modern
 
 
 def claude_mcp_load() -> dict:
@@ -318,15 +379,13 @@ def claude_mcp_current() -> dict:
 
 
 def codex_config_path() -> Path:
-    return Path(expand("${HOME}/.codex/config.toml"))
+    return resolve_native_roots().codex / "config.toml"
 
 
-def codex_load() -> dict:
+def codex_load(*, preimage=_UNREAD) -> dict:
     p = codex_config_path()
-    if not p.exists():
-        return {}
-    with open(p, "rb") as f:
-        return tomllib.load(f)
+    raw = config_preimage(p) if preimage is _UNREAD else preimage
+    return tomllib.loads(raw.decode("utf-8")) if raw else {}
 
 
 def codex_mcp_current() -> dict:
@@ -334,7 +393,7 @@ def codex_mcp_current() -> dict:
 
 
 def agy_mcp_path() -> Path:
-    return Path(expand("${HOME}/.gemini/config/mcp_config.json"))
+    return resolve_native_roots().agy.parent / "config" / "mcp_config.json"
 
 
 def agy_mcp_load() -> dict:
@@ -548,7 +607,7 @@ def _set_path(data: dict, path: tuple[str, ...], value):
     cur[path[-1]] = value
 
 
-def portable_defaults_report(cli: str, caps: dict):
+def portable_defaults_report(cli: str, caps: dict, *, published=None):
     """Return rows/apply for only the exact portable default leaves.
 
     This is the authoritative, drift-aware layer. It is deliberately separate
@@ -560,13 +619,13 @@ def portable_defaults_report(cli: str, caps: dict):
     leaves = list(_flatten_defaults(declared, ())) if declared else []
     if cli == "codex":
         path = codex_config_path()
-        data = codex_load()
     elif cli == "claude":
         path = claude_settings_path()
-        data = read_json_object(path)
     else:
         path = agy_settings_path()
-        data = read_json_object(path)
+    expected = config_preimage(path)
+    data = (codex_load(preimage=expected) if cli == "codex"
+            else read_json_object(path, preimage=expected))
 
     rows, todo = [], []
     for key_path, want in leaves:
@@ -589,26 +648,26 @@ def portable_defaults_report(cli: str, caps: dict):
             todo.append(("UPDATE", key_path, want))
 
     def apply(update_drift):
+        nonlocal expected
+        require_preimage(path, expected)
         pending = [item for item in todo if item[0] == "ADD" or update_drift]
         skipped = [".".join(item[1]) for item in todo
                    if item[0] == "UPDATE" and not update_drift]
         actions = []
         if pending:
-            backup(path)
-            path.parent.mkdir(parents=True, exist_ok=True)
             if cli == "codex":
-                text = path.read_text() if path.exists() else ""
+                text = expected.decode("utf-8") if expected is not None else ""
                 for _, key_path, value in pending:
                     if len(key_path) == 1:
                         text = set_toml_root_key(text, key_path[0], value)
                     else:
                         text = set_toml_table_key(
                             text, ".".join(key_path[:-1]), key_path[-1], value)
-                path.write_text(text)
+                expected = publish_config(path, text, expected, published=published)
             else:
                 for _, key_path, value in pending:
                     _set_path(data, key_path, value)
-                write_json_object(path, data)
+                expected = write_json_object(path, data, expected=expected, published=published)
             actions.append(
                 f"{cli} portable defaults: wrote {len(pending)} key(s) to {path}")
         if skipped:
@@ -656,26 +715,43 @@ def portable_defaults_status(caps: dict) -> dict:
             "fields": fields}
 
 
-def settings_report(cli: str, caps: dict, defaults_only: bool = False):
+def settings_report(cli: str, caps: dict, defaults_only: bool = False, *, published=None):
     """Return (rows, apply_fn). apply_fn(update_drift) -> list[str] of actions."""
-    default_rows, default_apply = portable_defaults_report(cli, caps)
     if defaults_only:
-        return default_rows, default_apply
+        return portable_defaults_report(cli, caps, published=published)
+    if published is None:
+        published = {}
+    paths = ([codex_config_path()] if cli == "codex" else
+             [claude_settings_path()] if cli == "claude" else
+             [agy_settings_path(), agy_keybindings_path()])
+    expected = {path: config_preimage(path) for path in paths}
+    default_rows, _ = portable_defaults_report(cli, caps)
     want = caps.get("settings", {})
     if cli == "codex":
-        base_rows, base_apply = codex_settings(want)
+        base_rows, base_apply = codex_settings(want, published=published)
     elif cli == "agy":
-        base_rows, base_apply = agy_settings(want)
+        base_rows, base_apply = agy_settings(want, published=published)
     else:
-        base_rows, base_apply = claude_settings(want)
+        base_rows, base_apply = claude_settings(want, published=published)
 
     def apply(update_drift):
         # Baseline and portable-default code may target the same JSON/TOML file.
         # Re-read after the baseline write so a closure over the pre-write data
         # cannot restore an older snapshot and erase the baseline additions.
+        for path, raw in expected.items():
+            require_preimage(path, raw)
         actions = base_apply(update_drift)
-        _, fresh_default_apply = portable_defaults_report(cli, caps)
-        return actions + fresh_default_apply(update_drift)
+        # Carry only bytes this operation actually published, then reject edits
+        # before rebuilding the defaults plan over our own baseline additions.
+        expected.update((path, published[path]) for path in paths if path in published)
+        for path, raw in expected.items():
+            require_preimage(path, raw)
+        _, fresh_default_apply = portable_defaults_report(cli, caps, published=published)
+        actions += fresh_default_apply(update_drift)
+        expected.update((path, published[path]) for path in paths if path in published)
+        for path, raw in expected.items():
+            require_preimage(path, raw)
+        return actions
 
     return base_rows + default_rows, apply
 
@@ -759,8 +835,10 @@ def hook_asset_report(cli: str, caps: dict):
     return rows, apply
 
 
-def codex_settings(want: dict):
-    cfg = codex_load()
+def codex_settings(want: dict, *, published=None):
+    p = codex_config_path()
+    expected = config_preimage(p)
+    cfg = codex_load(preimage=expected)
     rows, todo = [], []
     checks = [("approval_policy", want.get("approval_policy")),
               ("sandbox_mode", want.get("sandbox"))]
@@ -797,10 +875,11 @@ def codex_settings(want: dict):
             todo.append(("tui", key, val, "UPDATE"))
 
     def apply(update_drift):
+        nonlocal expected
+        require_preimage(p, expected)
         pending = [t for t in todo if len(t) != 4 or t[3] == "ADD" or update_drift]
         if not pending:
             return []
-        p = codex_config_path()
         chunks = []
         tui_updates = []
         skipped_tui_updates = []
@@ -820,7 +899,7 @@ def codex_settings(want: dict):
         # top-level keys must precede any table; prepend simple keys, append tables.
         simple = "".join(c for c in chunks if not c.lstrip().startswith("["))
         tables = "".join(c for c in chunks if c.lstrip().startswith("["))
-        text = p.read_text() if p.exists() else ""
+        text = expected.decode("utf-8") if expected is not None else ""
         if simple:
             text = simple + text
         text = text + tables
@@ -828,9 +907,7 @@ def codex_settings(want: dict):
             text = set_toml_table_key(text, "tui", key, val)
         if not codex_candidate_valid(text, tui_updates):
             return ["codex settings: refused unsupported TOML syntax; left untouched"]
-        backup(p)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text)
+        expected = publish_config(p, text, expected, published=published)
         actions = [f"codex settings: wrote {len(pending)} key(s) to {p}"]
         if skipped_tui_updates:
             actions.append(
@@ -844,11 +921,11 @@ def codex_settings(want: dict):
 
 
 def agy_settings_path() -> Path:
-    return Path(expand("${HOME}/.gemini/antigravity-cli/settings.json"))
+    return resolve_native_roots().agy / "settings.json"
 
 
 def agy_keybindings_path() -> Path:
-    return Path(expand("${HOME}/.gemini/antigravity-cli/keybindings.json"))
+    return resolve_native_roots().agy / "keybindings.json"
 
 
 def statusline_config_rows(data: dict, want: dict | None):
@@ -878,9 +955,10 @@ def apply_statusline_config(data: dict, todo: list | None, update_drift: bool):
     return changed, skipped
 
 
-def agy_settings(want: dict):
+def agy_settings(want: dict, *, published=None):
     p = agy_settings_path()
-    data = read_json_object(p)
+    expected = config_preimage(p)
+    data = read_json_object(p, preimage=expected)
     rows, missing = [], []
     tw = data.get("trustedWorkspaces", [])
     for path in expand(want.get("trusted_paths", [])):
@@ -892,7 +970,8 @@ def agy_settings(want: dict):
     rows.extend(status_rows)
 
     kp = agy_keybindings_path()
-    key_data = read_json_object(kp)
+    key_expected = config_preimage(kp)
+    key_data = read_json_object(kp, preimage=key_expected)
     agy_want = want.get("agy", {})
     key_want = expand(agy_want.get("keybindings", {}))
     cleanup = list(agy_want.get("keybinding_cleanup", []))
@@ -917,6 +996,10 @@ def agy_settings(want: dict):
     rows.append(["approval/sandbox", "INFO", "agy prompts per-action; no static key"])
 
     def apply(update_drift):
+        nonlocal expected, key_expected
+        # Validate both files before the first publication in this report.
+        require_preimage(p, expected)
+        require_preimage(kp, key_expected)
         actions = []
         settings_changed = False
         skipped = []
@@ -928,8 +1011,7 @@ def agy_settings(want: dict):
         settings_changed |= status_changed
         skipped.extend("statusLine." + key for key in status_skipped)
         if settings_changed:
-            backup(p)
-            write_json_object(p, data)
+            expected = write_json_object(p, data, expected=expected, published=published)
             actions.append(f"agy settings: updated {p}")
         if skipped:
             actions.append("agy settings: skipped drifted key(s) " + ", ".join(skipped) + " (use --update-drift)")
@@ -946,8 +1028,7 @@ def agy_settings(want: dict):
             else:
                 key_skipped.append(key)
         if key_changed:
-            backup(kp)
-            write_json_object(kp, key_data)
+            key_expected = write_json_object(kp, key_data, expected=key_expected, published=published)
             actions.append(f"agy keybindings: updated {kp}")
         if key_skipped:
             actions.append(
@@ -961,13 +1042,13 @@ def agy_settings(want: dict):
 
 
 def claude_settings_path() -> Path:
-    return Path(expand("${HOME}/.claude/settings.json"))
+    return resolve_native_roots().claude / "settings.json"
 
 
 def claude_hook_command(script) -> str:
     """Installed path of a bundled hook script → ~/.claude/hooks/<basename> (the command the
     settings.json stanza points at; the file itself is installed by hook_asset_report)."""
-    return expand("${HOME}/.claude/hooks/" + Path(str(script)).name)
+    return str(resolve_native_roots().claude / "hooks" / Path(str(script)).name)
 
 
 def claude_has_hook(data: dict, event: str, command: str) -> bool:
@@ -981,9 +1062,10 @@ def _fmt(val) -> str:
     return json.dumps(val) if isinstance(val, (dict, list)) else str(val)
 
 
-def claude_settings(want: dict):
+def claude_settings(want: dict, *, published=None):
     p = claude_settings_path()
-    data = read_json_object(p)
+    expected = config_preimage(p)
+    data = read_json_object(p, preimage=expected)
     rows, status_todo = statusline_config_rows(data, desired_statusline(want, "claude"))
     cw = want.get("claude") or {}
     key_todo = []      # (key, value) baseline keys to add ONLY when absent
@@ -1014,6 +1096,8 @@ def claude_settings(want: dict):
         rows.append(["trusted_paths", "INFO", "Claude trusts on first run; not reconciled here"])
 
     def apply(update_drift):
+        nonlocal expected
+        require_preimage(p, expected)
         actions, changed = [], False
         status_changed, status_skipped = apply_statusline_config(data, status_todo, update_drift)
         if status_changed:
@@ -1032,8 +1116,7 @@ def claude_settings(want: dict):
             changed = True
             actions.append(f"claude settings: registered {event} hook")
         if changed:
-            backup(p)
-            write_json_object(p, data)
+            expected = write_json_object(p, data, expected=expected, published=published)
         return actions
 
     return rows, apply
@@ -1177,9 +1260,17 @@ def toml_array(a) -> str:
     return "[" + ", ".join(toml_scalar(x) for x in a) + "]"
 
 
-def apply_mcp(cli: str, name: str, spec: dict) -> str:
+def apply_mcp(cli: str, name: str, spec: dict, *, expected=_UNREAD,
+              expected_path: Path | None = None, published=None) -> str:
     spec = expand(spec)
     if cli == "claude":
+        path = claude_mcp_path()
+        if expected_path is not None and path != expected_path:
+            raise ReconcileReadError("Claude MCP location changed; re-plan before applying.")
+        if expected is _UNREAD:
+            expected = config_preimage(path)
+        require_preimage(path, expected)
+        read_json_object(path, preimage=expected)
         if is_http(spec):
             cmd = ["claude", "mcp", "add", "--transport", "http", "--scope", "user", name, spec["url"]]
         else:
@@ -1191,7 +1282,10 @@ def apply_mcp(cli: str, name: str, spec: dict) -> str:
         return f"claude mcp add {name}: {'ok' if res.returncode == 0 else res.stderr.strip()}"
     if cli == "codex":
         p = codex_config_path()
-        backup(p)
+        if expected is _UNREAD:
+            expected = config_preimage(p)
+        require_preimage(p, expected)
+        codex_load(preimage=expected)
         lines = [f"\n[mcp_servers.{name}]"]
         if is_http(spec):
             lines.append(f"url = {toml_scalar(spec['url'])}")
@@ -1204,14 +1298,16 @@ def apply_mcp(cli: str, name: str, spec: dict) -> str:
             lines.append(f"\n[mcp_servers.{name}.env]")
             for k, v in env.items():
                 lines.append(f"{k} = {toml_scalar(v)}")
-        with open(p, "a") as f:
-            f.write("\n".join(lines) + "\n")
+        text = (expected.decode("utf-8") if expected is not None else "") + "\n".join(lines) + "\n"
+        tomllib.loads(text)
+        publish_config(p, text, expected, published=published)
         return f"codex: appended [mcp_servers.{name}] to {p}"
     # agy
     p = agy_mcp_path()
-    backup(p)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    data = agy_mcp_load()
+    if expected is _UNREAD:
+        expected = config_preimage(p)
+    require_preimage(p, expected)
+    data = read_json_object(p, preimage=expected)
     if is_http(spec):
         entry = {"httpUrl": spec["url"]}
     else:
@@ -1221,7 +1317,7 @@ def apply_mcp(cli: str, name: str, spec: dict) -> str:
         if spec.get("env"):
             entry["env"] = spec["env"]
     data.setdefault("mcpServers", {})[name] = entry
-    p.write_text(json.dumps(data, indent=2) + "\n")
+    write_json_object(p, data, expected=expected, published=published)
     return f"agy: added mcpServers.{name} to {p}"
 
 
@@ -1231,8 +1327,9 @@ def statusline_settings_report(cli: str, caps: dict):
     want = caps.get("settings", {})
     if cli == "codex":
         path = codex_config_path()
-        data = codex_load()
-        text = path.read_text() if path.exists() else ""
+        expected = config_preimage(path)
+        data = codex_load(preimage=expected)
+        text = expected.decode("utf-8") if expected is not None else ""
         unsupported_tui = "tui" in data and toml_table_bounds(
             text.splitlines(keepends=True), "tui") is None
         declared = want.get("codex", {}).get("tui", {})
@@ -1258,21 +1355,21 @@ def statusline_settings_report(cli: str, caps: dict):
                 todo.append((status, key, value))
 
         def apply(update_drift):
+            nonlocal expected
+            require_preimage(path, expected)
             pending = [(key, value) for status, key, value in todo
                        if status == "ADD" or update_drift]
             skipped = [key for status, key, _ in todo
                        if status == "UPDATE" and not update_drift]
             actions = []
             if pending:
-                text = path.read_text() if path.exists() else ""
+                text = expected.decode("utf-8") if expected is not None else ""
                 for key, value in pending:
                     text = set_toml_table_key(text, "tui", key, value)
                 if not codex_candidate_valid(text, pending):
                     actions.append("codex status line: refused unsupported tui syntax; left untouched")
                 else:
-                    backup(path)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(text)
+                    expected = publish_config(path, text, expected)
                     actions.append(f"codex status line: wrote {len(pending)} key(s) to {path}")
             if skipped:
                 actions.append("codex status line: skipped drifted key(s) "
@@ -1282,15 +1379,17 @@ def statusline_settings_report(cli: str, caps: dict):
         return rows, apply
 
     path = claude_settings_path() if cli == "claude" else agy_settings_path()
-    data = read_json_object(path)
+    expected = config_preimage(path)
+    data = read_json_object(path, preimage=expected)
     rows, todo = statusline_config_rows(data, desired_statusline(want, cli))
 
     def apply(update_drift):
+        nonlocal expected
+        require_preimage(path, expected)
         changed, skipped = apply_statusline_config(data, todo, update_drift)
         actions = []
         if changed:
-            backup(path)
-            write_json_object(path, data)
+            expected = write_json_object(path, data, expected=expected)
             actions.append(f"{cli} status line: updated {path}")
         if skipped:
             actions.append(f"{cli} status line: skipped drifted key(s) "
@@ -1346,12 +1445,19 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool,
             print("  • nothing to do — already in sync")
         return
 
+    mcp_path = (codex_config_path() if cli == "codex" else
+                agy_mcp_path() if cli == "agy" else claude_mcp_path())
+    config_paths = ([codex_config_path()] if cli == "codex" else
+                    [claude_settings_path()] if cli == "claude" else
+                    [agy_settings_path(), agy_keybindings_path()])
+    expected = {path: config_preimage(path) for path in [mcp_path, *config_paths]}
+    published = {}
     desired = desired_mcp(caps, cli)
     cur = mcp_current(cli)
     mcp_rows, extras = classify_mcp(desired, cur)
     print_rows("MCP servers:", mcp_rows, extras)
 
-    set_rows, set_apply = settings_report(cli, caps)
+    set_rows, set_apply = settings_report(cli, caps, published=published)
     print_rows("Settings:", set_rows)
 
     asset_rows, asset_apply = statusline_asset_report(cli, caps)
@@ -1374,12 +1480,37 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool,
         return
 
     print("\nApplying (additive)…")
+    for path, raw in expected.items():
+        require_preimage(path, raw)
     actions = []
-    for name, status, _ in mcp_rows:
+    wrote_mcp = False
+    mcp_status = {name: status for name, status, _ in mcp_rows}
+    for name, _, _ in mcp_rows:
+        status = mcp_status[name]
         if status == "ADD":
-            actions.append(apply_mcp(cli, name, desired[name]))
+            actions.append(apply_mcp(cli, name, desired[name], expected=expected[mcp_path],
+                                     expected_path=mcp_path, published=published))
+            if cli == "claude":
+                # Native serialization is outside this publisher. Reclassify the
+                # fresh MCP state instead of reusing earlier ADD decisions.
+                if claude_mcp_path() != mcp_path:
+                    raise ReconcileReadError("Claude MCP location changed; re-plan before applying.")
+                fresh = config_preimage(mcp_path)
+                fresh_rows, _ = classify_mcp(desired, mcp_current(cli))
+                require_preimage(mcp_path, fresh)
+                expected[mcp_path] = fresh
+                mcp_status = {server: state for server, state, _ in fresh_rows}
+            else:
+                expected[mcp_path] = published[mcp_path]
+            wrote_mcp = True
         elif status == "UPDATE" and update_drift:
             actions.append("drift update for MCP not auto-applied; edit manually: " + name)
+    if wrote_mcp:
+        for path in config_paths:
+            require_preimage(path, expected[path])
+        # Codex MCPs and settings share one TOML file. Own writes invalidate the
+        # old settings closure, so build a new plan after the successful additions.
+        _, set_apply = settings_report(cli, caps, published=published)
     actions += set_apply(update_drift)
     actions += asset_apply(update_drift)
     actions += hook_apply(update_drift)

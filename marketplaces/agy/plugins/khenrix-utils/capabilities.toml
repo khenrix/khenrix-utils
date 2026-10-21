@@ -191,10 +191,12 @@ instruction_source = "house-style.md"
 
 [skill_delivery.skill_bundles.llm-fanout-plan]
 "lib/fanout" = "shared/lib/fanout"
+"lib/native_context.py" = "shared/lib/native_context.py"
 "memory" = "components/memory"
 
 [skill_delivery.skill_bundles.llm-fanout-execute]
 "lib/fanout" = "shared/lib/fanout"
+"lib/native_context.py" = "shared/lib/native_context.py"
 "memory" = "components/memory"
 
 [skill_delivery.targets]

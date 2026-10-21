@@ -20,6 +20,7 @@ import tomllib
 from pathlib import Path
 
 import reconcile  # bundled alongside this script
+from native_context import resolve_native_roots
 
 CLIS = ("claude", "codex", "agy")
 DIRECT_TARGET = {
@@ -91,7 +92,7 @@ def model_settings(cli: str) -> dict:
             "features": sorted(feats) if isinstance(feats, dict) else feats,
         }
     if cli == "claude":
-        p = Path(reconcile.expand("${HOME}/.claude/settings.json"))
+        p = resolve_native_roots().claude / "settings.json"
         data = json.loads(p.read_text()) if p.exists() and p.stat().st_size else {}
         return {
             "model": data.get("model", "(default — account/global)"),
