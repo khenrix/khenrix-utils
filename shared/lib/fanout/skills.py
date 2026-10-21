@@ -16,6 +16,7 @@ from .artifacts import ArtifactStore, canonical_json
 from .errors import SkillAdmissionError
 from .plan import FanoutPlanV1, FanoutPlanV2, effective_skills
 from .runstate import RunInputs
+from .skill_projection import SkillProjection
 from .verification import TargetEvidenceEnvelope, read_target_evidence
 
 
@@ -99,6 +100,7 @@ class SkillAdmission:
     staged_root: Path | None = None
     engine_delivered: bool = False
     engine_evidence: tuple["SkillLoadEvidence", ...] = ()
+    projection: SkillProjection | None = None
 
     def manifest_dict(self) -> dict[str, object]:
         return {
@@ -214,7 +216,8 @@ def load_target_skill_evidence(
 class SkillResolver:
     """Resolve only configured roots, then stage verified immutable seat bundles."""
 
-    def __init__(self, roots: Sequence[SkillRoot], *, limits: SkillLimits | None = None) -> None:
+    def __init__(self, roots: Sequence[SkillRoot], *, limits: SkillLimits | None = None,
+                 projection: SkillProjection | None = None) -> None:
         if not roots or any(not isinstance(root, SkillRoot) for root in roots):
             raise SkillAdmissionError("skill resolver requires explicit SkillRoot values")
         ordered = tuple(sorted(roots, key=lambda root: (root.precedence, root.identity, str(root.path))))
@@ -224,19 +227,27 @@ class SkillResolver:
             raise SkillAdmissionError("skill root precedence must be unique")
         self.roots = ordered
         self.limits = limits or SkillLimits()
+        if projection is not None and not isinstance(projection, SkillProjection):
+            raise SkillAdmissionError("skill projection policy is invalid")
+        self.projection = projection
 
     def resolve(self, names: Sequence[str]) -> tuple[ResolvedSkill, ...]:
         names = tuple(names)
         if len(names) != len(set(names)):
             raise SkillAdmissionError("requested skill names must be unique")
-        return tuple(self._resolve(name) for name in names)
+        resolved = tuple(self._resolve(name) for name in names)
+        if self.projection is not None:
+            for skill in resolved:
+                self.projection.inline_files(skill)
+        return resolved
 
     def admit(self, names: Sequence[str], *, task_id: str, seat_id: str, provider: str, session_id: str) -> SkillAdmission:
         _identity(task_id, "task id")
         _identity(seat_id, "seat id")
         _identity(provider, "provider")
         _identity(session_id, "session id")
-        return SkillAdmission(task_id, seat_id, provider, session_id, self.resolve(names))
+        return SkillAdmission(task_id, seat_id, provider, session_id, self.resolve(names),
+                              projection=self.projection)
 
     def admit_plan(self, plan: FanoutPlanV1, task_id: str, *, seat_id: str, provider: str,
                    session_id: str) -> SkillAdmission:

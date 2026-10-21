@@ -451,14 +451,55 @@ def _repair_private_publication(root: Path, name: str) -> bool:
     return True
 
 
-def _resolver(runtime, paths):
+def _projection_binding(runtime, path):
+    if path is None:
+        return None
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("skill projection file must be an absolute path")
+    skills = sys.modules[f"{runtime.__name__}.skills"]
+    try:
+        skills._safe_existing_directory(path.parent, "skill projection parent")
+        raw = skills._read_regular(path, max_bytes=1024 * 1024)
+        policy = skills.SkillProjection.from_bytes(raw)
+    except runtime.SkillAdmissionError as error:
+        raise ValueError(f"skill projection policy is invalid: {error}") from error
+    return {"schema_version": "fanout-skill-projection-v1", "path": str(path),
+            "sha256": policy.sha256}
+
+
+def _projection_authority(anchor, run_id, document, *, create=False):
+    key = f"startup-skill-projection/{run_id}"
+    value = _canonical({"schema_version": "fanout-skill-projection-binding-v1",
+                        "run_id": run_id, "skill_projection": document.get("skill_projection")})
+    if create:
+        anchor.create(key, value)
+    else:
+        recorded = anchor.read(key)
+        if recorded.revision != 1 or recorded.value != value:
+            raise ValueError("skill projection differs from original run authority")
+
+
+def _resolver(runtime, paths, projection_binding=None):
     roots = []
     for index, source in enumerate(paths):
         source = Path(source)
         if not source.is_absolute() or not source.is_dir() or source.is_symlink():
             raise ValueError("skill root must be an existing absolute directory")
         roots.append(runtime.SkillRoot(f"root-{index}", source, index))
-    return runtime.SkillResolver(tuple(roots))
+    projection = None
+    if projection_binding is not None:
+        if (not isinstance(projection_binding, dict)
+                or set(projection_binding) != {"schema_version", "path", "sha256"}
+                or not isinstance(projection_binding["path"], str)
+                or _projection_binding(runtime, projection_binding["path"]) != projection_binding):
+            raise ValueError("skill projection policy file changed")
+        skills = sys.modules[f"{runtime.__name__}.skills"]
+        projection = skills.SkillProjection.from_bytes(
+            skills._read_regular(Path(projection_binding["path"]), max_bytes=1024 * 1024))
+        if projection.sha256 != projection_binding["sha256"]:
+            raise ValueError("skill projection policy file changed")
+    return runtime.SkillResolver(tuple(roots), projection=projection)
 
 
 def _separate_paths(repository: Path, run: Path, authority: Path, private: Path) -> None:
@@ -963,11 +1004,12 @@ def _fresh_v2_registry(runtime, plan, registry, provider_runner):
 
 def prepare_v2_run(packet: Mapping[str, object], *, target_roots: Mapping[str, Path],
                    skill_roots, provider_runner=None, runtime=None,
-                   registry=None) -> PreparedRunV2:
+                   registry=None, skill_projection_file=None) -> PreparedRunV2:
     """Recompile and bind every target before any durable startup or provider spend."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
-    resolver = _resolver(runtime, skill_roots)
+    binding = _projection_binding(runtime, skill_projection_file)
+    resolver = _resolver(runtime, skill_roots, binding)
     compiled = verify_admission(dict(packet), runtime, resolver)
     plan = compiled.plan
     if plan.schema_version != "v2":
@@ -1010,7 +1052,8 @@ def prepare_v2_run(packet: Mapping[str, object], *, target_roots: Mapping[str, P
 def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
                  run_root: Path | str, authority_root: Path | str,
                  private_root: Path | str, skill_roots, budget: int,
-                 runtime=None, registry=None, provider_runner=None) -> dict[str, object]:
+                 runtime=None, registry=None, provider_runner=None,
+                 skill_projection_file=None) -> dict[str, object]:
     """Escrow a target-bound run without scheduling work or launching a provider."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
@@ -1023,7 +1066,8 @@ def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
             or (private / _BOOTSTRAP).exists()
             or (private / "startup-baseline").exists()):
         raise ValueError("fanout run, authority, and private descriptor must be fresh")
-    resolver = _resolver(runtime, skill_roots)
+    binding = _projection_binding(runtime, skill_projection_file)
+    resolver = _resolver(runtime, skill_roots, binding)
     compiled = verify_admission(packet, runtime, resolver)
     plan = compiled.plan
     if plan.schema_version != "v2":
@@ -1033,6 +1077,7 @@ def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
     prepared = prepare_v2_run(
         packet, target_roots=target_roots, skill_roots=skill_roots,
         provider_runner=provider_runner, runtime=runtime, registry=registry,
+        skill_projection_file=skill_projection_file,
     )
     inputs = prepared.inputs
     writable_ids = {task.target_id for task in plan.tasks
@@ -1052,6 +1097,7 @@ def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
         "controller_token": escrow_controller.export_token(),
         "provider_profile_descriptors": _registry_descriptors(registry),
         "budget": budget, "runtime_sha256": _runtime_digest(runtime),
+        **({"skill_projection": binding} if binding is not None else {}),
     })
     save_private_descriptor(private, startup, name=_BOOTSTRAP)
     first_target = prepared.target_roots[sorted(prepared.target_roots)[0]]
@@ -1060,6 +1106,7 @@ def start_v2_run(packet: dict[str, object], *, target_roots: Mapping[str, Path],
         target_bindings=inputs.targets,
     )
     anchor.create(*_v2_budget_anchor(inputs, budget))
+    _projection_authority(anchor, inputs.run_id, startup, create=True)
     journal, owner = runtime.RunJournal.create(
         run, inputs, anchor_store=anchor, owner_capability=escrow_owner,
     )
@@ -1095,7 +1142,7 @@ def prepare_run(packet: dict[str, object], *, repo_root: Path | str, run_root: P
                 authority_root: Path | str, private_root: Path | str, skill_roots,
                 budget: int, runtime=None, registry=None, memory_factory=None,
                 memory_preflight: Callable[[], bool] | None = None,
-                provider_runner=None) -> dict[str, object]:
+                provider_runner=None, skill_projection_file=None) -> dict[str, object]:
     """Create a dormant durable run; service.start schedules but never launches seats."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
@@ -1110,7 +1157,8 @@ def prepare_run(packet: dict[str, object], *, repo_root: Path | str, run_root: P
             or (private / _BOOTSTRAP).exists()
             or (private / "startup-baseline").exists()):
         raise ValueError("fanout run, authority, and private descriptor must be fresh")
-    resolver = _resolver(runtime, skill_roots)
+    binding = _projection_binding(runtime, skill_projection_file)
+    resolver = _resolver(runtime, skill_roots, binding)
     compiled = verify_admission(packet, runtime, resolver)
     plan = compiled.plan
     if plan.schema_version != "v1":
@@ -1153,11 +1201,13 @@ def prepare_run(packet: dict[str, object], *, repo_root: Path | str, run_root: P
         "provider_profile_descriptors": _registry_descriptors(registry),
         "budget": budget, "runtime_sha256": _runtime_digest(runtime),
         "baseline_manifest_ref": _ref_document(startup_baseline_ref),
+        **({"skill_projection": binding} if binding is not None else {}),
     }
     save_private_descriptor(private, bootstrap, name=_BOOTSTRAP)
     anchor = runtime.LocalAnchorAuthority.bootstrap(
         authority, run_root=run, repo_root=repository,
     )
+    _projection_authority(anchor, inputs.run_id, bootstrap, create=True)
     journal, owner = runtime.RunJournal.create(
         run, inputs, anchor_store=anchor, owner_capability=escrow_owner,
     )
@@ -1212,6 +1262,7 @@ def prepare_run(packet: dict[str, object], *, repo_root: Path | str, run_root: P
             "workspace_evidence": evidence, "budget": budget,
             "runtime_sha256": _runtime_digest(runtime),
             "baseline_manifest_ref": _ref_document(baseline_ref),
+            **({"skill_projection": binding} if binding is not None else {}),
         }
         save_private_descriptor(private, descriptor)
         return service.start(owner=owner).to_dict()
@@ -1255,13 +1306,15 @@ def recover_start(private_root: Path | str, *, runtime=None, registry=None) -> d
         "controller_token", "provider_profile_descriptors", "budget",
         "runtime_sha256", "baseline_manifest_ref",
     }
+    if "skill_projection" in bootstrap:
+        expected_fields.add("skill_projection")
     if set(bootstrap) != expected_fields or bootstrap["runtime_sha256"] != _runtime_digest(runtime):
         raise ValueError("startup escrow changed runtime or fields")
     repository = Path(bootstrap["repo_root"])
     run = Path(bootstrap["run_root"])
     authority = Path(bootstrap["authority_root"])
     _separate_paths(repository, run, authority, private)
-    resolver = _resolver(runtime, bootstrap["skill_roots"])
+    resolver = _resolver(runtime, bootstrap["skill_roots"], bootstrap.get("skill_projection"))
     compiled = verify_admission(bootstrap["admission_packet"], runtime, resolver)
     plan = compiled.plan
     adapter_catalog = registry or runtime.ProviderRegistry.default()
@@ -1288,6 +1341,7 @@ def recover_start(private_root: Path | str, *, runtime=None, registry=None) -> d
     anchor = runtime.LocalAnchorAuthority(
         authority, run_root=run, repo_root=repository,
     )
+    _projection_authority(anchor, inputs.run_id, bootstrap)
     journal = runtime.RunJournal.resume(run, inputs, owner, anchor_store=anchor)
     try:
         if not (run / "artifacts").is_dir():
@@ -1366,6 +1420,8 @@ def _recover_v2_start(private: Path, bootstrap: dict[str, object], *, runtime,
         "owner_token", "controller_token", "provider_profile_descriptors",
         "budget", "runtime_sha256",
     }
+    if "skill_projection" in bootstrap:
+        expected_fields.add("skill_projection")
     if set(bootstrap) != expected_fields or bootstrap["runtime_sha256"] != _runtime_digest(runtime):
         raise ValueError("v2 startup escrow changed runtime or fields")
     run, authority = Path(bootstrap["run_root"]), Path(bootstrap["authority_root"])
@@ -1374,7 +1430,7 @@ def _recover_v2_start(private: Path, bootstrap: dict[str, object], *, runtime,
         raise ValueError("v2 startup target inputs changed")
     target_roots = {target_id: binding.root for target_id, binding in inputs.targets.items()}
     _separate_target_paths(target_roots, run, authority, private)
-    resolver = _resolver(runtime, bootstrap["skill_roots"])
+    resolver = _resolver(runtime, bootstrap["skill_roots"], bootstrap.get("skill_projection"))
     compiled = verify_admission(bootstrap["admission_packet"], runtime, resolver)
     plan = compiled.plan
     specs = {target.id: target for target in plan.targets}
@@ -1412,6 +1468,7 @@ def _recover_v2_start(private: Path, bootstrap: dict[str, object], *, runtime,
     )
     budget_key, budget_value = _v2_budget_anchor(inputs, bootstrap["budget"])
     budget_anchor = anchor.read(budget_key)
+    _projection_authority(anchor, inputs.run_id, bootstrap)
     if budget_anchor.revision != 1 or budget_anchor.value != budget_value:
         raise ValueError("v2 startup budget differs from authority")
     journal = runtime.RunJournal.resume(run, inputs, owner, anchor_store=anchor)
@@ -1522,6 +1579,9 @@ def inspect_v2_status(private_root: Path | str, *, runtime=None, registry=None,
             authority, run_root=run, repo_root=first_root, target_bindings=inputs.targets,
         )
         anchor.probe()
+        if descriptor.get("runtime_sha256") == _runtime_digest(runtime) or "skill_projection" in descriptor:
+            _projection_authority(anchor, inputs.run_id, descriptor)
+            _resolver(runtime, descriptor["skill_roots"], descriptor.get("skill_projection"))
         budget_key, budget_value = _v2_budget_anchor(inputs, descriptor["budget"])
         budget_anchor = anchor.read(budget_key)
         if budget_anchor.revision != 1 or budget_anchor.value != budget_value:
@@ -1771,7 +1831,7 @@ def recover_amendment(opened: RunContext, private_root: Path | str, *,
         else service.coordinator.registry
     )
     descriptor = load_private_descriptor(private_root)
-    resolver = _resolver(runtime, descriptor["skill_roots"])
+    resolver = _resolver(runtime, descriptor["skill_roots"], descriptor.get("skill_projection"))
     bundles = {task.id: _task_skill_bundle(runtime, resolver, replacement, task.id)
                for task in replacement.tasks if task.kind == "work"
                and task.execution_class != "orchestrator-action"}
@@ -1853,6 +1913,9 @@ def _inspect_v1_run(private_root: Path | str, *, runtime, registry=None):
     _separate_paths(repository, run, authority, private)
     owner = runtime.OwnerCapability.from_token(descriptor["owner_token"])
     anchor = runtime.LocalAnchorAuthority.inspect(authority, run_root=run, repo_root=repository)
+    if descriptor.get("runtime_sha256") == _runtime_digest(runtime) or "skill_projection" in descriptor:
+        _projection_authority(anchor, initial_inputs.run_id, descriptor)
+        _resolver(runtime, descriptor["skill_roots"], descriptor.get("skill_projection"))
     inspection = runtime.RunJournal.inspect(run, initial_inputs, owner, anchor_store=anchor)
     if inspection.pending_authority or inspection.recovery.torn_tail_bytes:
         raise ValueError("pending journal authority needs recover-journal --private-root before resume")
@@ -2080,7 +2143,7 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
     roots = {key: value.root for key, value in inputs.targets.items()}
     run, authority, private = Path(descriptor["run_root"]), Path(descriptor["authority_root"]), Path(private_root)
     _separate_target_paths(roots, run, authority, private)
-    resolver = _resolver(runtime, descriptor["skill_roots"])
+    resolver = _resolver(runtime, descriptor["skill_roots"], descriptor.get("skill_projection"))
     compiled = verify_admission(descriptor["admission_packet"], runtime, resolver)
     plan = compiled.plan
     if plan.schema_version != "v2":
@@ -2105,6 +2168,7 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
                                                     target_bindings=inputs.targets)
     anchor = runtime.LocalAnchorAuthority.reopen_after_inspection(inspected, repo_root=first,
                                                                target_bindings=inputs.targets)
+    _projection_authority(anchor, inputs.run_id, descriptor)
     key, value = _v2_budget_anchor(inputs, descriptor["budget"])
     budget = anchor.read(key)
     if budget.revision != 1 or budget.value != value:
@@ -2210,7 +2274,7 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
     authority = Path(descriptor["authority_root"])
     private = Path(private_root)
     _separate_paths(repository, run, authority, private)
-    resolver = _resolver(runtime, descriptor["skill_roots"])
+    resolver = _resolver(runtime, descriptor["skill_roots"], descriptor.get("skill_projection"))
     compiled = verify_admission(descriptor["admission_packet"], runtime, resolver)
     initial_plan = compiled.plan
     if for_dispatch:
@@ -2233,6 +2297,7 @@ def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memor
     anchor = runtime.LocalAnchorAuthority(
         authority, run_root=run, repo_root=repository,
     )
+    _projection_authority(anchor, initial_inputs.run_id, descriptor)
     inspection = None
     if for_dispatch:
         inspection = runtime.RunJournal.inspect(
@@ -2710,6 +2775,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--run-root", required=True)
     start.add_argument("--authority-root", required=True)
     start.add_argument("--skill-root", action="append", required=True)
+    start.add_argument("--skill-projection-file", help="optional exact-tree reviewed inline-file policy")
     start.add_argument("--max-turns", type=int, required=True)
     command("recover-start", "rebuild a missing final descriptor from private pre-spend escrow")
     command("status", "read safe durable task metadata")
@@ -2786,6 +2852,7 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                     authority_root=Path(args.authority_root), private_root=Path(args.private_root),
                     skill_roots=skill_roots, budget=args.max_turns,
                     runtime=runtime, registry=registry, provider_runner=provider_runner,
+                    skill_projection_file=args.skill_projection_file,
                 )
             else:
                 if args.target_root or args.repo_root is None:
@@ -2796,6 +2863,7 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                     authority_root=Path(args.authority_root), private_root=Path(args.private_root),
                     skill_roots=skill_roots,
                     budget=args.max_turns, **common,
+                    skill_projection_file=args.skill_projection_file,
                 )
             print(_canonical(status).decode("utf-8"), end="")
             return 0

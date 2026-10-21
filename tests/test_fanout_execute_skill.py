@@ -1273,7 +1273,7 @@ def test_v2_repeated_plan_uses_distinct_seat_identities_and_cold_reopens_exact_s
     assert identities[0].isdisjoint(identities[1])
 
 
-def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None):
+def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None, skill_projection_file=None):
     packet = _v2_two_repo_packet(tmp_path, writer_check=writer_check)
     address_dir, booking_dir = tmp_path / "address-work", tmp_path / "booking-work"
     address_dir.mkdir()
@@ -1288,8 +1288,24 @@ def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None):
         skill_roots=(tmp_path / "skills",), budget=12,
         runtime=fanout, registry=_registry(),
         provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+        skill_projection_file=skill_projection_file,
     )
     return private, run, authority, address, booking
+
+
+def test_v2_cold_projection_rejects_changed_policy_before_provider_spend(execute, tmp_path):
+    policy = tmp_path / "projection.json"
+    policy.write_bytes(fanout.canonical_json({
+        "schema_version": "fanout-skill-projection-v1", "reviews": []}))
+    private, _run, _authority, _address, _booking = _v2_cold_status_fixture(
+        execute, tmp_path, skill_projection_file=policy)
+    assert execute.inspect_v2_status(private, runtime=fanout, registry=_registry())["target_states"] == {
+        "address": "pending", "booking": "pending"}
+    policy.write_bytes(policy.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="projection"):
+        execute.open_run(private, runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+                         memory_preflight=lambda: True,
+                         provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
 
 
 def test_v2_cli_cold_status_reads_two_dormant_targets_without_repair(execute, tmp_path, capsys):
@@ -2102,6 +2118,71 @@ def test_start_and_cold_status_use_real_durable_stores_without_spend(execute, tm
     ) as reopened:
         assert reopened.service.status().to_dict() == status
     assert not launches
+
+
+@pytest.mark.parametrize("drift", ["file", "delete-binding", "rebind"])
+def test_cold_projection_policy_cannot_change_or_downgrade_anchored_run(execute, tmp_path, drift):
+    packet, _ = _question_packet(tmp_path, executors=("claude", "codex"))
+    repo = _repository(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    policy = tmp_path / "projection.json"
+    policy.write_bytes(fanout.canonical_json({
+        "schema_version": "fanout-skill-projection-v1", "reviews": []}))
+    execute.prepare_run(packet, repo_root=repo, run_root=run, authority_root=authority,
+        private_root=private, skill_roots=(tmp_path / "skills",), budget=12,
+        runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+        memory_preflight=lambda: True, skill_projection_file=policy,
+        provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
+    with execute.open_run(private, runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+                          memory_preflight=lambda: True):
+        pass
+    if drift == "file":
+        policy.write_bytes(policy.read_bytes() + b"\n")
+    else:
+        for name in (execute._DESCRIPTOR, execute._BOOTSTRAP):
+            document = execute.load_private_descriptor(private, name=name)
+            if drift == "delete-binding":
+                document.pop("skill_projection")
+            else:
+                other = tmp_path / "other-policy.json"
+                other.write_bytes(policy.read_bytes())
+                document["skill_projection"]["path"] = str(other)
+            envelope = {"schema_version": "fanout-private-envelope-v1",
+                        "sha256": execute._sha256(execute._canonical(document)), "document": document}
+            (private / name).write_bytes(execute._canonical(envelope))
+    with pytest.raises(ValueError, match="projection"):
+        execute.open_run(private, runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+                         memory_preflight=lambda: True)
+
+
+@pytest.mark.parametrize("invalid", ["malformed", "relative-path", "unknown-file"])
+def test_projection_policy_rejected_before_startup_or_spend(execute, tmp_path, invalid):
+    packet, resolver = _question_packet(tmp_path, executors=("claude", "codex"))
+    skill = tmp_path / "skills/reviewed"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("Read all required instructions.\n")
+    packet["draft"]["tasks"][0]["required_skills"] = ["reviewed"]
+    packet["draft"]["tasks"][0]["none_reason"] = None
+    packet["compiled"] = fanout.compile_superpowers_plan(packet["source_markdown"].encode(),
+        source_path=packet["compiled"]["plan"]["source"]["path"],
+        draft_bytes=fanout.canonical_json(packet["draft"]), resolver=resolver).to_dict()
+    policy = tmp_path / "projection.json"
+    tree = resolver.resolve(("reviewed",))[0].tree_hash
+    policy.write_bytes(b"not json" if invalid == "malformed" else fanout.canonical_json({
+        "schema_version": "fanout-skill-projection-v1", "reviews": [{
+            "tree_hash": tree, "inline_files": ["SKILL.md", "missing.json"],
+            "required_resources": []}]}))
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    with pytest.raises((ValueError, fanout.CompilerError), match="projection|unknown file"):
+        execute.prepare_run(packet, repo_root=tmp_path / "unused-repository", run_root=run,
+            authority_root=authority, private_root=private, skill_roots=(tmp_path / "skills",),
+            budget=12, runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+            memory_preflight=lambda: pytest.fail("memory preflight before policy rejection"),
+            skill_projection_file=Path("relative.json") if invalid == "relative-path" else policy,
+            provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
+    assert not run.exists() and not authority.exists()
 
 
 def test_fresh_readonly_start_records_installed_profiles_and_cold_dispatch_refuses_upgrade(

@@ -42,6 +42,29 @@ failed prerequisite; never replace context with an empty store, silently switch
 models or dispatch repository-writing worker seats. A test-injected transport is
 not an end-user workaround for a failed public entrypoint.
 
+## Optional skill presentation
+
+Full skill delivery is the default. To use a separately reviewed presentation,
+pass `start --skill-projection-file /absolute/path/reviewed-policy.json`. The JSON
+contains `schema_version: "fanout-skill-projection-v1"` and a `reviews` array. Each
+review has exactly `tree_hash` (the complete admitted `ResolvedSkill.tree_hash`,
+including its `sha256:` prefix), `inline_files` (exact skill-relative file paths)
+and `required_resources` (reviewed required resources in other formats).
+
+Keep `SKILL.md`, every `.md`, `.txt`, `.rst` and `.adoc` file (case-insensitive),
+and every required resource inline. Review backtick paths and conditional
+instructions as well as Markdown links before omitting helper or packaging
+contents. Unknown tree hashes, including a new skill version, receive full
+delivery. This does not enable projection globally or establish measured savings.
+
+Admission still verifies and stages the complete original tree. Every staged
+file is verified before each turn, including omitted files. The prompt lists exact
+authorized native file paths; these staged skill reads remain available alongside
+installed skills and read tools. Availability, inline delivery and an observed
+native read are separate evidence. Policy path, exact bytes and version bind to
+startup and recovery authority; keep that file unchanged for the run. Start a
+fresh run to use a changed policy. Peer answers and all required finals stay full.
+
 ## Peer exchange and independent turns
 
 Initial answers are blind. At each durable all-terminal barrier, later turns

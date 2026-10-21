@@ -2737,8 +2737,19 @@ class CollaborationCoordinator:
         if admission is None:
             raise CollaborationValidationError("staged skill delivery is missing")
         files: list[dict[str, object]] = []
+        available: list[dict[str, object]] = []
+        projections: list[dict[str, object]] = []
+        projection = admission.projection
         total = 0
         for skill in admission.skills:
+            try:
+                inline = None if projection is None else projection.inline_files(skill)
+            except SkillAdmissionError as error:
+                raise CollaborationValidationError("staged skill projection changed") from error
+            if projection is not None:
+                projections.append({"name": skill.name, "tree_hash": skill.tree_hash,
+                                    "mode": "reviewed" if projection.reviewed(skill) else "full-unreviewed",
+                                    "inline_files": sorted(inline)})
             for relative, digest, size, mode in skill.manifest:
                 total += size
                 if total > MAX_SKILL_BUNDLE_BYTES:
@@ -2754,12 +2765,18 @@ class CollaborationCoordinator:
                     ) from error
                 if len(data) != size or _digest(data) != digest or total > MAX_SKILL_BUNDLE_BYTES:
                     raise CollaborationValidationError("staged skill delivery changed")
+                if projection is not None:
+                    available.append({"path": f"{skill.name}/{relative}", "sha256": digest,
+                                      "size": size, "mode": mode,
+                                      "native_path": str(seat.staged_root / skill.name / relative)})
+                    if relative not in inline:
+                        continue
                 files.append({
                     "content_base64": base64.b64encode(data).decode("ascii"),
                     "mode": mode, "path": f"{skill.name}/{relative}",
                     "sha256": digest, "size": size,
                 })
-        return canonical_json({
+        document = {
             "delivery_evidence_sha256": seat.delivery_evidence_sha256,
             "engine_evidence": json.loads(
                 _delivery_evidence_bytes(admission.engine_evidence).decode("utf-8")
@@ -2767,7 +2784,15 @@ class CollaborationCoordinator:
             "files": files,
             "schema_version": "fanout-staged-skill-files-v1",
             "staged_manifest_sha256": seat.staged_manifest_sha256,
-        })
+        }
+        if projection is not None:
+            document["available_files"] = available
+            document["projection"] = {"schema_version": "fanout-skill-projection-v1",
+                                      "policy_sha256": projection.sha256,
+                                      "skills": projections,
+                                      "native_read_authority": "The exact available_files native_path values are authorized staged skill reads, including within the otherwise prohibited run store. They do not authorize exploring other run or control files.",
+                                      "read_evidence": "availability and inline delivery do not prove native reads"}
+        return canonical_json(document)
 
     def _checkpoint(self, packet: TaskPacket, terminal: TerminalSeatResult) -> Checkpoint:
         if terminal.answer_ref is None or terminal.session_id is None:

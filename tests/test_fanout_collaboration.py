@@ -720,15 +720,15 @@ def _v2_hermetic_round(
 @pytest.mark.parametrize("cold_intent", (False, True))
 def test_default_target_bound_native_reads_preserve_intents_sessions_and_peer_delivery(tmp_path, monkeypatch, cold_intent):
     panel = ("claude", "codex", "agy")
+    native_home = tmp_path / "native-home"
+    native_home.mkdir()
+    monkeypatch.setenv("HOME", str(native_home))
     packet, seats, prior, journal, _provider, store = _v2_hermetic_round(
         tmp_path, monkeypatch, executors=panel, rounds=2,
     )
     providers = sys.modules[f"{SPEC.name}.providers"]
     process = sys.modules[f"{SPEC.name}.process"]
     commands = []
-    native_home = tmp_path / "native-home"
-    native_home.mkdir()
-    monkeypatch.setenv("HOME", str(native_home))
 
     def native_process(command):
         executor = Path(command.argv[0]).name
