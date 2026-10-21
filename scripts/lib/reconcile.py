@@ -1260,10 +1260,13 @@ def toml_array(a) -> str:
     return "[" + ", ".join(toml_scalar(x) for x in a) + "]"
 
 
-def apply_mcp(cli: str, name: str, spec: dict, *, expected=_UNREAD, published=None) -> str:
+def apply_mcp(cli: str, name: str, spec: dict, *, expected=_UNREAD,
+              expected_path: Path | None = None, published=None) -> str:
     spec = expand(spec)
     if cli == "claude":
         path = claude_mcp_path()
+        if expected_path is not None and path != expected_path:
+            raise ReconcileReadError("Claude MCP location changed; re-plan before applying.")
         if expected is _UNREAD:
             expected = config_preimage(path)
         require_preimage(path, expected)
@@ -1486,7 +1489,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool,
         status = mcp_status[name]
         if status == "ADD":
             actions.append(apply_mcp(cli, name, desired[name], expected=expected[mcp_path],
-                                     published=published))
+                                     expected_path=mcp_path, published=published))
             if cli == "claude":
                 # Native serialization is outside this publisher. Reclassify the
                 # fresh MCP state instead of reusing earlier ADD decisions.

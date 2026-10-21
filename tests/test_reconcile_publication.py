@@ -394,3 +394,31 @@ def test_claude_native_mcp_refuses_symlinks_before_invocation(tmp_path, monkeypa
     with pytest.raises(reconcile.ReconcileReadError, match="symlink"):
         reconcile.apply_mcp("claude", "docs", {"url": "https://example.org"})
     assert target.read_text() == '{}'
+
+
+def test_claude_mcp_location_change_is_rejected_before_native_invocation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    modern = reconcile.claude_mcp_path()
+    modern.write_text('{}')
+    legacy = reconcile.resolve_native_roots().claude / ".config.json"
+    caps = {"_dir": ROOT, "mcp_servers": {"docs": {"url": "https://example.org"}}}
+    monkeypatch.setattr(reconcile, "claude_mcp_listed", lambda: {})
+    for name in ("statusline_asset_report", "hook_asset_report", "shell_aliases_report"):
+        monkeypatch.setattr(reconcile, name, lambda *args: ([], lambda update: []))
+    def move_effective_location(*args):
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text('{}')
+        return [], lambda update: []
+    monkeypatch.setattr(reconcile, "instructions_report", move_effective_location)
+    invoked = []
+    def native(command):
+        invoked.append(command)
+        legacy.write_text('{"native":"wrote"}')
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(reconcile, "run", native)
+    with pytest.raises(reconcile.ReconcileReadError, match="location changed.*re-plan"):
+        reconcile.reconcile("claude", caps, True, False)
+    assert invoked == []
+    assert modern.read_text() == '{}'
+    assert legacy.read_text() == '{}'
