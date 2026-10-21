@@ -17,6 +17,18 @@ def test_evaluation_snapshot_api_available_before_campaign_spend():
     assert callable(getattr(checks, "capture_evaluation_snapshot", None)), "campaign has no pre-spend source snapshot"
 
 
+def test_native_context_changes_the_instrument_identity_and_keeps_source_delivery(tmp_path):
+    put(tmp_path, "capabilities.toml", "")
+    put(tmp_path, "shared/skills/alpha/SKILL.md", "Read native configuration.\n")
+    helper = put(tmp_path, "shared/lib/native_context.py", "# original native discovery\n")
+    source_before = checks.source_manifest(tmp_path, "alpha")
+    instrument_before = checks.instrument_manifest(tmp_path)
+    helper.write_text("# changed native discovery\n")
+    assert checks.instrument_manifest(tmp_path) != instrument_before
+    assert checks.source_manifest(tmp_path, "alpha") != source_before
+    assert "shared/lib/native_context.py" in dict(checks.source_manifest(tmp_path, "alpha"))
+
+
 @pytest.mark.parametrize("change", ("file-bytes", "destination"))
 def test_regular_file_bundle_and_destination_are_delivered_behavior(tmp_path, change):
     put(tmp_path, "shared/skills/alpha/SKILL.md", "Read the bundled asset.\n")

@@ -557,11 +557,18 @@ def _runtime_digest(runtime) -> str:
     files = sorted(root.glob("*.py"))
     if not files:
         raise ValueError("fanout runtime source is missing")
+    resolver = getattr(getattr(runtime, "process", None), "resolve_native_roots", None)
+    helper = sys.modules.get(getattr(resolver, "__module__", None))
+    helper_source = getattr(helper, "__file__", None)
+    if not isinstance(helper_source, str):
+        raise ValueError("fanout native context source is missing")
+    sources = [(path.name, path) for path in files]
+    sources.append(("../native_context.py", Path(helper_source)))
     hasher = hashlib.sha256()
-    for path in files:
+    for name, path in sources:
         if path.is_symlink() or not path.is_file():
             raise ValueError("fanout runtime source is unsafe")
-        hasher.update(path.name.encode("utf-8"))
+        hasher.update(name.encode("utf-8"))
         hasher.update(b"\0")
         hasher.update(path.read_bytes())
         hasher.update(b"\0")

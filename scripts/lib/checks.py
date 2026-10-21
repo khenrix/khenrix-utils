@@ -283,6 +283,7 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py",
 # certified"; what "certified" means is decided by these files, so a change to them has to
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
+                 "shared/lib/native_context.py",  # imported by the native eval bridge
                  "scripts/eval_harness.py",  # decides what the gate RUNS
                  "scripts/eval_agy_read_policy.py",  # enforces installed-read authorization
                  "scripts/eval_patch_acceptance.py",  # strict unchanged patch acceptance

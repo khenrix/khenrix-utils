@@ -35,6 +35,44 @@ def execute():
     return module
 
 
+@pytest.mark.parametrize("layout", ["source/shared/lib", "delivered/lib"])
+def test_runtime_digest_includes_the_imported_native_context_source(execute, tmp_path, monkeypatch, layout):
+    library = tmp_path / layout
+    package = library / "fanout"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("# stable native runtime\n")
+    helper = library / "native_context.py"
+    shutil.copyfile(ROOT / "shared/lib/native_context.py", helper)
+    spec = importlib.util.spec_from_file_location("digest_native_context_fixture", helper)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    runtime = SimpleNamespace(__file__=str(package / "__init__.py"),
+        process=SimpleNamespace(resolve_native_roots=module.resolve_native_roots))
+    before = execute._runtime_digest(runtime)
+    helper.write_bytes(helper.read_bytes() + b"\n# changed discovery behavior source\n")
+    assert execute._runtime_digest(runtime) != before
+
+
+def test_runtime_digest_refuses_an_unsafe_imported_native_context_source(execute, tmp_path, monkeypatch):
+    package = tmp_path / "fanout"
+    package.mkdir()
+    (package / "__init__.py").write_text("# native runtime\n")
+    actual = tmp_path / "actual-helper.py"
+    actual.write_text("# helper source\n")
+    helper = tmp_path / "native_context.py"
+    helper.symlink_to(actual)
+    module = SimpleNamespace(__file__=str(helper))
+    monkeypatch.setitem(sys.modules, "unsafe_digest_context", module)
+    def resolver():
+        raise AssertionError("digest must not resolve historical roots")
+    resolver.__module__ = "unsafe_digest_context"
+    runtime = SimpleNamespace(__file__=str(package / "__init__.py"),
+        process=SimpleNamespace(resolve_native_roots=resolver))
+    with pytest.raises(ValueError, match="runtime source is unsafe"):
+        execute._runtime_digest(runtime)
+
+
 def test_v2_native_read_cli_dispatch_needs_no_retired_boundary(execute):
     plan = SimpleNamespace(schema_version="v2", tasks=(
         SimpleNamespace(kind="work", execution_class="read-only"),
@@ -54,6 +92,7 @@ def test_installed_skill_entrypoint_does_not_dirty_its_bundle_with_bytecode(
         ROOT / "shared/lib/fanout", isolated / "lib/fanout",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
+    shutil.copy2(ROOT / "shared/lib/native_context.py", isolated / "lib/native_context.py")
     scripts = isolated / "scripts"
     scripts.mkdir()
     cli = scripts / source_cli.name
@@ -537,6 +576,7 @@ def test_cold_helper_preserves_host_parent_alias(tmp_path, source_cli):
     shutil.copy2(source_cli, installed / "scripts" / source_cli.name)
     shutil.copytree(ROOT / "shared/lib/fanout", installed / "shared/lib/fanout",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(ROOT / "shared/lib/native_context.py", installed / "shared/lib/native_context.py")
     alias = tmp_path / "owner-alias"
     alias.symlink_to(installed.parent, target_is_directory=True)
     command = '''
