@@ -21,7 +21,22 @@ class NativeRoots:
 def resolve_native_roots(environment: Mapping[str, str] | None = None) -> NativeRoots:
     """Resolve overrides from the supplied environment, never ambient fallbacks."""
     source = os.environ if environment is None else environment
-    home = Path(source["HOME"]) if "HOME" in source else Path.home()
+    if "HOME" in source:
+        home = Path(source["HOME"])
+    elif os.name == "nt":
+        if "USERPROFILE" in source:
+            home = Path(source["USERPROFILE"])
+        elif "HOMEPATH" in source:
+            home = Path(source.get("HOMEDRIVE", "")) / source["HOMEPATH"]
+        else:
+            raise RuntimeError("native home is unavailable in the supplied environment")
+    else:
+        # Path.home() would consult this process's HOME, not the child mapping.
+        import pwd
+        try:
+            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except KeyError as error:
+            raise RuntimeError("native account home is unavailable") from error
     return NativeRoots(home, Path(source.get("CODEX_HOME", home / ".codex")),
                        Path(source.get("CLAUDE_CONFIG_DIR", home / ".claude")),
                        home / ".gemini/antigravity-cli")

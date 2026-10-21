@@ -57,6 +57,56 @@ def test_native_root_resolver_uses_only_the_explicit_environment(tmp_path, monke
         roots.home = tmp_path
 
 
+@pytest.mark.skipif(os.name != "posix", reason="native process supervision requires POSIX")
+@pytest.mark.parametrize("overrides", [False, True])
+def test_native_roots_without_home_match_the_real_child_account_home(tmp_path, monkeypatch, overrides):
+    monkeypatch.setenv("HOME", str(tmp_path / "ambient-parent"))
+    environment = ({"CODEX_HOME": str(tmp_path / "codex"),
+                    "CLAUDE_CONFIG_DIR": str(tmp_path / "claude")} if overrides else {})
+    roots = process.resolve_native_roots(environment)
+    command = process.ProcessCommand(
+        (sys.executable, "-c", "from pathlib import Path; print(Path.home())"), b"",
+        cwd=tmp_path, trusted_native=True, native_roots=roots,
+        slot_root=tmp_path / "slots")
+    result = process.run_command(command, base_environment=environment)
+    assert result.returncode == 0
+    child_home = Path(result.stdout.decode().strip())
+    assert roots.home == child_home
+    assert roots.agy == child_home / ".gemini/antigravity-cli"
+    assert roots.codex == (tmp_path / "codex" if overrides else child_home / ".codex")
+    assert roots.claude == (tmp_path / "claude" if overrides else child_home / ".claude")
+    assert process.resolve_native_roots().home == tmp_path / "ambient-parent"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native process supervision requires POSIX")
+def test_empty_child_environment_rejects_an_ambient_home_binding(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "ambient-parent"))
+    command = process.ProcessCommand((sys.executable, "-c", "pass"), b"", cwd=tmp_path,
+        trusted_native=True, native_roots=process.resolve_native_roots())
+    monkeypatch.setattr(process, "_supervise_command", lambda *a, **k: pytest.fail("root mismatch spawned"))
+    with pytest.raises(process.ProcessValidationError, match="native.*root"):
+        process.run_command(command, base_environment={})
+
+
+@pytest.mark.parametrize("environment,expected", [
+    ({"USERPROFILE": "C:/Users/child"}, "C:/Users/child"),
+    ({"HOMEDRIVE": "C:", "HOMEPATH": "/Users/child"}, "C:/Users/child"),
+    ({}, None),
+])
+def test_windows_home_fallback_uses_only_the_supplied_environment(monkeypatch, environment, expected):
+    from pathlib import PureWindowsPath
+    from types import SimpleNamespace
+    native_context = sys.modules[process.resolve_native_roots.__module__]
+    monkeypatch.setenv("USERPROFILE", "C:/Users/ambient-parent")
+    monkeypatch.setattr(native_context, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(native_context, "Path", PureWindowsPath)
+    if expected is None:
+        with pytest.raises(RuntimeError, match="native home is unavailable"):
+            native_context.resolve_native_roots(environment)
+    else:
+        assert native_context.resolve_native_roots(environment).home == PureWindowsPath(expected)
+
+
 def test_private_vertex_route_reader_uses_the_effective_claude_root(tmp_path):
     root = tmp_path / "claude-override"
     root.mkdir(mode=0o700)
