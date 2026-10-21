@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tomllib
 
 import pytest
@@ -243,3 +244,153 @@ def test_native_root_overrides_bind_reports_and_hooks(tmp_path, monkeypatch):
     assert (tmp_path / "claude/settings.json").is_file()
     assert reconcile.claude_hook_command("hooks/check.py") == str(tmp_path / "claude/hooks/check.py")
     assert not (tmp_path / "home").exists()
+
+
+def test_claude_mcp_validates_review_before_native_invocation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    path = reconcile.claude_mcp_path()
+    path.write_text('{"external":true}')
+    invoked = []
+    monkeypatch.setattr(reconcile, "run", lambda command: (
+        invoked.append(command) or subprocess.CompletedProcess(command, 0, "", "")))
+    with pytest.raises(reconcile.ReconcileReadError, match="re-plan"):
+        reconcile.apply_mcp("claude", "docs", {"url": "https://example.org"}, expected=b'{}')
+    assert invoked == []
+    assert path.read_text() == '{"external":true}'
+
+
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("legacy", ["absent", "nonempty", "empty-writable", "empty-readonly", "empty-with-modern"])
+def test_claude_mcp_location_matches_licensed_resolver(tmp_path, monkeypatch, override, legacy):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CODE_CUSTOM_OAUTH_URL", raising=False)
+    if override:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "override"))
+    else:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    roots = reconcile.resolve_native_roots()
+    roots.claude.mkdir(parents=True)
+    modern = (roots.claude if override else home) / ".claude.json"
+    old = roots.claude / ".config.json"
+    if legacy != "absent":
+        old.write_text('{}' if legacy == "nonempty" else '')
+        old.chmod(0o400 if legacy == "empty-readonly" else 0o600)
+    if legacy == "empty-with-modern":
+        modern.write_text('{}')
+    expected = old if legacy in ("nonempty", "empty-writable") else modern
+    assert reconcile.claude_mcp_path() == expected
+
+
+def test_claude_custom_oauth_mcp_filename_matches_installed_production_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "override"))
+    monkeypatch.setenv("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://example.org")
+    assert reconcile.claude_mcp_path() == tmp_path / "override/.claude-custom-oauth.json"
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_json_publication_refuses_config_symlinks(tmp_path, dangling):
+    target = tmp_path / "target.json"
+    if not dangling:
+        target.write_text('{"local":true}')
+    path = tmp_path / "settings.json"
+    path.symlink_to(target)
+    with pytest.raises(reconcile.ReconcileReadError, match="symlink"):
+        reconcile.write_json_object(path, {"managed": True})
+    assert path.is_symlink()
+    assert (target.read_text() if target.exists() else None) == (None if dangling else '{"local":true}')
+    assert not list(tmp_path.glob("*.khenrix-backup*"))
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("cli", ["codex", "agy"])
+def test_sequential_mcp_writes_do_not_accept_intervening_external_edit(tmp_path, monkeypatch, cli):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = reconcile.codex_config_path() if cli == "codex" else reconcile.agy_mcp_path()
+    path.parent.mkdir(parents=True)
+    path.write_text('local = true\n' if cli == "codex" else '{"local":true}')
+    caps = {"_dir": ROOT, "mcp_servers": {
+        "one": {"url": "https://one.example.org"}, "two": {"url": "https://two.example.org"}}}
+    for name in ("statusline_asset_report", "hook_asset_report", "shell_aliases_report", "instructions_report"):
+        monkeypatch.setattr(reconcile, name, lambda *args: ([], lambda update: []))
+    publish = reconcile.publish_config
+    edited = []
+    def edit_after_publication(*args, **kwargs):
+        payload = publish(*args, **kwargs)
+        if not edited:
+            current = path.read_text()
+            external = (current + '\n[mcp_servers.two]\nurl = "https://external.example.org"\n'
+                        if cli == "codex" else json.dumps({**json.loads(current), "mcpServers": {
+                            **json.loads(current)["mcpServers"], "two": {"httpUrl": "https://external.example.org"}}}))
+            path.write_text(external)
+            edited.append(path.read_bytes())
+        return payload
+    monkeypatch.setattr(reconcile, "publish_config", edit_after_publication)
+    with pytest.raises(reconcile.ReconcileReadError, match="re-plan"):
+        reconcile.reconcile(cli, caps, True, False)
+    assert path.read_bytes() == edited[0]
+
+
+@pytest.mark.parametrize("cli", ["codex", "claude", "agy"])
+def test_baseline_defaults_sequence_rejects_external_edit_after_own_write(tmp_path, monkeypatch, cli):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = {"codex": reconcile.codex_config_path, "claude": reconcile.claude_settings_path,
+            "agy": reconcile.agy_settings_path}[cli]()
+    caps = {"settings": {"approval_policy": "never", "trusted_paths": ["/project"],
+                         "claude": {"theme": "managed"},
+                         "defaults": {cli: {"model": "wanted"}}}}
+    _, apply = reconcile.settings_report(cli, caps)
+    publish = reconcile.publish_config
+    edited = []
+    def edit_after_publication(*args, **kwargs):
+        payload = publish(*args, **kwargs)
+        if not edited:
+            path.write_text(path.read_text() + '\nexternal = true\n' if cli == "codex" else
+                            json.dumps({**json.loads(path.read_text()), "external": True}))
+            edited.append(path.read_bytes())
+        return payload
+    monkeypatch.setattr(reconcile, "publish_config", edit_after_publication)
+    with pytest.raises(reconcile.ReconcileReadError, match="re-plan"):
+        apply(True)
+    assert path.read_bytes() == edited[0]
+
+
+def test_claude_native_mcp_reclassifies_before_a_second_add(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    path = reconcile.claude_mcp_path()
+    path.write_text('{}')
+    caps = {"_dir": ROOT, "mcp_servers": {
+        "one": {"url": "https://one.example.org"}, "two": {"url": "https://two.example.org"}}}
+    for name in ("statusline_asset_report", "hook_asset_report", "shell_aliases_report", "instructions_report"):
+        monkeypatch.setattr(reconcile, name, lambda *args: ([], lambda update: []))
+    added = []
+    def native(command):
+        if command[2] == "add":
+            name = command[-2]
+            added.append(name)
+            path.write_text(json.dumps({"mcpServers": {
+                "one": {"url": "https://one.example.org"},
+                "two": {"url": "https://external.example.org"}}}))
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(reconcile, "run", native)
+    reconcile.reconcile("claude", caps, True, False)
+    assert added == ["one"]
+    assert json.loads(path.read_text())["mcpServers"]["two"]["url"] == "https://external.example.org"
+
+
+def test_claude_native_mcp_refuses_symlinks_before_invocation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    target = tmp_path / "target.json"
+    target.write_text('{}')
+    reconcile.claude_mcp_path().symlink_to(target)
+    def unexpected(command):
+        pytest.fail("native invocation must not occur for a symlink target")
+    monkeypatch.setattr(reconcile, "run", unexpected)
+    with pytest.raises(reconcile.ReconcileReadError, match="symlink"):
+        reconcile.apply_mcp("claude", "docs", {"url": "https://example.org"})
+    assert target.read_text() == '{}'
