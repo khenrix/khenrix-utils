@@ -1,18 +1,10 @@
 {
-  "agy_answer_only_support": {
-    "native_read_denial_qualification_sha256": "b1baa48326039530aec465ab1c0ea72827ec56ce647aaaa1e5f0e646ca0292bf",
-    "post_fix_zero_tool_trial_sha256": "a0bf8c2cd49514f4fb4c0ae4fd88d15b79e1937b1a00566023c957909273c59d"
-  },
-  "agy_installed_read_support": {
-    "native_initial_resume_qualification_sha256": "fbc6e839816771874133ee5b97c0320d9cd5ba6dbafd9f30d8250e9e51761eb4",
-    "policy_helper_sha256": "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68",
-    "scope": "Exact-file consumer allowlist; actual initial/resumed allowed reads and denied read/write attempts. No OS confinement claim."
-  },
-  "instrument_hash": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+  "schema_version": 1,
+  "recorded_at": "2026-10-21T21:52:27.001775+00:00",
   "instrument_manifest": [
     [
       "Makefile",
-      "e5e778a17fb3f780f2101b388009c94061594437ff040a6905f1b25693fc69b4"
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
     ],
     [
       "components/maka/interactive/configure_maka_openai_relay.mjs",
@@ -56,7 +48,7 @@
     ],
     [
       "scripts/eval_harness.py",
-      "a83610e1ce893b456ce1aabd13e2d0bc3a1ecbc0dc2c5b711e8622b34db84390"
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
     ],
     [
       "scripts/eval_patch_acceptance.py",
@@ -64,7 +56,7 @@
     ],
     [
       "scripts/lib/checks.py",
-      "28d730b75d391957814461f1920d6009d0df4b035ccaab1d2f028ea80e8dbd79"
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
     ],
     [
       "scripts/lib/portability.py",
@@ -72,7 +64,7 @@
     ],
     [
       "scripts/render.py",
-      "98e9d6f4b581027121431fc7799b6edb4285f47dab18c9d2c858cf41177fd4d8"
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
     ],
     [
       "shared/lib/fanout/__init__.py",
@@ -87,8 +79,12 @@
       "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
     ],
     [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
       "shared/lib/fanout/collaboration.py",
-      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
     ],
     [
       "shared/lib/fanout/compiler.py",
@@ -104,7 +100,7 @@
     ],
     [
       "shared/lib/fanout/diagnostic.py",
-      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
     ],
     [
       "shared/lib/fanout/durable_io.py",
@@ -116,7 +112,7 @@
     ],
     [
       "shared/lib/fanout/eval_provider.py",
-      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
     ],
     [
       "shared/lib/fanout/evaluation.py",
@@ -144,7 +140,7 @@
     ],
     [
       "shared/lib/fanout/native_trace.py",
-      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
     ],
     [
       "shared/lib/fanout/plan.py",
@@ -152,11 +148,11 @@
     ],
     [
       "shared/lib/fanout/process.py",
-      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
     ],
     [
       "shared/lib/fanout/providers.py",
-      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
     ],
     [
       "shared/lib/fanout/repo.py",
@@ -175,8 +171,12 @@
       "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
     ],
     [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
       "shared/lib/fanout/skills.py",
-      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
     ],
     [
       "shared/lib/fanout/storage.py",
@@ -189,6 +189,10 @@
     [
       "shared/lib/fanout/verification.py",
       "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "shared/lib/wikisync/tests/__init__.py",
@@ -476,11 +480,11 @@
     ],
     [
       "tests/test_context_efficiency_pilot.py",
-      "7787a41df248f6250922d43abb82253711ef9db0ebc0a08032c510087aa17f8c"
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
     ],
     [
       "tests/test_doctor.py",
-      "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
     ],
     [
       "tests/test_eval_agy_read_policy.py",
@@ -492,11 +496,11 @@
     ],
     [
       "tests/test_eval_harness_receipt.py",
-      "782fde1fcbcdb179e9152cc82caade9cc746625a1c6761999d86eb1b531c7943"
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
     ],
     [
       "tests/test_eval_native_consumers.py",
-      "8f265a046e21c69d32a7325453a598de83fdfdd285378d80a23a01937d06f6b3"
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
     ],
     [
       "tests/test_eval_patch_acceptance.py",
@@ -508,7 +512,7 @@
     ],
     [
       "tests/test_eval_receipt_v3.py",
-      "f16b39068eea7c0c22637c4afa2d292007640de104d968e92ac775102e41a07b"
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
     ],
     [
       "tests/test_fanout_artifacts.py",
@@ -527,12 +531,16 @@
       "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
     ],
     [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
       "tests/test_fanout_cold_recovery.py",
       "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
     ],
     [
       "tests/test_fanout_collaboration.py",
-      "63fce4237717cf568122e226104bc1081e05044c9c4b581cafd73fc79ec48300"
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
     ],
     [
       "tests/test_fanout_compiler.py",
@@ -552,7 +560,7 @@
     ],
     [
       "tests/test_fanout_execute_skill.py",
-      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
     ],
     [
       "tests/test_fanout_lifecycle.py",
@@ -580,7 +588,7 @@
     ],
     [
       "tests/test_fanout_native_profiles.py",
-      "bbab1f6dc681c6a83dc6c8f1c6cda8c5e4aae636f5eb778adb801b8e6899c504"
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
     ],
     [
       "tests/test_fanout_native_write_policy.py",
@@ -612,7 +620,7 @@
     ],
     [
       "tests/test_fanout_providers.py",
-      "96e95b46fe482a72009a5fa5c694ae9f73c72802d79c6541c0c010182150d693"
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
     ],
     [
       "tests/test_fanout_recorded_cli.py",
@@ -631,6 +639,10 @@
       "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
     ],
     [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
       "tests/test_fanout_skills.py",
       "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
     ],
@@ -645,6 +657,10 @@
     [
       "tests/test_fanout_targets.py",
       "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
     ],
     [
       "tests/test_fanout_verification.py",
@@ -687,6 +703,10 @@
       "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
     ],
     [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
       "tests/test_reconcile_apply.bats",
       "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
     ],
@@ -695,12 +715,16 @@
       "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
     ],
     [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
       "tests/test_refresh.py",
       "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
     ],
     [
       "tests/test_render_packaging.py",
-      "d6e32a97a4b3117ca1537d5bb5de9f05c3fbaffc3563912259c9f6bc9c7d0821"
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
     ],
     [
       "tests/test_repo_sweep.bats",
@@ -731,115 +755,69 @@
       "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
     ]
   ],
-  "native_sessions": {
-    "agy": {
-      "cli_version": "1.4.2",
-      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
-      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
-      "judge_config": {
-        "model": "gemini-3.8-flash-high",
-        "thinking": "high"
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
+  "tests": [
+    {
+      "scope": "core-test and eval-test",
+      "command": [
+        "mise",
+        "exec",
+        "--",
+        "make",
+        "--debug=b",
+        "core-test",
+        "eval-test",
+        "PY=uvx --offline --python 3.12.14 --from pytest==9.1.1 python"
+      ],
+      "counts": {
+        "tests_run": 878,
+        "failed": 0,
+        "skipped": 0
       },
-      "observed_native_trace_coverage": "complete",
-      "raw_capture": "agy/native.raw.jsonl",
-      "raw_capture_sha256": "537b7619814573f8057f088488256c50e6ba0a83037fcdf863cefd3c3806c871",
-      "read_tool": "read_file",
-      "read_tool_evidence": "agy/read-tool-evidence.json",
-      "read_tool_evidence_sha256": "0d60e908a2bbe8f79fa5def424afd25aa56719406fee9112e7a13e572cf3c29f",
-      "reason": "ok",
-      "role": "evaluator",
-      "session_id": "e169ccba-e35e-43f3-9cce-8a3fc574542b",
-      "source_read_proven_from_native_records": true,
-      "source_sha256": "b0d8427b9856ddff3c9194fa042eb57dd91d54c90d8b0c16ce3f002ca2ae58cd",
-      "valid": true
-    },
+      "evidence_sha256": "9593a8e0269c94b15632e54b2f22e4295fd62e0d4106c9baaf937bfbb50bfb26"
+    }
+  ],
+  "native_sessions": {
     "claude": {
+      "valid": true,
+      "session_id": "3da544be-7a24-42a5-b997-9c30f5c8f88f",
       "cli_version": "2.1.302",
-      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
-      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "role": "evaluator",
       "judge_config": {
         "model": "claude-opus-5-5",
         "thinking": "xhigh"
       },
-      "observed_native_trace_coverage": "complete",
-      "raw_capture": "claude/native.raw.jsonl",
-      "raw_capture_sha256": "c8dfa630f13fdd57e78072c2f16e259fb95589fa62a3aa8493e205ab9ce0a3b5",
-      "read_tool": "Read",
-      "read_tool_evidence": "claude/read-tool-evidence.json",
-      "read_tool_evidence_sha256": "804686f5e80f30a9d6fb912874147c754eeffd297e4d90b12724b2ef999a9f60",
-      "reason": "ok",
-      "role": "evaluator",
-      "session_id": "aff40c18-1613-4af7-b93a-1bd27bb5bc84",
-      "source_read_proven_from_native_records": true,
-      "source_sha256": "de6426bddbdcf7c59776a1f25ae60c047f0d2e8036a04528afcae78175691a93",
-      "valid": true
+      "raw_capture_sha256": "997e54b7d48e551182b36b40ce4ff49e894f471b30146913352aa6dca4a9cb0e",
+      "read_tool_evidence_sha256": "c3faca20ab49d6de5eb60ba541d29f8770e0ed8bd8988b5f5b205ad323cbbd15",
+      "observed_served_model": "claude-opus-5-5"
     },
     "codex": {
+      "valid": true,
+      "session_id": "01a1606b-c4bd-7ae1-b07e-961f1c5a3b6e",
       "cli_version": "0.163.0",
-      "instrument_hash_after_turn": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
-      "instrument_hash_before": "131b3f861b5e81db8bded7a160ca93e4d92862fb891ceecd6532ecf60146bcc9",
+      "role": "evaluator",
       "judge_config": {
         "model": "gpt-6.1-sol",
         "thinking": "xhigh"
       },
-      "observed_native_trace_coverage": "complete",
-      "raw_capture": "codex/native.raw.jsonl",
-      "raw_capture_sha256": "6d1329dd86d9fc58efc88c078ecd8d520a375091aa1894893e8bfec7967a7f25",
-      "read_tool": "shell",
-      "read_tool_evidence": "codex/read-tool-evidence.json",
-      "read_tool_evidence_sha256": "b91e569602904156f71045e0168dfa1570dc6aa0b16475d23c87f5ee9ec56e81",
-      "reason": "ok",
+      "raw_capture_sha256": "e4fb29f1cd0d7639c8b24917b64b0131c6665cae274cc11a7017bb8cb288d4e9",
+      "read_tool_evidence_sha256": "41b0e309f393a06be1c5f848f353dcd93fe38b539bda46a4859988c7e52d5fe4",
+      "observed_served_model": null
+    },
+    "agy": {
+      "valid": true,
+      "session_id": "bd834a5d-98b8-4d34-bb05-e41da482504e",
+      "cli_version": "1.4.2",
       "role": "evaluator",
-      "session_id": "01a15e74-29f1-7b60-b813-311eee0af947",
-      "source_read_proven_from_native_records": true,
-      "source_sha256": "7a12c0255c70675ad9cb89f920feaa615285d903b67afe6553abdd06f0b5c28b",
-      "valid": true
+      "judge_config": {
+        "model": "gemini-4-argon-high",
+        "thinking": "high"
+      },
+      "raw_capture_sha256": "d9ba20403f83e79120f41f7a4669ac04ed0a922be21e406914526275338acbdc",
+      "read_tool_evidence_sha256": "dcaf61023924c0343245c605abe18cf0e25bbc9a3f61ca60d0287ce80b77cd3c",
+      "observed_served_model": null
     }
   },
-  "private_artifact_manifest_sha256": "373386b30f07d23f0f1a21c0a178f03991305bc6f272e58d521a406715a2b643",
-  "schema_version": 1,
-  "scope": "Current frozen instrument: completed zero-skip core-test and eval-test scopes and three fresh evaluator native fixture reads. Prior full verify and new affected Maka/delivery verification are separately retained; no new full-suite or installed-behavior claim is made here.",
-  "tests": [
-    {
-      "command": [
-        "mise",
-        "exec",
-        "--",
-        "make",
-        "--debug=b",
-        "core-test",
-        "eval-test",
-        "PY=uvx --offline --python 3.12.14 --from pytest==9.1.1 python"
-      ],
-      "count_basis": "Observed completed core-test pytest summary in a successful closed affected-target command.",
-      "counts": {
-        "failed": 0,
-        "skipped": 0,
-        "tests_run": 331
-      },
-      "enclosing_command_completion_claimed": false,
-      "evidence_sha256": "a1f2696543ae0bd5c822a27832c10fb8adbb602ca92ed99104cdeaba795c7d21",
-      "test_scope": "core-test"
-    },
-    {
-      "command": [
-        "mise",
-        "exec",
-        "--",
-        "make",
-        "--debug=b",
-        "core-test",
-        "eval-test",
-        "PY=uvx --offline --python 3.12.14 --from pytest==9.1.1 python"
-      ],
-      "count_basis": "Individual PASS and ok records inside actual completed eval-test target markers; summary records excluded; command exit 0.",
-      "counts": {
-        "failed": 0,
-        "skipped": 0,
-        "tests_run": 453
-      },
-      "evidence_sha256": "574b02d7813d32c35baf92f3afebd5d5e807a0a3f44165c45c94053a07e33e79",
-      "test_scope": "eval-test"
-    }
-  ]
+  "private_artifact_manifest_sha256": "b4af5d8b2dee2bb5bfddc56ebd272b1ca7dbe3d4d30abc7bbca6ef44cc5ef07c",
+  "evidence_note": "New owner record of three actual evaluator reads. Frozen original private classifier outcomes are retained; separately verified native-format projections supply read evidence. Requested model configuration is not served-model proof."
 }

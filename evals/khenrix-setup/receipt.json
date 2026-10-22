@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "skill": "khenrix-setup",
-  "source_hash": "613baa1c6787f636d4b85d0889016080ba2bb0881525a2bbf00615888a74fbdf",
+  "source_hash": "e67c2b40ebf8f2550a4e8005a5ae033d5b7913f56df6e477b416f5605efdf38f",
   "eval_set_hash": "208aa340ba018b1b9bfd9ff8c8646cc5347be586fb7e229f5a673d3e82ead105",
   "providers": [
     "claude",
@@ -46,7 +46,7 @@
   "source_manifest": [
     [
       "capabilities.toml",
-      "8b64bbb907c9b801a72760359f41124d0ccc7323b775fc417760473243b92759"
+      "83c66a92a211fd838ddef03f78b7c4e5b5f35acd6dcac1ff7040a02664f3f3ef"
     ],
     [
       "house-style.md",
@@ -58,11 +58,15 @@
     ],
     [
       "scripts/lib/inventory.py",
-      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
     ],
     [
       "scripts/lib/reconcile.py",
-      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "shared/skill-templates/khenrix-setup/SKILL.md.tmpl",
@@ -82,15 +86,59 @@
   "instrument_manifest": [
     [
       "Makefile",
-      "89847c4563a2bcb8bff2f406f62d6c2b15890ef44d9eef8c5c0a628a4b28974b"
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
     ],
     [
       "scripts/eval_harness.py",
-      "726c0851689d5f1465426c9c1532255c37f4019419d35b7e8ab7ccaa0c99ba05"
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
     ],
     [
       "scripts/lib/checks.py",
-      "2a61514bbddd57262172340ea9101c443029cd841775993a46dc9384e9809b56"
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
     ],
     [
       "scripts/lib/portability.py",
@@ -98,7 +146,7 @@
     ],
     [
       "scripts/render.py",
-      "98e9d6f4b581027121431fc7799b6edb4285f47dab18c9d2c858cf41177fd4d8"
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
     ],
     [
       "shared/lib/fanout/__init__.py",
@@ -113,8 +161,12 @@
       "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
     ],
     [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
       "shared/lib/fanout/collaboration.py",
-      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
     ],
     [
       "shared/lib/fanout/compiler.py",
@@ -130,7 +182,7 @@
     ],
     [
       "shared/lib/fanout/diagnostic.py",
-      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
     ],
     [
       "shared/lib/fanout/durable_io.py",
@@ -142,7 +194,7 @@
     ],
     [
       "shared/lib/fanout/eval_provider.py",
-      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
     ],
     [
       "shared/lib/fanout/evaluation.py",
@@ -170,7 +222,7 @@
     ],
     [
       "shared/lib/fanout/native_trace.py",
-      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
     ],
     [
       "shared/lib/fanout/plan.py",
@@ -178,11 +230,11 @@
     ],
     [
       "shared/lib/fanout/process.py",
-      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
     ],
     [
       "shared/lib/fanout/providers.py",
-      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
     ],
     [
       "shared/lib/fanout/repo.py",
@@ -201,8 +253,12 @@
       "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
     ],
     [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
       "shared/lib/fanout/skills.py",
-      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
     ],
     [
       "shared/lib/fanout/storage.py",
@@ -215,6 +271,10 @@
     [
       "shared/lib/fanout/verification.py",
       "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "shared/lib/wikisync/tests/__init__.py",
@@ -473,6 +533,14 @@
       "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
     ],
     [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
       "tests/test_bootstrap_machine.bats",
       "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
     ],
@@ -494,19 +562,31 @@
     ],
     [
       "tests/test_context_efficiency_pilot.py",
-      "7787a41df248f6250922d43abb82253711ef9db0ebc0a08032c510087aa17f8c"
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
     ],
     [
       "tests/test_doctor.py",
-      "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
+    ],
+    [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
     ],
     [
       "tests/test_eval_harness_receipt.py",
-      "4e92740886e2bfa171b8130ba78ba74e8d16fff5272492b378728feecad9fb5d"
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
     ],
     [
       "tests/test_eval_native_consumers.py",
-      "ec515d96a978bfd79c03a6baa1c8212ad619bd38cc41b65ddd6a2eacca9587ab"
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
     ],
     [
       "tests/test_eval_provider.py",
@@ -514,7 +594,7 @@
     ],
     [
       "tests/test_eval_receipt_v3.py",
-      "f16b39068eea7c0c22637c4afa2d292007640de104d968e92ac775102e41a07b"
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
     ],
     [
       "tests/test_fanout_artifacts.py",
@@ -533,12 +613,16 @@
       "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
     ],
     [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
       "tests/test_fanout_cold_recovery.py",
       "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
     ],
     [
       "tests/test_fanout_collaboration.py",
-      "63fce4237717cf568122e226104bc1081e05044c9c4b581cafd73fc79ec48300"
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
     ],
     [
       "tests/test_fanout_compiler.py",
@@ -558,7 +642,7 @@
     ],
     [
       "tests/test_fanout_execute_skill.py",
-      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
     ],
     [
       "tests/test_fanout_lifecycle.py",
@@ -586,7 +670,7 @@
     ],
     [
       "tests/test_fanout_native_profiles.py",
-      "bbab1f6dc681c6a83dc6c8f1c6cda8c5e4aae636f5eb778adb801b8e6899c504"
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
     ],
     [
       "tests/test_fanout_native_write_policy.py",
@@ -618,7 +702,7 @@
     ],
     [
       "tests/test_fanout_providers.py",
-      "96e95b46fe482a72009a5fa5c694ae9f73c72802d79c6541c0c010182150d693"
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
     ],
     [
       "tests/test_fanout_recorded_cli.py",
@@ -637,6 +721,10 @@
       "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
     ],
     [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
       "tests/test_fanout_skills.py",
       "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
     ],
@@ -653,6 +741,10 @@
       "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
     ],
     [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
+    ],
+    [
       "tests/test_fanout_verification.py",
       "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
     ],
@@ -661,8 +753,16 @@
       "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
     ],
     [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
       "tests/test_maka_skill_smoke.py",
-      "3e26dcc028e8f1e87e6e850117548eff917f5888844901856532d0d8719825af"
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
     ],
     [
       "tests/test_memory_exchange.py",
@@ -685,6 +785,10 @@
       "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
     ],
     [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
       "tests/test_reconcile_apply.bats",
       "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
     ],
@@ -693,12 +797,16 @@
       "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
     ],
     [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
       "tests/test_refresh.py",
       "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
     ],
     [
       "tests/test_render_packaging.py",
-      "d6e32a97a4b3117ca1537d5bb5de9f05c3fbaffc3563912259c9f6bc9c7d0821"
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
     ],
     [
       "tests/test_repo_sweep.bats",
@@ -736,11 +844,15 @@
     ],
     [
       "agy:scripts/inventory.py",
-      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "agy:scripts/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "agy:scripts/reconcile.py",
-      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
     ],
     [
       "claude:SKILL.md",
@@ -748,11 +860,15 @@
     ],
     [
       "claude:scripts/inventory.py",
-      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "claude:scripts/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "claude:scripts/reconcile.py",
-      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
     ],
     [
       "codex:SKILL.md",
@@ -760,992 +876,996 @@
     ],
     [
       "codex:scripts/inventory.py",
-      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "codex:scripts/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "codex:scripts/reconcile.py",
-      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
     ]
   ],
-  "selected_input_hash": "d40a04158ae5e294fa4b8cfad90077f283158e9f0ba2487c3d819fefc0f2e8d2",
+  "selected_input_hash": "e6c099fb4ff95c6973736f10e158d3777af390e8c7f26a0f12329298ea014714",
   "criteria_hash": "d8b8567bd573ad0e570606218b7a5c069424fefdb57bbce2d9078d52bb69a7c3",
-  "instrument_hash": "c360ea3d242d39a95ddf59f2a1eea9839d11e43653c934c5ff65f691ccc918c8",
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
   "raw_refs": [
     {
-      "path": "workspace/iteration-1/benchmark.json",
-      "sha256": "4132e0d19f0922c52012e26ac379aac0140df42ba96dccc84c76da0748aaa9f0"
+      "path": "workspace/iteration-2026102101/benchmark.json",
+      "sha256": "8eab27ec565f342af770145a307bb6057ca453472844d14f2e6fa3f5abb28b2a"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.result.txt",
-      "sha256": "7cf6951e3e1768363ca673f75db740cfed91db3d2d04b8a3ff8cd0ca14eefea0"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.result.txt",
+      "sha256": "b57c2c858b909231687d22068dc54bbf9961814ea6133da38da484e36c5c6512"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "f67ffc6499326220b29af8d5f0e99d85a7a112a08656ee77c44c9f773adefb23"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "01061cdc981d6b262a72e869dae239339196498ea88233900a546bb13a8edbed"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/answer.md",
-      "sha256": "7cf6951e3e1768363ca673f75db740cfed91db3d2d04b8a3ff8cd0ca14eefea0"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/answer.md",
+      "sha256": "b57c2c858b909231687d22068dc54bbf9961814ea6133da38da484e36c5c6512"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/grading.json",
-      "sha256": "5ceb3bb3f9415832cfd46a4d49e0f910720aad20b58f8cbb48e6b4aeb43bb5db"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/grading.json",
+      "sha256": "07a8c03efc0ad926bd3a7033c5b42855fb0aa32c812d658fdf6da333bf214072"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.result.txt",
-      "sha256": "6f240a84ecb20a5f8cf5c421f693228fd7ecbfcbd882ebbe05ba14c8bc2ad58b"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.result.txt",
+      "sha256": "9a93c311c8db48845cecb4f759c177898d149434b5318b68237846d8d255d80c"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "72b027e74c0dd5c97e705cb914186f6b978eac9d527dff76027e1515a8e6205f"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4d229ce0902c3ddb4a9a416f0d6814a6d93470f14752d5ad964a1e7c3663cb86"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/manifest.json",
-      "sha256": "dd8cd9c58ace77a3644d70714d49c3fdc7d4e5648b52a1440313e62aa20a7486"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/judge/manifest.json",
+      "sha256": "0e34960c273010a923479c508a039ac73d9b605b451ce440c8dea9957d94ea61"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/manifest.json",
-      "sha256": "e9aac2bb02bae93a2643a1ba9cde2647e08183af6afea06c1a4f6d0b09166f7d"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/manifest.json",
+      "sha256": "6480e73c382e1bf90e7946ac5c8cc9cb586041dd3f5c7f82d8a095626add2644"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/prompt.txt",
-      "sha256": "fb0a3cf56a1a3650520251f9ffbb934f0e496cfc60e771b63823c69a3c726395"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__with_skill/prompt.txt",
+      "sha256": "5bc9a98523afc05172370f440004ac5bbb9e7833947b47dafe676772844ba410"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.result.txt",
-      "sha256": "5486ff42e808af41bb620ab6ae09cd9a218adb256692f2e34108e4657550bce1"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.result.txt",
+      "sha256": "9ac1f3aec80f31e7ae816881e3b265be3351325efe264981100275b627966eea"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "b3f835ee1e6fe05d6dc217a17bf774e4965168438cf085c371f54b8f9d798b2b"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "a30aabc6de96a86d0fde762281357a13212a93a91cca30fe2604e325266a9b4a"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/answer.md",
-      "sha256": "5486ff42e808af41bb620ab6ae09cd9a218adb256692f2e34108e4657550bce1"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/answer.md",
+      "sha256": "9ac1f3aec80f31e7ae816881e3b265be3351325efe264981100275b627966eea"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/grading.json",
-      "sha256": "67fd1b1bc82cd8116971f0f4e0b0d6bef0128a93e92119bf1a254c4f8c278737"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/grading.json",
+      "sha256": "28249a0e8e0c18d74db582f0e292d5fe24242b0729d76e582299e64d7edf5157"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.result.txt",
-      "sha256": "bcb7bdb9bfd07b6552089e5254b1a3f3f3d371ebe41384f73b1700859c9c96cf"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.result.txt",
+      "sha256": "4050c2a5f491d7cd3709f7273c021e495c178ff0ee4528c3fe5d3b1cc2f1b48b"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "98e99659117ce43eb0e26feb0fcd22b302826edbc1230d89c62786e449e4a5a0"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "eb59bbd0a0a220f789b66f360b29e4409a281b69cd2d5500d672cbda9352efdb"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/manifest.json",
-      "sha256": "4e76a0888cf64ce85b7b08a6899317d7e22e4c46f8f2d38ac7ddddf0a6bad029"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/judge/manifest.json",
+      "sha256": "e4cf8eeaf33c4ec74835d487791d3da6ef975dcaf2a2f9ad993f8c30765ad48f"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/manifest.json",
-      "sha256": "443a1b8bccae2865775f03779ea7557e2b7a05ff477ee27ca904d82aa813fd1c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/manifest.json",
+      "sha256": "5dcff453e8e19493784f7b8de59d40d96b9e1d8492c99bb8582a398a29596ee7"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/agy__without_skill/prompt.txt",
       "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/answer.md",
-      "sha256": "cba26cdc4226e720c7567bdc2f520ec109239d9a1c4576cdd0a03294e3c264af"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/answer.md",
+      "sha256": "f224f4c068e288bdefda2008f6bcb7d6c27c234991aa8bf469c6d00df35b47c6"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.result.txt",
-      "sha256": "cba26cdc4226e720c7567bdc2f520ec109239d9a1c4576cdd0a03294e3c264af"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.result.txt",
+      "sha256": "f224f4c068e288bdefda2008f6bcb7d6c27c234991aa8bf469c6d00df35b47c6"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "6d28ab0e293ba3d5eaff99d38fe8d91a727570920fdf58d6dddc86471514bbf5"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "1e04c0bdbf74748cc279e4bfaf70c36a62d66ce601086ec709d5eebeed49f1e7"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/grading.json",
-      "sha256": "d5fd3f434e0260c7ff0c86ed5c9a85afdadfcfc51ceade01e737a1a39c88a4a8"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/grading.json",
+      "sha256": "20e89bcba64ab88b33b6c5d518e605ffebf4e1c96d9df4a3396fca21179d22ad"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.result.txt",
-      "sha256": "d5eb8ef72678876f8ec42c9c5af3c1d17e144dee75985eff909d999c252ba94c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.result.txt",
+      "sha256": "21c0b1be64608f9761bee466f3d151066385f24314e10ae867e0d0cf747866a7"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "4fa03422b2065010518ef11b2ccf32b4dc0c481f949b96648ec3c407a7652796"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "cfe959f2a6786b13d59354bdee7443981975a8f7eef40c87ce9a4ea5de4a2986"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/manifest.json",
-      "sha256": "86ec0ea0c705a27114645bc77eeeede8158216dcb9378d659e1574a2a67b607d"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/judge/manifest.json",
+      "sha256": "eaf64e92a5b1c7b73a107778b49b937079e4799f20cbee8468e537fae56bdbfd"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/manifest.json",
-      "sha256": "0f60e8b1bd90b31acf74b6590ac8a25a67b5d3d050be068828fcbe0302cab9ee"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/manifest.json",
+      "sha256": "e1008000094c7d23d2e834abc743f046a8b7d7566f4e87d21c0b49697dcd76dd"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/prompt.txt",
-      "sha256": "60473c6a2779e682dabe89ca5ba77aa4e89cfc8cf19ffa4d2ba7772f2fa062f5"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__with_skill/prompt.txt",
+      "sha256": "6369583f5a1b3ef69a442d4704d788b1b2a2ac69ea1c4b5ac26854d18a831730"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/answer.md",
-      "sha256": "c6622a93254de7c749cdad3cc291e2f90cc391c44b3f91f8afd8beaa85601c62"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/answer.md",
+      "sha256": "04ff7356542df63b3c58ddd28887d6ebea32a97b99a54858661838d5aa5c037b"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.result.txt",
-      "sha256": "c6622a93254de7c749cdad3cc291e2f90cc391c44b3f91f8afd8beaa85601c62"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.result.txt",
+      "sha256": "04ff7356542df63b3c58ddd28887d6ebea32a97b99a54858661838d5aa5c037b"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "608ee3abe29656cf48abe424a0f4d94547deb2d94bdc20b7b9beca19cda5ac1f"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "59cb08b034c9aaef636851d48a12a3119cd20b72c750de4c95168a2c87648bea"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/grading.json",
-      "sha256": "de49e9a1bf9da6b9f5ac53a7cdc258707e41fd642f17c8ed254d94569e4dc308"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/grading.json",
+      "sha256": "a58bf98f1f4ad535e8a288ed54d52ffb7e9bbff51ac727c82a113f166e6a7299"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.result.txt",
-      "sha256": "5f48cb9a10a782a0b88045caac6348d21399f1ae3aff323f4847a84d4f035a33"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.result.txt",
+      "sha256": "333c8259b0ee3160f248904bb633bddb03832d24a8ad45f49c0a435f0fd01b6f"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "eb60edb144f81eb153feba9161e2e4d0aa1444bfaed4cffb5f72cb54398813bf"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9420905f5a92dd012ed36f484354f4a4e2a46fc78968793c0aadb0942f1203d1"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/manifest.json",
-      "sha256": "6a4781bdb034868ff4f5cfb49883e39e7aa23cbfd65e160e757e329de7c441f7"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/judge/manifest.json",
+      "sha256": "9a807b709ce2c8236a1ee6ea37a1dd6e39dbcce6508c2f381090e03658f6a903"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/manifest.json",
-      "sha256": "1c2c8214ba7366ea18962e1f36af047efeac7b0d07c015f99c3878620c7982f0"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/manifest.json",
+      "sha256": "b389202dc3b281b785bb77e6385be46cd24ef57ec462b64fd4beb122acdb8527"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/claude__without_skill/prompt.txt",
       "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/answer.md",
-      "sha256": "8910a63514e1cadc1d1595ca47439a2b5f590fbe056dc75c2d3f00fe13cab41c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/answer.md",
+      "sha256": "0c1c4663b24b772c3d6c31f4c91ef98d4e02e31ed019dcb6deb682d6014513de"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.result.txt",
-      "sha256": "8910a63514e1cadc1d1595ca47439a2b5f590fbe056dc75c2d3f00fe13cab41c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.result.txt",
+      "sha256": "0c1c4663b24b772c3d6c31f4c91ef98d4e02e31ed019dcb6deb682d6014513de"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "20880b6715e5627c8b9d0fb387d9e4e9ac48ea6cd3ae9ce1345de13fd04e2ecc"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "34deb50074e76a311d9d9d023a9751ec0cbb18312c7805e4515173f43aeb91bc"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/grading.json",
-      "sha256": "6fbed6a0befab4583bb25c0f9f744abee1e02134d4dcb5b941d36804e962e57f"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/grading.json",
+      "sha256": "d9e1f543bfebecf04732a939bcf99d081ffa3c1f5a42d450c7771698ea2dae0e"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.result.txt",
-      "sha256": "ace1c23c59881ae8cbec6d9665ba038d34f0a56ede9dc9ce5af7d895e4932dfc"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.result.txt",
+      "sha256": "a07d6aec05dec4fa031e58b92b1bb12d5acdcc873c5bcfdfc70596397bc0f717"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "56a80e0d093a0abf83c1081d577064569e7f3b3c357668e5d753bf0d130ed32c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f8be259c402e62280bef2ce19094d29b22ca8f84230055aa8a98cc13cf0bb510"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/manifest.json",
-      "sha256": "391a77f7b92bc8a6b39992e96d010a0d7d07f13d98d5780c8b09a721e361d61c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/judge/manifest.json",
+      "sha256": "d126bd949a2012e86f1a44017755b232f8de9ff361b300ee37421f06e4f667c1"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/manifest.json",
-      "sha256": "6f0dd783ce1e9d10f3c256f8a1e5e1453e2bbef9684a886b4cda91f240bc2afe"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/manifest.json",
+      "sha256": "54e6d2ade09e4a350b2b701121f91597e6a985160310893f333337aeed304ba8"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/prompt.txt",
-      "sha256": "845e8d3b8e7b9c1cf4ce8fec24453b3b25290b02a275d29daa93869f68f2a995"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__with_skill/prompt.txt",
+      "sha256": "844ff2e15865aac78793895b68f667f106c84192dd0d7eaaa0cd61442380c0c3"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/answer.md",
-      "sha256": "d72e62a2c7a65f78ba117f5209f3da3c01d9f7815ad0b7b96c1b65646b07c2ae"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/answer.md",
+      "sha256": "7019876a82fd0a335aef0de6f0ad0f4dd076899f95e16126bba9ee14777b1094"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.result.txt",
-      "sha256": "d72e62a2c7a65f78ba117f5209f3da3c01d9f7815ad0b7b96c1b65646b07c2ae"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.result.txt",
+      "sha256": "7019876a82fd0a335aef0de6f0ad0f4dd076899f95e16126bba9ee14777b1094"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "b2a150181e6f48996514c11f7b5683d94fc9d8fe5caf36b46a2ee1f8372342fe"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "960647c68ebe18bba3f4aaba60e1a05d55a16f1c965373d2bdc113f44a6891ee"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/grading.json",
-      "sha256": "4e14403370dfa9ee2f3483ab4de2c0cc7a56b3660303d3181f087509adb3de22"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/grading.json",
+      "sha256": "bbb825a8c69d46d9be0ad4ce0dff5969b3eecb87c6248624c7a8c4a2b4e948a4"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.result.txt",
-      "sha256": "cf8ca36e2a22e3b11d3486589a553523c73eea8d697ceb17952d535d9845863c"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.result.txt",
+      "sha256": "e9e6c1f5ee8846a49037245c76a1d11c77b5c8bd23945d53c9903d9626a5a836"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "f566838f9694c61d8756d30b66de1693b57fee2019fd73b051043179453b3d38"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8c528f9f15888408616562e63154eb9593263d83a36a88d5d9f49726fb333626"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/manifest.json",
-      "sha256": "40dfd26c466be2121f0f05f0303280d4797850627bd0fa31129cc3b0bab789e1"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/judge/manifest.json",
+      "sha256": "d1403a2ce0b72fd6858b9baa318057aebc465be6e7e5258975e91d148ea84512"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/manifest.json",
-      "sha256": "ee16960f73d6b9e7fdc39b44e79ed51878e8682273ff3e7b914b090e6de0d2b2"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/manifest.json",
+      "sha256": "cda5b1b8e45cd9d7096a23c2a24feeab46d1b78f7319f45922cc94819e20af15"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/codex__without_skill/prompt.txt",
       "sha256": "68f43534eb7bb55d71ce9d2a413e6309d107b6fe821991e07076e41877b12db0"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.result.txt",
-      "sha256": "da3bc072c254a9be5f6e9bcd5cb9c2bbfb8342f2f087b2d15e9e27500ac7a3f6"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.result.txt",
+      "sha256": "fe93869113d2296526330733394f67bc0e5fc751dfbe715a80e20e238c8fb03e"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stdout.attempt-1.txt",
-      "sha256": "b571b19e4875e9e11bb4f647cc76747b35a3b1892862b789d29c59c289af04d0"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "0c14cdcdda603e1d8544d4d9114889facdc56e93a9363016518fcfed6556de72"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/manifest.json",
-      "sha256": "c71d856bac7beeb38f694c7496038b535a542ddc6e7c7143ca37c0de7936e5da"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-agy/manifest.json",
+      "sha256": "fbeeb7b93f55a530c0f42e877fde8861e3d18acb4a95b5436a415793a0dbeeca"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.result.txt",
-      "sha256": "d757ec45aa6e0323430b2dc73d1491d4a7289ceee7538fcdfbc266e978a5ae54"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.result.txt",
+      "sha256": "203915ca44f6e8287cfd6ebb86a35e8505d919bf5152e87d8131f6601dd58604"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stdout.attempt-1.txt",
-      "sha256": "f48f1232904ef9226357a78a8cc3a73a576132a94740291762a9dc25908a0c60"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "cda38cfec73267b3c63d4b7050a476c6a98e99dd65487537cb46ff8f59b564d8"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/manifest.json",
-      "sha256": "d6df25e88b5bea014768220f61cb00712161072f65724844c95f4c4bf7b37856"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-claude/manifest.json",
+      "sha256": "295056053a44f7a20ca7dc176fd867e83c3ffc90121450f057ccbb505afda541"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.result.txt",
-      "sha256": "681be87fa3ea7568ee3c6a94e2711a0600162b99e2a7f06b961bf4bbdf24402e"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.result.txt",
+      "sha256": "7074384c5aa8e3dd9a87322be0426fee87a1904680dfabaad38f0790c470ea8e"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stdout.attempt-1.txt",
-      "sha256": "fe890af958f0d3041efe95cf7526b0343ae6cc8e961d5c34955072473aa8ef3f"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "7258d53b42c32b6d55d9ea713bbf1778f01fca6bf9f03225ab38aff58322271a"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/manifest.json",
-      "sha256": "9123dd10183da114444654bbe55e4190a322af3586f3b2a241e539b2f948fc65"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/compare-codex/manifest.json",
+      "sha256": "572150a5ec5400deb528c60869fdf91ec6988c917879c408c132c00f00d9b3cb"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.agy.json",
-      "sha256": "e34eba14db905cfc5a4493f261329dc0e2c0c41b4252a6352ebcf8af14bd6406"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.agy.json",
+      "sha256": "103fbe3bb3929c3822a10cbfd38d5a787859b08fc5b43701fb7c8a6008bd5fa5"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.claude.json",
-      "sha256": "ee1d1878658141239f370c3072d19b7d374dbf5c2338d6ab4ebe26465700589d"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.claude.json",
+      "sha256": "0a1fff9c6ef02aaec32063041fe1ce9a4f556626f36cfde61ecede93d74f46e5"
     },
     {
-      "path": "workspace/iteration-1/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.codex.json",
-      "sha256": "71cbabeda2743a911f59ce17a0536ac10be3ca4c87b64b003d44844b39033452"
+      "path": "workspace/iteration-2026102101/eval-0-apply-reports-drift-but-does-not-overwrite-it/comparison.codex.json",
+      "sha256": "75e78eb4f75d47f820556600cfa00882810ee98b1a56564e715afd98c5132aad"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.result.txt",
-      "sha256": "3a1e7ede88f4221739bdb646348b216ac7a611a51e98c5eb5b00ae83bb14a924"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.result.txt",
+      "sha256": "b65cd5837919408efc2ac26fb6797ca0b50db3f7448b3dc4bc66b036f024605b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "5964c29a8b92a34923a4094d572a7fb147b87e1c826b6424b4f8886bc972dd29"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "85e853f2eaedbd2e1447bda6810d7f455dd9526edcdfe53937155f23adea9cbd"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/answer.md",
-      "sha256": "3a1e7ede88f4221739bdb646348b216ac7a611a51e98c5eb5b00ae83bb14a924"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/answer.md",
+      "sha256": "b65cd5837919408efc2ac26fb6797ca0b50db3f7448b3dc4bc66b036f024605b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/grading.json",
-      "sha256": "58350bd32bb8eedeca187e22919bae29ce0da5e8caa60e65df28c18d49a54b43"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/grading.json",
+      "sha256": "629f631d6a7a5156c282793563209783bc954dc63691d291dff92d613bb2cdcf"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.result.txt",
-      "sha256": "c212c89503a80d55a7b0d04d877dab628654ca6ba0e8ef5a583d6ac749463628"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.result.txt",
+      "sha256": "65e7233d1c39211e47af0c20b2ea7323434555b1d4389dcff9bf4607df9244e0"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "b1dacf302aca5d3b4ddea3d480ec97c7ba0f5fed15821e5e50cb757d6e762396"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6e3e2fbb4d50e6ff98f923f7e083fdf8993f8132c31fbb298cbf7420a58cf2d6"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/manifest.json",
-      "sha256": "b9a76288c75aca0680623778320becebadc98be85777ac735916a50d4876490f"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/judge/manifest.json",
+      "sha256": "36d47a270486ad769fb3061f65353beebfdaa03b04d1e96a0db73b4ea00ea492"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/manifest.json",
-      "sha256": "953f9481e356b0cf203611cb0fa6213093863f3be8e11f5477885abe1bda46eb"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/manifest.json",
+      "sha256": "6a99d1877513ddbf3db58dcbc6bfb9a72b5e28226e3bfb82d2ca826d1eaf1663"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/prompt.txt",
-      "sha256": "637e45f26a2883e53c6e823bb027071b01fc1f2a4a76c1cb000a7c692a0f46c5"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__with_skill/prompt.txt",
+      "sha256": "0a0cf22f10a53b840f6988644cb9a07207e7209e3705ab27f3ad5d8ba7a513bf"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.result.txt",
-      "sha256": "02cbf07d2c89ff030ca6a0de01c6dc3026cb764e00e5c611269cfd57fdfe282e"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.result.txt",
+      "sha256": "5bac3a19d0c770ae738253362c27b7d6318469262e4234295ed87cd235cfbf9f"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "ebe67fd7a629ed79c21a05e5aff492c2cb2c4fca4164b8141c3b596cd6dedaa5"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "a74840249fba903ca934e742c2e25c8a87a4c8aa514fea0715b23fc0a855c214"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/answer.md",
-      "sha256": "02cbf07d2c89ff030ca6a0de01c6dc3026cb764e00e5c611269cfd57fdfe282e"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/answer.md",
+      "sha256": "5bac3a19d0c770ae738253362c27b7d6318469262e4234295ed87cd235cfbf9f"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/grading.json",
-      "sha256": "5e0ce3250b0470eb7ab8f5a73b455ef9462eff08ed6b0d474f8da5fbece959c4"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/grading.json",
+      "sha256": "11a229f348de4390d848266ea7336e723afa859258fe73cf180b6c7e2845a591"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.result.txt",
-      "sha256": "975df863b82f84c2cd99635c5fc2761280bfdaf9994581f988d1c2fd9389c5c7"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.result.txt",
+      "sha256": "c6ff61513cf909438a4867be5bd225941f281e714913155926efe042e0806904"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "02774e908dc90b708d6293d42125e36983ddc04876e2d4b5f4436213fc79dab2"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1672f004f46c26c1ad49aa2cb7307a8512d9a484da1612b31b8f2ad33eb95cda"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/manifest.json",
-      "sha256": "03e8a40eb14f0a399f24a684139ec3e8c79b2813320e3bb5dfaa659daf466343"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/judge/manifest.json",
+      "sha256": "ddf42e03e7150a014c127302eb6a88e6482f7a0ffed59b5417a0ebe029b94a46"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/manifest.json",
-      "sha256": "ca2e6792d92f40b10167ed749f35242836728e79d7564c404b400fa025535ae9"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/manifest.json",
+      "sha256": "53fef495bb50b994b0e3cc586ed86c6c2e072832bc7991154b4efede357c4e8b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/agy__without_skill/prompt.txt",
       "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/answer.md",
-      "sha256": "bf287fe71766e4c3137916375a7a16534ccb42d3d7a822cc8542e0e46645f70f"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/answer.md",
+      "sha256": "64b1c7847c3ac06ba24a9e4876e403d4308dce7d2ec746e539eaecccf6eae999"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.result.txt",
-      "sha256": "bf287fe71766e4c3137916375a7a16534ccb42d3d7a822cc8542e0e46645f70f"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.result.txt",
+      "sha256": "64b1c7847c3ac06ba24a9e4876e403d4308dce7d2ec746e539eaecccf6eae999"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "4e4faec93f86dca29fdbf6c101e6e6616549636a8a4817deccaa021bfbbf46f4"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "0443c628df786d021afba82754c89c4e967004f530f8c8e9c2ca33a4539704af"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/grading.json",
-      "sha256": "d6313e7ade9d2e925e75bf99f3a2dc8e09b3d4d233cba5eaba6d025b0d143724"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/grading.json",
+      "sha256": "d9211803c9958bf2a546b53816be21d9649460c525769f1bd29d3bc1af450668"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.result.txt",
-      "sha256": "a211d939931518cc42d2f6e8fb790e1f48b8059c5f2012e09f7e7851a05b7fb5"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.result.txt",
+      "sha256": "f0f58bd516f430538b1ca40e2af761647e96f71a6165c48f1f4fbff1a79b3e0e"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "1366013e0da95db2af3b4f3f10b7136ea3231b73a5b9186eae3bcdc8f7065906"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "01f9f4487f3e62e02615b678f1215dd6bbe555c36dd7ffa98c33bf4d95a37160"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/manifest.json",
-      "sha256": "c8f8f8dc95816465c69cdcc31b6c582bfc89c1981d365ddd8d2ea596c3f50073"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/judge/manifest.json",
+      "sha256": "f885e5688ae38bc50ef3ca5d7dfab37d1c060594656badaa301eabf8177c0cdd"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/manifest.json",
-      "sha256": "74c42874ca5207333e0fb1476e907255c7960c011762ee0c51a1e5840f8f23b0"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/manifest.json",
+      "sha256": "d0af4e5a8324e125c76d596d42eddce810552834c2d12c7d170a735dab3aaa5e"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/prompt.txt",
-      "sha256": "b90cdf380b0a34cbd164d9fbefd31ec90246dd36fe6f57649a5de708a458bac1"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__with_skill/prompt.txt",
+      "sha256": "cfb6c25b272e8b9e6de83420d9ab5f8552bfe04559faba0d52c7a45e242b1a85"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/answer.md",
-      "sha256": "33e2a3086c9213afa895b11244c6096f0ceaacda9d015b29fde5e6b56c391504"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/answer.md",
+      "sha256": "230b91a740b64c7ea078db1302f60f9452dee3210b56f34a37465162c92a6786"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.result.txt",
-      "sha256": "33e2a3086c9213afa895b11244c6096f0ceaacda9d015b29fde5e6b56c391504"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.result.txt",
+      "sha256": "230b91a740b64c7ea078db1302f60f9452dee3210b56f34a37465162c92a6786"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "1e81ea4526eca5991f33ab72da09df8338cef28c77b82bfc3dab69306e0b9671"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "d09f4798e5db501479564242cc7e95e5f5b6bd191a4d9742f58d9823cdfe905c"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/grading.json",
-      "sha256": "e42a456cddedd78d2ab0f6727c3e17f9ca8a3dbac3440ee32bdbd41af553d61c"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/grading.json",
+      "sha256": "997d48ef29374ac5f4bc672be18665ed99d643f366f7266534028165c7a38f49"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.result.txt",
-      "sha256": "a04c52cfea7fc63e71492d0ed6911cb99980b1d338bae3fb8573be301c52ca5d"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.result.txt",
+      "sha256": "f976b8eb27c1fb3dff7454b1066496b31ee8bbb753f7810ae3c7fb04a6b7931f"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "93ea5736bd8386c03d97cbfa34cfe3ffbea930af4361f059cb0a5bba0a49bfff"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5ffad78d43c642878d9f263a172d43d6dd58db073e9288110abf0a8c8f40ece8"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/manifest.json",
-      "sha256": "0edd555d50f918701ef733e31d4d3a5b8d005da7e7e4fdbd0650bab7c01e7318"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/judge/manifest.json",
+      "sha256": "b284e4d1e6a31e99ff00ff5e4d95030b85661d741fec0ca3981cc5ec404e961b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/manifest.json",
-      "sha256": "e660775dcdab25fd48366ad16ac3ea88d1bd67c50cb615445001c6e093200a17"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/manifest.json",
+      "sha256": "17c35d38651d1793134ffb434962f18fbc87cf07324255e7ac23b91b0cb81040"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/claude__without_skill/prompt.txt",
       "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/answer.md",
-      "sha256": "036cb5afe256c0e410561c507a6a73291983d7b2eae8f759638cba73ab9ba55b"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/answer.md",
+      "sha256": "bc757ebe689e00fa0ce53845ec4601779a5eab54d29cb73b89078b35dd81a16a"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.result.txt",
-      "sha256": "036cb5afe256c0e410561c507a6a73291983d7b2eae8f759638cba73ab9ba55b"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.result.txt",
+      "sha256": "bc757ebe689e00fa0ce53845ec4601779a5eab54d29cb73b89078b35dd81a16a"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stderr.attempt-1.txt",
-      "sha256": "22346b8495aa6f40129521ae1e91a9531bdc60edba52593e1ead12cf09eb9600"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "de2a734f0c8952739e085d377ab671d0755ee0d8112877af409eec375fd14ef4"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/grading.json",
-      "sha256": "57f9b36612d86dc82ca88575f8e63b84f4a46a8f3dc75be100fac9e25d4150af"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.result.txt",
-      "sha256": "3bda2b814ac8ed4c8f2608852c2e5c85713d66aaee2bc884c5a65835be6e904e"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "2fb0de450f459ad9c8239d18595621d08b67c87c6cfd6d2742a88b8a77b9f8f8"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "51434992c26398825b8c8f03175157fd9a50166bd41dc5609f23f30d9c308b04"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/manifest.json",
-      "sha256": "51c88a97aa4a3eb92c46bdab318666c7d951b50f8bf2752e45ebc6c5b676b61f"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/grading.json",
+      "sha256": "0b2a3db5de2ece00b0a74cb566fb868424d42c8be7fcddcab34ce9e1008c4215"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/manifest.json",
-      "sha256": "77e61091008effc781d40159f963ce1e7a2d5c6ae552ce2a3bb7faeb7d83aa40"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.result.txt",
+      "sha256": "219f208e6acaf0c0e4e94fbc0e7e2ca3cd810dc78dc5fa9bc6dc504b11289ee2"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/prompt.txt",
-      "sha256": "81151df2ba87ddf3fb888def50b19151869adde1078a697c0ddf97baef01e8a9"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/answer.md",
-      "sha256": "6bcb06747b2eed35d02d1d135b3fc0f6d1116aa867c4ec5404fd3f612e1148b8"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.result.txt",
-      "sha256": "6bcb06747b2eed35d02d1d135b3fc0f6d1116aa867c4ec5404fd3f612e1148b8"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stderr.attempt-1.txt",
-      "sha256": "0e8f061f777f8c9b3d808a2e3cfe3abb579a8c5b0ce34316becd3a9d4ed04f65"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "f8bc4639cbaa5fd175c485bb15cae10a1090d70f87a2bed2d190b6b637254deb"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/grading.json",
-      "sha256": "f1c119336de82e624d078674a8c7f8a8f4037683bbabcd11d2d458676ae85b21"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.result.txt",
-      "sha256": "cb9ad494e741344addf32951c7bcc77ed1559064ad80da5fd1b07b1ad99133bd"
-    },
-    {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "f23c5fc065eb6b14d97a40abc29c37ff9021a90638bb19a46aad5e7ead566d20"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "a14c9a05655367189fe0f40310f280e982f8722075f3b8f49eb5a6c5edb5f149"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/manifest.json",
-      "sha256": "1f685a03cd8f1520e7082158e95f2cfe45051e6fab3fc7b46a87d2262ef99a34"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/judge/manifest.json",
+      "sha256": "a41a419c04c8339cc964af53c28fb9ee1c8a6ed9ccc22104afd356b0c0f8b45d"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/manifest.json",
-      "sha256": "bb44d5727ab078109fa7d2172fce307d23d47f8c0be7bf09a92dcaf3bdefbd20"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/manifest.json",
+      "sha256": "d777b7e8441a182b202f3844afd74c9ccf641d6bf58394335e1434fc8a267096"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__with_skill/prompt.txt",
+      "sha256": "6c110d97e8648c229cc0426434fc5da4764dcda49dc73b1c9408d4505b57fba4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/answer.md",
+      "sha256": "b9e27c3925594dc36fb2e2531dcc57dc68c8f201e937e2181948aa8a8fc2e5c3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.result.txt",
+      "sha256": "b9e27c3925594dc36fb2e2531dcc57dc68c8f201e937e2181948aa8a8fc2e5c3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "ba32e2cc8c743ab39d3ce6eac42c6a8dd6eca782b3187dbf3e2e5501b043a81a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/grading.json",
+      "sha256": "d0192b743b20a5d070a52c74a005d0b021c52e80069e2d9d70b3477284803977"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.result.txt",
+      "sha256": "da89f83e0826f6f0bc078e7354423e15a28a07c30d275cc616532dfe35656278"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "3861c25ccb389e13765e1173ede70830753cdf3c5c940de6a13cdb24ce9df1d1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/judge/manifest.json",
+      "sha256": "5c81b606ff777b6fe6a15e702486727a11289049631b15b4bbb76bc8cc207061"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/manifest.json",
+      "sha256": "134c71e63491ecd009a82889cdf04dcf3ccda5a633988a550fb4ea925085724e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/codex__without_skill/prompt.txt",
       "sha256": "2d81a77093fc3ddee70c7881dd7fef6e640172e01471a6e6e2780ea169df769b"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.result.txt",
-      "sha256": "c8890f950e82daa4516fd68617e86d28c5d5127a27c7c8bedd4695abb6aa033e"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.result.txt",
+      "sha256": "8a86baa0ee43e6abb928fe0db5144a768187a8f51452dc41f389ecebd55cdca8"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stdout.attempt-1.txt",
-      "sha256": "43d3c5489c339332abbcff04e2df1af8ac830aaf3863b6d21449fb61cfd6e54a"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "3b579a50dbd168b27595065a880e1bc73290770e36693a75f25909792e3a22c8"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/manifest.json",
-      "sha256": "fff31c21080e788e420a2b0a4805ceec7fd993ed5b00eaebd60331ed96088bdf"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-agy/manifest.json",
+      "sha256": "02ff2049be0b15361965409b260a6d1103f6c009083ad285bd1bf71a67815a00"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.result.txt",
-      "sha256": "4803f692e2cfd6e7a2c5bb3d5ec2cd06fdc13bba7c26ce66cb6c733fc10a62a5"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.result.txt",
+      "sha256": "7242b5ebe5133380a12984324aa3362ba358e7390e3e4fbb54d150030fd34628"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stdout.attempt-1.txt",
-      "sha256": "5f834b38012731c0625e53dd2b67393fd1237f55b3aa7123b2edfde9940ffdf2"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "9906b9913f47aa9b1ae5ca0c5f2ab505565cb2288056a3067f5719dfc36c094d"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/manifest.json",
-      "sha256": "a8263d141ee93897c0c6c7582a2d996ba920a805a1d6acee0bacc17c5e15d530"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-claude/manifest.json",
+      "sha256": "45b001577a8212154b2a217a8169126619cd07f0a387f6b9376a5317cea3eeb1"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.result.txt",
-      "sha256": "c8a25d7304013495088b60b8ffda77eeb1662ad25a5e818fd9a244a8d24655fa"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.result.txt",
+      "sha256": "c8261d08740fec095e38c020c02f038884800d25c4d491fcde9b2147fac71345"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stdout.attempt-1.txt",
-      "sha256": "9954ab6f4bf2a03a9b78e1d5008e2cb218d524eec3c890e94ff9efddb19e92bf"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "cc42171f288a66310808165459fd84c8611e82ae180eaba8874f6ff04fd83a43"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/manifest.json",
-      "sha256": "3e2812dae4b506a63e922f411b2f9cb7d7e238a0f6299368e99528d191fb894a"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/compare-codex/manifest.json",
+      "sha256": "7b0c2122230286d9a6f8c0e9dbf752854a394224631816bdd1039abb337e5e22"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.agy.json",
-      "sha256": "8206f1b5b7b1cb61d953b9355f8470dce7b03845894d8e021e312dab680a2d85"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.agy.json",
+      "sha256": "67f8e36750329e8ab65e3463b662a7b77d86c19354410c1aba3a57e3f154db05"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.claude.json",
-      "sha256": "245bef5c67dcd58766aa1b2e25e16f81a8e05dcdfd06ebda4e445c49f1d6964c"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.claude.json",
+      "sha256": "77677c43387a1223c492ac326c4696e2c4ba337e05f1e7e7da30428f32b8667c"
     },
     {
-      "path": "workspace/iteration-1/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.codex.json",
-      "sha256": "9287c0ab720a05ff9d9d3a3a342aff0c419a4c9bacade286345e82c595c71b42"
+      "path": "workspace/iteration-2026102101/eval-1-an-orphaned-marker-is-refused-not-repaired/comparison.codex.json",
+      "sha256": "ed743cd4da1262bd012d1577bdb9f37d292761f64431364589bd45c4ab6ae25e"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.result.txt",
-      "sha256": "589b65befb6107dff22060269dbe0b3eedd3a2f4d663c976958147d6485c6030"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.result.txt",
+      "sha256": "ee16de39c1d7325c86eff4af38d6f415c86d5bf6b68522f608443b66f57869e8"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stdout.attempt-1.txt",
-      "sha256": "f18f895e4d7e369f6774a97ede3435494fbe678f910ba6c22f9204912edd6dfe"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "1cc3596acee0c01b11dcc9e918522ecfed31e07991d8eaaa3743d1ef83d1090c"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/answer.md",
-      "sha256": "589b65befb6107dff22060269dbe0b3eedd3a2f4d663c976958147d6485c6030"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/answer.md",
+      "sha256": "ee16de39c1d7325c86eff4af38d6f415c86d5bf6b68522f608443b66f57869e8"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/grading.json",
-      "sha256": "126dd32e4127e4e8c4e7bdefc34e9e8b89a3d72d8292893da3fdba7a022467fa"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/grading.json",
+      "sha256": "f52146a5e6813f16933ce6a0f503a85ff8a40477d134dac33b1e099d4178f03c"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.result.txt",
-      "sha256": "396d05b8bb74573df0cccc2ad15c86f48feb341b0b0e35ad678ea82dccc23e49"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.result.txt",
+      "sha256": "16cbb8d7a3867c29ffb1abd1c85b2df20cc53b4634fbb1da11a526772a2bb2f9"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "2ff83de528be033aed754ad0fafccbeb71fb71f9205c1a940e4d1d52d9b857ef"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6e7ebe6fab042b71cb5896a4f3dd33ed57c5428a1b2f87d2d7ba358fb15aba33"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/manifest.json",
-      "sha256": "5a44b6933b2f1f8c1d376f7d1e62cd4c599ff85c822be89924f8455b7d4f8fb6"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/judge/manifest.json",
+      "sha256": "781997bc1c578977c1c2da1040335310097f9e2e3fefde8747817783a34ab57d"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/manifest.json",
-      "sha256": "4d6bec46707676c7db848e88138cdaf2e196de9c180417e4476b973b94fb3a37"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/manifest.json",
+      "sha256": "4be30db7cadf33c97db727d51c6e3b9c48cde819e717dd8cea9f23dca4dbd5b6"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/prompt.txt",
-      "sha256": "64b114a35b1b8c7ad9b1398f430050151cdab3280ba7d30be82b48b081ae8801"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__with_skill/prompt.txt",
+      "sha256": "4df6dda170ef4fd8e81ef844facdb717bd9e1ab6b3f90228a5d922eb661c75c5"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.result.txt",
-      "sha256": "1008eb388ddef9f13fd30f89b587878040768796d70836e3c2e64e04a5385178"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.result.txt",
+      "sha256": "178d7bd0dcb86bb4238dcd35a8eac674fc431b6de5f77ce7d8a27158d63506d4"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stdout.attempt-1.txt",
-      "sha256": "781f3f5cdade3b30ac129ba40ba243e31ee06e634df3ef052dc9b25dc5fdce44"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "2d7b3e1afadbb82d75ab45cf3c12f58d481ac7527bb56a3060c4e067a4d4c8f7"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/answer.md",
-      "sha256": "1008eb388ddef9f13fd30f89b587878040768796d70836e3c2e64e04a5385178"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/answer.md",
+      "sha256": "178d7bd0dcb86bb4238dcd35a8eac674fc431b6de5f77ce7d8a27158d63506d4"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/grading.json",
-      "sha256": "1e2f0da13e3d472da534bbb67170a681924ad3da90d845e2508ec54baba5330d"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/grading.json",
+      "sha256": "a80aba418e7fddd83ad07de5b60a6cb5b47ffc1e8f2b69e7e240c53e6eb32d43"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.result.txt",
-      "sha256": "63c3c478eabe0a422f3b0f824242a2f22b4319c57b00a8dcf4eee3653a8a01d9"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.result.txt",
+      "sha256": "c2c4e8e20245b48ab189168f24569dedaae7a095074af1263609cd18e825c2b1"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "3ffd8b08e2ee9b7032583e8062364fd134c509cc53afd421b238931dd71f5dec"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "decb4ca1e215dc6249ac0b7ab3f5962627d4e78f0581c9e8cd0acb7293453c7e"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/manifest.json",
-      "sha256": "0147730ad37ac29f519cd65caaf2f31f8d2aaeae2971e6d5578371ec848bfae5"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/judge/manifest.json",
+      "sha256": "ca514094f3f76d2cec74986c972e4f00f0b33d1a5d589a4fe7df0e3cf96cdaeb"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/manifest.json",
-      "sha256": "552c5d86d70755cde2a6e38f184a2be31c1c24b7fc2b7fd7cadffebdae42febc"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/manifest.json",
+      "sha256": "2e7d62d5691c1df61354e1a0d3b782163e98b8094eb81f20b71c50c043470bc3"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/agy__without_skill/prompt.txt",
       "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/answer.md",
-      "sha256": "cd255ef909d49354bf05c66b670b323f9f07b862fde56fe417361b4b7756a33a"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/answer.md",
+      "sha256": "694cce81bcdc9fb3b56c7e98007f4a5ac1629844d8e56888e879c394db7fcd9a"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.result.txt",
-      "sha256": "cd255ef909d49354bf05c66b670b323f9f07b862fde56fe417361b4b7756a33a"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.result.txt",
+      "sha256": "694cce81bcdc9fb3b56c7e98007f4a5ac1629844d8e56888e879c394db7fcd9a"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stdout.attempt-1.txt",
-      "sha256": "84fd8f7d08ecd8d626b83add204abae3bbabfa785eec00f570bd3e6f69dab9ce"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "e98bd8dbfbe62e52a4da51c0953f201f23f64d28f046dc638f22c2ef3d738d44"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/grading.json",
-      "sha256": "20345c7322e270f7c6a7fd06642c7f247c6fb7de712e9f64635a96b8e7b36771"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/grading.json",
+      "sha256": "7e22392feee16a0fa253535968cb8e81a8e8abe19a9f05fed6e82a3f38b6ae89"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.result.txt",
-      "sha256": "00a5adfb5be2956e9320cdb2f7be94071515f4ab06db397054a63e70df2e5adb"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.result.txt",
+      "sha256": "7af0106a4be551b987a6c259fc4df2300fc730c9ceb7217d5bc34bb0412775f9"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "51b7b42fa6403ed7b3a02531e52101f5fcb46549c29b08090e78404f7f2a86a3"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "efdf8dddbeb9efbc4a63e6abd1512bcd0c1420255e0ab5dec80b1c28ab398f6b"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/manifest.json",
-      "sha256": "d95a5c0babd4a06f48a00ac8f0ef7f76abaf72cf7c5ba10e1ab34acb8f6ca89f"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/judge/manifest.json",
+      "sha256": "79bef0b2a6ec627860ee18741a523af21efd820f9f50056b4b4b80a4e1ffc7e3"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/manifest.json",
-      "sha256": "fa9493a94d4341bdd7692363aa7f0b6747f8eb77ef69f3ba633e0ec164d586f7"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/manifest.json",
+      "sha256": "1bfeee0231e0fe2bd55c3c303fc42a088232db5a24245d06f802b53197bba99b"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/prompt.txt",
-      "sha256": "c18f5d4b3728bd26432bc33380f7850d4ddc4de42c6d43cc990f6043e4c2663a"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__with_skill/prompt.txt",
+      "sha256": "1aded5c7aa70086ce17a2cfddbf5564c339271fceec3049591823ada37a847bf"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/answer.md",
-      "sha256": "e28199781c8933155be31474a76bf43c3ab2423f615cd06696773bcf355a4d63"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/answer.md",
+      "sha256": "e38f1019faff1984a74859ba27abcb0fdfa07ac8ca051b9637f120026ebbd8ac"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.result.txt",
-      "sha256": "e28199781c8933155be31474a76bf43c3ab2423f615cd06696773bcf355a4d63"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.result.txt",
+      "sha256": "e38f1019faff1984a74859ba27abcb0fdfa07ac8ca051b9637f120026ebbd8ac"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stdout.attempt-1.txt",
-      "sha256": "1eab22648804e43330a5abf5e0f4a9e5632ad721f41d8d4bbb76239589a086e8"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "c493cad4001879b316f2e7cae84cca33b63689f8148c64b5856d09cda81dd086"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/grading.json",
-      "sha256": "e8cec5458bdcd34ca961fd43a9bdf9552e880d7d455af657949b981c40cfa015"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/grading.json",
+      "sha256": "f479c346bb17b01070b336c6054a5913e496df59b4226d3fb7c129ead6eb3f21"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.result.txt",
-      "sha256": "ff6dcc0a97507c9469a62f4c1aef442ab6fbd0ce45cc96b818dce0e9eb4807a8"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.result.txt",
+      "sha256": "ebeb1ee289633e3490f4c137435c360e3883cf85e166b4b74d63c4f7ffa9e035"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "24b7a990739638e315a04ec95fb00e2087b05ac7be2e0c867477be066af8bd69"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b50679073fcc3d4420e3700c1bcd8e2bed18f86fd8c0c38401191f5dc4f6f8d1"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/manifest.json",
-      "sha256": "b026d3d5e561234ad4da2d72e8cf5737489978d3792c141c9863e4c28185ba2e"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/judge/manifest.json",
+      "sha256": "8803f8e0f2c3f8f890e1a0de4ac1ab96b019eb7c35fb74a0df0850a5d1899ce0"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/manifest.json",
-      "sha256": "27295fb7b9e56593986f8893ba05630b6a51dd2b0014ac9ea1a8c9726a77937b"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/manifest.json",
+      "sha256": "e0d17eb54f3faabfa342619ffd95c1faa198ae23dc31a24c64f2afd75184c55c"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/claude__without_skill/prompt.txt",
       "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/answer.md",
-      "sha256": "5f1ece486b9edeafb97d2778bb3852e515b3e17f429d1838b173dc146f2f0874"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/answer.md",
+      "sha256": "37f360226015a8c1b4e0900f209fa60a36491911b877ac8b4fdd81b91390536c"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.result.txt",
-      "sha256": "5f1ece486b9edeafb97d2778bb3852e515b3e17f429d1838b173dc146f2f0874"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.result.txt",
+      "sha256": "37f360226015a8c1b4e0900f209fa60a36491911b877ac8b4fdd81b91390536c"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stderr.attempt-1.txt",
-      "sha256": "e6bcdf8d8c722f1b3d33d4b537911ecefcffc89c4b493951e1ba50074a7477af"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stdout.attempt-1.txt",
-      "sha256": "7961d3571813f01c1da000c087db603ce4aaf816637fc86799cd9b89295902ef"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/grading.json",
-      "sha256": "e6a9438a3d9260386530632a0c54e3b1c9e21c86945d6a6800f8fb172e848762"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.result.txt",
-      "sha256": "b2c17093887db1f46ea260d3238bacedda0e46244d8bc3fad68b49fe76794962"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "e8fe648ba147688bae48e8e60ec22f30deec43dc33ca98e76cfeb869c914095d"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "071aa098cad580422e8a3481b59225d3ad13de77b590bde847c2bf9a316f7c33"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/manifest.json",
-      "sha256": "798760374e9d6e4f2fe547366a1aa6f57cf4d8fcdae229d96409cd2e897e1533"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/grading.json",
+      "sha256": "29d569b47551afb347790f6d4149e6eda201b7ef0533b7d2a01c2461923ec511"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/manifest.json",
-      "sha256": "07ee67d339608e63ee465106076dac486e093ea6e927dd0d012e311ccd8f3d8c"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.result.txt",
+      "sha256": "3104ccbe366c0507f5723b0df7653b913ea7fb126ef760b5cb83697724c27427"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/prompt.txt",
-      "sha256": "e5b1bc2d4ffe28deb053a4c2ccb8466a08787a67bc2b83e6fc0175cde4c1852b"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/answer.md",
-      "sha256": "872ca06ff12fe5a12d2544647f65c7af5dd0015bc7536edfe5ac300ed60fbc13"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.result.txt",
-      "sha256": "872ca06ff12fe5a12d2544647f65c7af5dd0015bc7536edfe5ac300ed60fbc13"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stderr.attempt-1.txt",
-      "sha256": "7bb3577481910aa3d568474a93c5237961014556f50a5a9ebed0794c48e729b8"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stdout.attempt-1.txt",
-      "sha256": "655e332e49d0ff68392aca42a422628e4b52e981b920f66f7a14f890024552a5"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/grading.json",
-      "sha256": "4c33b29b2bb9412bba6356645438106dc72bce247e3a43d053809f596eb0b282"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.result.txt",
-      "sha256": "087f4e9eb63e5d0ccd5a16c3ae1acbd8cb24c1c5043c71375397f95e5a6d1692"
-    },
-    {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stdout.attempt-1.txt",
-      "sha256": "c218bb1e4130600ea2835f03101d59acbfcbcf84808fc1da98a09f775a95a6a6"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5116804dff99a86559ad725aaaa792541115e06c3fd781fa6c3ce0ab615a86a6"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/manifest.json",
-      "sha256": "4b4d4826e44c7cc04748d8249b25a0c5dc979b65a4b9c3771389d6eaf351ac64"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/judge/manifest.json",
+      "sha256": "31d2f7be01eb07dc3712a970c60ab1efdded8aea096208b9850996c8548ebb24"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/manifest.json",
-      "sha256": "63132095cefad698d131f7605c5f4f94b7b1caf62fe717f462419171a22bf13c"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/manifest.json",
+      "sha256": "40cadf7188e24812c836c7b5420fc1e0ff00c63e4acd852ffe843d700f75e842"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/prompt.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__with_skill/prompt.txt",
+      "sha256": "3da2f4247d6f65ab3a46c17e7f64c6deb7d58cfe4b0ef06bb315bbfa35b9a4eb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/answer.md",
+      "sha256": "3635887d5db79358aff06a95856da5a000e03eca7e2ee5e07e7b8cd70180ded8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.result.txt",
+      "sha256": "3635887d5db79358aff06a95856da5a000e03eca7e2ee5e07e7b8cd70180ded8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "4fb1fa39abeb20e7e32528fa30cbae34a981788247bdaea4cd9d61279d6c6b87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/grading.json",
+      "sha256": "424bf6265a0e5f2774d02c759cae237dfe4588438e8e559dacc8404a816f285a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.result.txt",
+      "sha256": "7b3cc2f3f518ae24cf54f4da3ad90354a5cf8e2324e2942f584295c080d8ce5f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "64233c7df4db7ea8ecc50bf705f3dda63f68c156e5ecfc6e6b4c9b24d3f4b414"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/judge/manifest.json",
+      "sha256": "7f3806161032783ab5c917728cf380e26f2eb221d7db956454705101579e3ec1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/manifest.json",
+      "sha256": "002ce7134677f37a34c6a24ba3ff811eed98da7a82c4936b4554afa0396ef469"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/codex__without_skill/prompt.txt",
       "sha256": "8793c374dafad908c9dd835165ab6db530dcc05013bff763f31d2bb5f57589e8"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.result.txt",
-      "sha256": "e506ce9190cd7768461cb7cc5879f86fd0531f5669c2ab2d4024eeaea2d71036"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.result.txt",
+      "sha256": "31beb1779999a31bf9641eada3fd1eae88111a7eef54c4e7b140fdf672122bad"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stdout.attempt-1.txt",
-      "sha256": "b8b227bd412d9e08461c7ed59789c62d5d31a549cd36a62aba256b6d65350265"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "5f26995b76db1af4ed7f5e27c2f28444b47bded49f916856d44dcf048d161ff6"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/manifest.json",
-      "sha256": "87fb321899e7fa7472a631d9cec34e175e4cd2cacda4f3f21e40c1eec5c9cb17"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-agy/manifest.json",
+      "sha256": "3ddb92917ec8d172f5f3a110ae1b1e87d9c30c0559a3623ed887aa0de90ae590"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.result.txt",
-      "sha256": "eaf4b45bd069d396c44590488c3fcd43d46673f10f12b45cfc263fa263cedb5d"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.result.txt",
+      "sha256": "3226351700b003a634ff84a966d59deff53dc3e225a85685f444d34dcf88b9c6"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stdout.attempt-1.txt",
-      "sha256": "ef8ba0f3e221eae0eaa36659ed1df28f9fb5f49b8906a02dfe527a5c4ec53f10"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "df1bed821c2bc08e11902604d744cbf7f399d88859f96de9c32a7b896e2d48dc"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/manifest.json",
-      "sha256": "c158c4134f366b82235dc13331509c375e717fefbeb724a016d645ea6f66d402"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-claude/manifest.json",
+      "sha256": "1b7f022be2c9755e7fb60320ca23a4c16a7203efbb0e2fbd3e9589b921f50a74"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.result.txt",
-      "sha256": "03a51f3b582a7684bf635ccb301dfcf0a9c697b78ec9cc3a7c3e7d8fc32093fd"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.result.txt",
+      "sha256": "728a7708e831669deb7b20dba2d7b239226c2d09738e4733c7ea52cb37537f73"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stderr.attempt-1.txt",
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stderr.attempt-1.txt",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stdout.attempt-1.txt",
-      "sha256": "6be6cfd9acc4afedfa5a3394acd8195a91da69f164fa8dd3d038449a29e876d9"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "7002cd9ab701b6869cb53ad8f53085bbb01acb0993a01b8c9b73c93d2b3577f1"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/manifest.json",
-      "sha256": "d083612e6e40d0ef9f52ed73dbbb0864db42858c6c1b664657165c82345bc6fe"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/compare-codex/manifest.json",
+      "sha256": "d1816073b4d1493cffd050bb206f991120c98d06898863dd8802fcb3f5bf4dbf"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.agy.json",
-      "sha256": "7dcd5f128c172db56432ca8b2dd7985c1aee7cbe0833bd2477f003386637cdcb"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.agy.json",
+      "sha256": "b9e292ccbaa5f0301b633d72684d9fecb281aacf9623c11c9f487544a82cf8ed"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.claude.json",
-      "sha256": "498e43aee5aedcf5a180f438b3ef91a4b9914c45752b48e678b83ff38f508eaf"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.claude.json",
+      "sha256": "aba20b5d45c9d2ef593203e350672ffbdfdc35ab6e52656ffa1040c11f21b33f"
     },
     {
-      "path": "workspace/iteration-1/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.codex.json",
-      "sha256": "db2f606c5d3d9af9427321a40c5866174b2d8fbce5630709919a651b94d281a9"
+      "path": "workspace/iteration-2026102101/eval-2-backups-are-numbered-so-none-is-ever-overwritten/comparison.codex.json",
+      "sha256": "9f8727ecbad7f74d988bb7b4f9a4b79b33b8e410c65271ddf00972e275cc20e0"
     }
   ],
   "native_counts": null,

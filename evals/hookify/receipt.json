@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "skill": "hookify",
-  "source_hash": "86faee9286fa7e69760b1d753a50186e33b4d7c300fdfa4f411856590846c3a2",
+  "source_hash": "0e2166bebcef5d963c9f21cd43068ef70f85a93ab9bf579fed63aace5c542c63",
   "eval_set_hash": "b7ae260500cdd9772b98bb4cd1c594d1a2a33b995b160e6a290a83240933dc08",
   "providers": [
     "claude",
@@ -10,7 +10,2141 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.2986,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.3125,
+      "quantum": 0.0833,
+      "n_evals": 4,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.2708,
+      "quantum": 0.0833,
+      "n_evals": 4,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.3125,
+      "quantum": 0.0833,
+      "n_evals": 4,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
+    "judge": "claude-opus-5-5"
+  },
+  "judge_config": {
+    "model": "claude-opus-5-5",
+    "thinking": "xhigh"
+  },
+  "source_manifest": [
+    [
+      "scripts/lib/inventory.py",
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "scripts/lib/reconcile.py",
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/skills/hookify/SKILL.md",
+      "6b8873f5fe91b3b91489f102371570e5f51766ca6fffe9c41500fa5b9d1a7cfa"
+    ]
+  ],
+  "criteria_manifest": [
+    [
+      "evals/hookify/evals.json",
+      "b7ae260500cdd9772b98bb4cd1c594d1a2a33b995b160e6a290a83240933dc08"
+    ]
+  ],
+  "instrument_manifest": [
+    [
+      "Makefile",
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
+    ],
+    [
+      "scripts/eval_harness.py",
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
+    ],
+    [
+      "scripts/lib/checks.py",
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
+    ],
+    [
+      "scripts/lib/portability.py",
+      "4f53d7a9668b07b6c1f733c0f750f1f1536a3e4a9dab34e64c9106f11bc67437"
+    ],
+    [
+      "scripts/render.py",
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
+    ],
+    [
+      "shared/lib/fanout/__init__.py",
+      "0307efd7a8b2aa54a12cce49a04d7732e0827e395bb4ef1adc080efafcea0e2e"
+    ],
+    [
+      "shared/lib/fanout/artifacts.py",
+      "920fe65ca7f42417e2b8227011998447bda71d62caf7e8323a649e0860269bd9"
+    ],
+    [
+      "shared/lib/fanout/branch_handover.py",
+      "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
+    ],
+    [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
+      "shared/lib/fanout/collaboration.py",
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
+    ],
+    [
+      "shared/lib/fanout/compiler.py",
+      "8fff7727eecae58b45c6b52c727fdcae5617f559e9395872aed5de1e95aed1ae"
+    ],
+    [
+      "shared/lib/fanout/context_view.py",
+      "e249652b46b3f4c76cffe73db4d859df5ac5b46daa6257a7c6fa01cf7571f3df"
+    ],
+    [
+      "shared/lib/fanout/controller.py",
+      "a839354834065e64f5a5ce54385617144b620bc702a68d9dec24b9fa593fab66"
+    ],
+    [
+      "shared/lib/fanout/diagnostic.py",
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
+    ],
+    [
+      "shared/lib/fanout/durable_io.py",
+      "571c045a1ec2ba711ec693c7d1e5d82213d4d753b0c8ca3b2f2cf98113c1e1f4"
+    ],
+    [
+      "shared/lib/fanout/errors.py",
+      "ca865c3cbee33ee3937d9c49fc2e282333c12673c1a9e99f90f07ab81c569d9d"
+    ],
+    [
+      "shared/lib/fanout/eval_provider.py",
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
+    ],
+    [
+      "shared/lib/fanout/evaluation.py",
+      "f62a6e14851d9c7c33eb4a9861f11059837518b2826afa7e1dbb979832c59883"
+    ],
+    [
+      "shared/lib/fanout/execute.py",
+      "53914524078019edd94435d82a7f6af53e22e6818e7fabc46ba5f6c74dea48d7"
+    ],
+    [
+      "shared/lib/fanout/lifecycle.py",
+      "a90a56ac7da93c19d8db5c1fe697726eb8332f18051ea4cd0790dc4ff369ea27"
+    ],
+    [
+      "shared/lib/fanout/maka_native_session.mjs",
+      "1932bead31bc89e4d808397071533a1ef3b49cf92824aabd154c5532339742d0"
+    ],
+    [
+      "shared/lib/fanout/maka_transport.py",
+      "295ebffbb03bc7b73871c2f17ed080289c6b59a6cc4d9a5f8b8ead5259470f84"
+    ],
+    [
+      "shared/lib/fanout/memory.py",
+      "46bcebe5633dad9d2060ffa12dc3754ff401d4636683f835a24074c508565429"
+    ],
+    [
+      "shared/lib/fanout/native_trace.py",
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
+    ],
+    [
+      "shared/lib/fanout/plan.py",
+      "d7c912f7d365d5babe23d35282f79541de072393780f7824b5c59b05b34fc3da"
+    ],
+    [
+      "shared/lib/fanout/process.py",
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
+    ],
+    [
+      "shared/lib/fanout/providers.py",
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
+    ],
+    [
+      "shared/lib/fanout/repo.py",
+      "f733a2936d5ad8f38ffc143df65bfa4a39642579edb035211ef61752fad84ea0"
+    ],
+    [
+      "shared/lib/fanout/runstate.py",
+      "915b35b6a913d45abf704c57be5e148cbe9228ed06f27c505cf37521559aec40"
+    ],
+    [
+      "shared/lib/fanout/scheduler.py",
+      "ff27c6487463cd4cbac13c7e8e061ac0378e3c1ed4e8a83c8b06cf269e6afd18"
+    ],
+    [
+      "shared/lib/fanout/scheduler_authority.py",
+      "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
+    ],
+    [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
+      "shared/lib/fanout/skills.py",
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
+    ],
+    [
+      "shared/lib/fanout/storage.py",
+      "4e3ee7dd8b341d32122c51c7655d0ee8341b47a6505962cb18a7acabe7f0d963"
+    ],
+    [
+      "shared/lib/fanout/targets.py",
+      "f1f7f35bc8034844a92cf9eb0c67b3fd2d39e1659826757cf7ad227afbfe22f1"
+    ],
+    [
+      "shared/lib/fanout/verification.py",
+      "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/lib/wikisync/tests/__init__.py",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "shared/lib/wikisync/tests/chrome_profile_smoke.py",
+      "40019026c804a69271513f4d5fdc38cee5dbdde59a6ed3c13be893161b8994a1"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/Bookmarks",
+      "ceb38149d7614cd7a77fcbf6426017155a46c1e555d3ac48fc696500113e2a1b"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/ig_live.json",
+      "74f60d0765aa7d00f2f28eab348fa47f8fe40ed5dc5cead79b6e29847d9a8ad7"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/saved_posts.json",
+      "6df764e9e1dd1797384c8dda5834bab72bf20337bc64023a6c905ce698288c99"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_bookmarks.py",
+      "5d38afeade7598c46e07b1d0d4aeb6d39bebb0a792ddcfe377f87fbde8427f63"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_canonurl.py",
+      "dc93f98cf2579a2e5f1cdf3d77808b1da2b032497337a4953164f9cd70edcb1a"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_capture.py",
+      "84d6fd0ea27fe805999b7c8d9065750f78f9b3716f97c3591723b1d8d5f415ca"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_cli.py",
+      "0bafa8aae96e908a547d7c74c4b17ef279f735574937f33eb2dd318121ae6e8e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_instagram.py",
+      "b11e6adbd292dcdb18231cfe0caf8056e2f3a835b01631066ccb4aa6fa097ed2"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_ledger.py",
+      "e4b3a24151603bfa6b27ee77058872377373cd6ea193eccda8970929a3149d5e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_render.py",
+      "b996048993a040d31deaab1010f52d0bc338fbd4354a288cfe4373c0623d8066"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_vocab.py",
+      "a8f3f7e93d022d280d224ccad8cd7bb9b0ea75f1fd9efa088bb3acb0d1062a31"
+    ],
+    [
+      "tests/bats-fallback.sh",
+      "38ed9f03a33cd2fa8ddec12f3f6c4c29722c3c57a18b25ff5c8cb5bfcfab9cf2"
+    ],
+    [
+      "tests/fixtures/context_efficiency/README.md",
+      "bfe1869f2b5401bb963fdf57002cc314d27ac16836b47fcf568707d8868f3917"
+    ],
+    [
+      "tests/fixtures/context_efficiency/gold.json",
+      "e9632384e8f7e7262fab73bee895b098eeec091498a44e3c588b748e33e92d51"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/manifest.json",
+      "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/birch-attempts.py",
+      "298cee8e7e41e6bf12f54a7ec3926ea8acaf5babaf56c01ed70b33312dd64257"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/cache-exception.md",
+      "ef3fa6667725b6615caf8aac8793dba7783685d3dc5470104256bede21f352a6"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/crate-attempts.py",
+      "1a0779f78d5afc424ebae73df098b3c56e10b3062f10464e2b83f5a952e5da93"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/earlier-test.md",
+      "b9295e3b26dda3e934ab724a76a03b9d71c59c2a5f4b45e241aac91c3a86477f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/late-correction.md",
+      "6283e72f1493210e3186fe71a3b59f6b8069d8229b5cc112f4f5f8c79b8db66f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/later-correction.md",
+      "b2fdb8e7bc15362bf26abf4e672832cfee993bdd9296489577d52ab50ba658ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-amber.json",
+      "a4b3640012ed6e3528c1958f9c4f1f81c9c1c20a5e0d53770ed67b5b0f84a37d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-blue.json",
+      "3ea9b92d069d67dc3f8e0855cf1c013ff06ebbc69cab33aff1c39bcf6d9b6ec8"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-coral.json",
+      "4b2632c21f680be957a1c2b951cf3bf78c226f2e0deb5127b19ae5353c2af9ea"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/original-decision.md",
+      "ea67468e364aed4d6e7fc61e85a6face8e30f8edd86ff24e50447adc075ff83b"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/overlap.log",
+      "1b5b908b74987a4a7b590d21d775bcab8bc3f128db2878d3e70fb3e457918e1c"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/profiles.json",
+      "2d9dcc5f2d9dd82e8a8a65a4931dd00591b296052d6be9c0ef005eb105bb8458"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/quoted-example.md",
+      "fe736a4e84e4518c28225cbb328dc784d334c20adce8db43a29b3b00dd8a3b24"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-new.md",
+      "bfa7ba36446e92cd5c977b91cb6301d7f28ec850f256ae4ccefbeb8d200b753d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-old.md",
+      "daddbc8388125b2eeac8dc54e1048e3af1206d3785a544346ce3b89face71cc5"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/separate-operations.log",
+      "87f1285b113dec4a3035608a64e8379916e9561340b5d97cdd6d9b72138a6091"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/slot-decision.md",
+      "74ffd596595f3718167879b52df25db99d09067f97fae3b5a2279a9e64e4c6bf"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/spruce-attempts.py",
+      "c416de20f738871cdf1859fbb4754a7428f95fc4855553f9138e7c1b0ddfaab9"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-amber.json",
+      "0535f3044495f89d38b9c191f8112ed192f34fd761d98c2b11cc947c84fb75dc"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-blue.json",
+      "21b18e42d2ca77e12bd811b1343bb9bc1fed8417b8ca89ef1b3a8c91689fa7ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-decision.md",
+      "ce8eaa491e69218783fc3d9bd3bba4ba23589a3c8a825c76321509dcddfb581a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-replay.md",
+      "37ca4e8b07eea4e5eba9a7b7790a9b828cd00417ec7b3a6ba0d1fc5f8d111d11"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-new.json",
+      "1ee1ebee9a88c5f050e3861d94a08c2766953dcf5b8d2e5534e273a2fba5c6d3"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-old.json",
+      "85b9d0096dd9939fef4592c883963cfe83d3c8c0e4d8c27d794a4fc85acfbcba"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/uncertain-ack.md",
+      "fa8eae6977c27267224537a5dae79314afb8cbf1ca152cf5f0ecd2f523a37398"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-agent.md",
+      "fc85520188dea90225008f1758d093a0a16e5ce255c9f8c7193715f80c788a33"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-human.md",
+      "4e6f18132e4d34e99161968cd77c6cee19200051a473fbc18edad6687037c879"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-test.md",
+      "64132d32006005c06b402d551d438acabdf0340bba70a66ce6f0309fa7750ca1"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-aster.md",
+      "928d56ca92218b906a7e3609a9d3ebe7f3bf041ff901eaffff0ff423bee8cb68"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-bryn.md",
+      "ac7c826213bc5d5c7b150e86ff04413ec1f9a8794e0f911edc2e292bf589708a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/zones.json",
+      "3d4a40c2562c8b525e93039ccb59e2e3f0483e6e3181c0a1a54f7470893e5521"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/README.md",
+      "ba8cd8cb4039cd85c9ea2745d6a11f69db848cae951ed0794addfcd94848dbfd"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/descriptor.json",
+      "da5ede0b0f5af33f119287b6382d3837022cb05a041401eb099d72bf024b109e"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/events.jsonl",
+      "b788a3fad8c739f5304b7560d212d4b75f5b6a947bed5435294e43c5f2f502eb"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/generate.py",
+      "55340a72da844675ddf230ccb6ad799b7e5b327434c20f3275b3bab203c8fb31"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/inputs.json",
+      "0ec53c0613592346b41a8006578223d99a29b0653e7b0d7d9e350d19a6f643e4"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/manifest.json",
+      "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/owner.json",
+      "8a8690fecb1d966d3af540ffa93f99faeb28e76018b43e0cc2c3b33d801c4428"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-meta.json",
+      "3e30e3d242e030079c33f7910f35806a084b202468ed55b31bd59e6b8e1f028c"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-record.json",
+      "cca7f0e62d5ab255020fd51259bd2ff4b626828bda816b7a1645f29105cb7366"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/snapshot.json",
+      "83ebf490f03ed7df416f12c156471b9d14e5de0dfb78a4fe3edd3aa32fb05f1a"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-error.json",
+      "821e598806c48b2b91ec10c4929206c227c91916dec7a2cdcdac6df7e1767ec1"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-success.json",
+      "fa69a34a01105bd501d11d0fa67d1aae40fe003cb61ff93fc918319fa9ad7a58"
+    ],
+    [
+      "tests/fixtures/fanout_providers/claude-success.json",
+      "fc0393d0312453c115db00c61d7428d79929f8aabdeb55d0071aa87a8f8e5b93"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-error.ndjson",
+      "050a62511a60087f2ffe12cb2695a02c7da847fbcc681df8538364029645d277"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-success.ndjson",
+      "735107f037e9e188f40bd20d8cbc1c6b1a8797fad5b712243813dcf49d9762f8"
+    ],
+    [
+      "tests/skill_verbatim_cases.py",
+      "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
+    ],
+    [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
+      "tests/test_bootstrap_machine.bats",
+      "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
+    ],
+    [
+      "tests/test_bootstrap_tier0.bats",
+      "678c491ad0eb1f912bdf1a49f5bfea39522b5f49bca6da628026dc7f5431282e"
+    ],
+    [
+      "tests/test_bootstrap_tier0_host_smoke.bats",
+      "0b58e407a8f8ee7fc68e806a4f02e96b400a6f8390005b518bb8450e69f1e28d"
+    ],
+    [
+      "tests/test_checks_secrets.py",
+      "4c1e970c82ff7ce9abd73af4ca03847ddb57243e65fcf9937b883a29fcdf8c98"
+    ],
+    [
+      "tests/test_context_efficiency_corpus.py",
+      "7b0177a8a8ba026d785c81b171071201fd0351633a4e25f289fbbc711e60ac6c"
+    ],
+    [
+      "tests/test_context_efficiency_pilot.py",
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
+    ],
+    [
+      "tests/test_doctor.py",
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
+    ],
+    [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
+    ],
+    [
+      "tests/test_eval_harness_receipt.py",
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
+    ],
+    [
+      "tests/test_eval_native_consumers.py",
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
+    ],
+    [
+      "tests/test_eval_provider.py",
+      "7e322acfa591726aa9ddacee046241e9953987ca2e50b90f9db0faef505c6b16"
+    ],
+    [
+      "tests/test_eval_receipt_v3.py",
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
+    ],
+    [
+      "tests/test_fanout_artifacts.py",
+      "dc07415db0eb0aa3f9fcaec52b7bd82f98af28f3f598ff2b9c28ae55cb86ef8f"
+    ],
+    [
+      "tests/test_fanout_benchmark.py",
+      "d88b89e61d2b0ba31d997f502dfd256a8f2ab519551430246e0501f6984bab86"
+    ],
+    [
+      "tests/test_fanout_bootstrap_packages.py",
+      "19744e368077b50f01855c5148d179195c771871a316d964518b6e124403de8a"
+    ],
+    [
+      "tests/test_fanout_branch_handover.py",
+      "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
+    ],
+    [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
+      "tests/test_fanout_cold_recovery.py",
+      "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
+    ],
+    [
+      "tests/test_fanout_collaboration.py",
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
+    ],
+    [
+      "tests/test_fanout_compiler.py",
+      "662ad6d87a7be97b2f5c2d96c7cda7af930803b0e7902e3b8bcf82d7907c3442"
+    ],
+    [
+      "tests/test_fanout_context_view.py",
+      "cd6695751689339c30847321cf655c21f996ff5e21d60d109eb5da650c848184"
+    ],
+    [
+      "tests/test_fanout_controller.py",
+      "0c28c87fff7321f0a5e9888c35e75a7aa89856c833f123d88902c9e7ddf17943"
+    ],
+    [
+      "tests/test_fanout_execute.py",
+      "5e18acda9b70ca6338deec59738b0b8476ee7a4cdf93f742783d3eb1c5a12316"
+    ],
+    [
+      "tests/test_fanout_execute_skill.py",
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
+    ],
+    [
+      "tests/test_fanout_lifecycle.py",
+      "fbd5b11a328354dafd4f6e84cb6edc838969c88a369927be1f43dbb3375f130d"
+    ],
+    [
+      "tests/test_fanout_local_authority.py",
+      "c7ae473e39bde7a9e42d2acabf6120a42fc2b51609b8466bb1b39099e8a14dac"
+    ],
+    [
+      "tests/test_fanout_maka_native.py",
+      "aa6ee48e660d17a94829c89d8d542e131f32f145bfc7d22509f31aae5d44bef8"
+    ],
+    [
+      "tests/test_fanout_maka_native_session.mjs",
+      "5b0559bc0751ab3b4fe0864c1669175156d813feeb53c88adf7a862f1ef77ecd"
+    ],
+    [
+      "tests/test_fanout_memory.py",
+      "d5f92c90809dc3f194b1142614dddd830e5728b7c8c4e49ee7c81e0762bef56c"
+    ],
+    [
+      "tests/test_fanout_multirepo_integration.py",
+      "89e709440321c0b5edbedca00826153cbe89c926e478a537d947b57bd966c965"
+    ],
+    [
+      "tests/test_fanout_native_profiles.py",
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
+    ],
+    [
+      "tests/test_fanout_native_write_policy.py",
+      "7b6420452829426410689621a7e2f58681c944454662ec64de1f58ec361192aa"
+    ],
+    [
+      "tests/test_fanout_owner_actions.py",
+      "b5dccdd7bbc3af5b33c244c1f9cc57eda717484ccbafc0f4493b4bef6e96c899"
+    ],
+    [
+      "tests/test_fanout_owner_reconciliation.py",
+      "f2beab4d49f8bc353bb63fd6c1eb7725e9cc3e0555e2e82b9d8b7fa6b1f57e01"
+    ],
+    [
+      "tests/test_fanout_plan_schema.py",
+      "40b624f991c3c441084b0e77fe4d041f0a9129d7ef66b7abe615eb8e261d3045"
+    ],
+    [
+      "tests/test_fanout_plan_skill.py",
+      "3af1c030c1d98f3664745c01b13d256d7d562df9421aefdf15476ad1972cb68b"
+    ],
+    [
+      "tests/test_fanout_process.py",
+      "69a30ebe39b9374d61da16672c13626351f378e1b6b6f7638bfd263115f406ab"
+    ],
+    [
+      "tests/test_fanout_profiles.py",
+      "8cb3d5dd527c8a5c4d38c3623f770e950efa35a0ad1ba6c0fadf06e63ea33a77"
+    ],
+    [
+      "tests/test_fanout_providers.py",
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
+    ],
+    [
+      "tests/test_fanout_recorded_cli.py",
+      "af63ea99d350fa223cf3865e1cf76368d4e0f21849b49724d230c6a79f805c59"
+    ],
+    [
+      "tests/test_fanout_repo.py",
+      "dc7b411ea8ec602d72b50c146a96240d5b1a8a4887278c36fdc7bbf6471d496a"
+    ],
+    [
+      "tests/test_fanout_runstate.py",
+      "86e0646c576d231e52d036cb39d9b0dffc7b14e619a4bcf3d4bd12e8bbcbfcf3"
+    ],
+    [
+      "tests/test_fanout_scheduler.py",
+      "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
+    ],
+    [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
+      "tests/test_fanout_skills.py",
+      "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
+    ],
+    [
+      "tests/test_fanout_smoke.py",
+      "64f5c0647d2844686f03150e03a0ba9581041ba3b682be772f448b4de0333107"
+    ],
+    [
+      "tests/test_fanout_storage.py",
+      "be38f24a4e6ec2c69d5d49448d3eaf6acb4dea96c12747e578764ba4b8e47a99"
+    ],
+    [
+      "tests/test_fanout_targets.py",
+      "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
+    ],
+    [
+      "tests/test_fanout_verification.py",
+      "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
+    ],
+    [
+      "tests/test_maka_colima_mount_migration.py",
+      "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
+    ],
+    [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
+      "tests/test_maka_skill_smoke.py",
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
+    ],
+    [
+      "tests/test_memory_exchange.py",
+      "578e1bc7bc9165a53b645aeaabfe2a564e0a680cc026238e5b8463b9c0b7e423"
+    ],
+    [
+      "tests/test_memory_ingress.py",
+      "43fdfbdaa5bd4c7b9c19d994006a360c44c318689aaea4e2b58121d1351527c2"
+    ],
+    [
+      "tests/test_memory_runtime.py",
+      "4c69ad098fb37077ccf305823f1755822536bc5bf494e00d4b4aec2cdafa7374"
+    ],
+    [
+      "tests/test_model_policy.py",
+      "4a95f529736f0b1943ba80762787cf9dad1e718ceb1b960c82437a11ae153e6c"
+    ],
+    [
+      "tests/test_mutate.py",
+      "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
+    ],
+    [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
+      "tests/test_reconcile_apply.bats",
+      "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
+    ],
+    [
+      "tests/test_reconcile_defaults.py",
+      "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
+    ],
+    [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
+      "tests/test_refresh.py",
+      "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
+    ],
+    [
+      "tests/test_render_packaging.py",
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
+    ],
+    [
+      "tests/test_repo_sweep.bats",
+      "08b8cc4a229c4af406b6bb99b6db1df5eba7aaa4d816911de7aa856d6cf86b11"
+    ],
+    [
+      "tests/test_setup_audit.py",
+      "43a4798870afe5a98637983e9eb20f0750a334bf45d75fc2edd79caa6a3c4809"
+    ],
+    [
+      "tests/test_skill_delivery.py",
+      "bc3e9b54e2ad72b8b867a8d9aceed4696ddc76630d2c419f58c7bcb3dae6c2cd"
+    ],
+    [
+      "tests/test_skill_upstreams.py",
+      "c9bf886aa5c8d85870631fa7a84b14a5a208bc6637e3b443a1b7c477eafdac22"
+    ],
+    [
+      "tests/test_statusline.py",
+      "d1c2b35c3ae583001b4571551b3d270129d9b5420440065d187774dcb179ba54"
+    ],
+    [
+      "tests/test_statusline_reconcile.py",
+      "7df1d88e3d92998b4b22cada045dae644167b70d960c43caee6e5883347bb197"
+    ],
+    [
+      "tests/test_tuneup_fanout.py",
+      "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
+    ]
+  ],
+  "selected_input_manifest": [
+    [
+      "agy:SKILL.md",
+      "6b8873f5fe91b3b91489f102371570e5f51766ca6fffe9c41500fa5b9d1a7cfa"
+    ],
+    [
+      "claude:SKILL.md",
+      "6b8873f5fe91b3b91489f102371570e5f51766ca6fffe9c41500fa5b9d1a7cfa"
+    ],
+    [
+      "codex:SKILL.md",
+      "6b8873f5fe91b3b91489f102371570e5f51766ca6fffe9c41500fa5b9d1a7cfa"
+    ]
+  ],
+  "selected_input_hash": "260753c46d7c0c4dd4d815340e4e4978f69d63343e4b14ec52508e7ea6d39c2f",
+  "criteria_hash": "69830147d3f5be23d2fa398f37e19fa4e72c5b6f18feb968afb7081ae8768573",
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
+  "raw_refs": [
+    {
+      "path": "workspace/iteration-2026102101/benchmark.json",
+      "sha256": "961d95dcec8ef49a3334b8cfe3b997368f3f4a462173f3d8dbf8fcc1e69514b4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/agy.result.txt",
+      "sha256": "54e8340aaece5215a4021b050215382e3e4ab762e379cff893ca2c6f09eb2309"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "c9bda7797ff63fc303a1576368672b64465d27035b5aeaa4e046d14c89abedfb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/answer.md",
+      "sha256": "54e8340aaece5215a4021b050215382e3e4ab762e379cff893ca2c6f09eb2309"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/grading.json",
+      "sha256": "584bd0b461c8a48e35083fc26187e80ed846139ec737281b2dfdd00056ab4303"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/judge/claude.result.txt",
+      "sha256": "77a2b7395f3ca7c675d85b800aa7f39d583f18078f30198f3b10bb3615e20f87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b73ffe3ac427e2ee1bb358de8dbb59bb1ac8e2cf6f984e51b62cb85b14323455"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/judge/manifest.json",
+      "sha256": "5873f9075254389d4e750986743e1dc3a001055cf20d3369223347d9d28a4928"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/manifest.json",
+      "sha256": "fed782af7651f896940861f26b687372606c119dff290a46c97369b821e9a758"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__with_skill/prompt.txt",
+      "sha256": "754c6f3ab5af714c5a7d5399387d89fc2c52b50d76c12e255b690524967041ab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/agy.result.txt",
+      "sha256": "88bf65fad0d9476f72cd1a2382674b4f021334653c5be9e3cd40cbc0ea92cdae"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "7673018267d7a46700d7ded811e76c31b52231902a5b2a387d2068f91870128b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/answer.md",
+      "sha256": "88bf65fad0d9476f72cd1a2382674b4f021334653c5be9e3cd40cbc0ea92cdae"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/grading.json",
+      "sha256": "652575464318a7f6bc0ad23a75c23780ddb4952cf38af306499506bdb192cf45"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/judge/claude.result.txt",
+      "sha256": "34495de8305c5d6f48ae65b209418d6dcd3246cce7293baa4bbeb2645d87c8d8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1d1fbc6910f25b1f50beb8fb4fb14594ca82285154a5a816ea276ea023ae6bbe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/judge/manifest.json",
+      "sha256": "70ff1e249971b76b7842a1be5960ee86a50d7b90b9334128061840883a65dd19"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/manifest.json",
+      "sha256": "53621a73e006debc9a8bc54e031b4acba4ecbcbbf3f9545e0f79249bc5bcfbaf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/agy__without_skill/prompt.txt",
+      "sha256": "127d215fa6c0a80b3c65a9b8ea6192739fc8033ea122e248068f861716a073c9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/answer.md",
+      "sha256": "b791dd708d025e3c3638feeec8a5e6896ac796d2dfb186b14509733932129302"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/claude.result.txt",
+      "sha256": "b791dd708d025e3c3638feeec8a5e6896ac796d2dfb186b14509733932129302"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "5b81a0b1c8664eb618e24c29861ef8ef35a0a1d42017f141006ff761781e8ce3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/grading.json",
+      "sha256": "877a0aa13e314c6167b0b5ad63bfb9c67de742b8ed0dfa794391fef0f3269bb5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/judge/claude.result.txt",
+      "sha256": "e18e96d96fb5283fdfd82deadb83c2b46b46cf2b112b5943b13b3da5b52af22f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "03a451fa3cff0394c3659f8b54f01eea3b05a9726357455365613417a63047b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/judge/manifest.json",
+      "sha256": "74980c2983f26a08698674bcedcae6cbf83e7ae7cc01f0e8dd72ff2a2ec985a1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/manifest.json",
+      "sha256": "4c067fa0e572cba7999bf3785d6e0050f9a38ae5c08334eeb6db145df34d7fd5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__with_skill/prompt.txt",
+      "sha256": "63879036962e6d4f8cf9e1fefb30be7e0a1a210b9c1081dc099b0cbb15d39239"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/answer.md",
+      "sha256": "796976385baa2a3166bbc7fea2636e7b9e9a4d5e66da1dc3aa81dabefeaba9ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/claude.result.txt",
+      "sha256": "796976385baa2a3166bbc7fea2636e7b9e9a4d5e66da1dc3aa81dabefeaba9ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "09f5903d2e316925d7abe01b195d17d04d834ed80677341c1d7008d79f579767"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/grading.json",
+      "sha256": "d63c4b91fc15ada6d6f1a49fccbca96378c4776b06f646804a87a71d9c38f529"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/judge/claude.result.txt",
+      "sha256": "8a2dc9b56e3fc646923130518e9f36652da7c054d2b698bcc7f813177c85f0d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "034eb94f579ba761d141c9ee20edd90c637841b42d1d8fe708905ece6b062f3a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/judge/manifest.json",
+      "sha256": "b561cd029bc6f756cae0db432f2e8e514aabe8280fca480184dbb022ff567223"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/manifest.json",
+      "sha256": "397cdcbfaa15710d289d8ffc43b46b8c4bbb0f0eb3b8d4aa4d12871dbc6eecef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/claude__without_skill/prompt.txt",
+      "sha256": "127d215fa6c0a80b3c65a9b8ea6192739fc8033ea122e248068f861716a073c9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/answer.md",
+      "sha256": "f200716defa6a50e0ff03441e2d26e443a2b41dccf178be89ba6686951b12189"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/codex.result.txt",
+      "sha256": "f200716defa6a50e0ff03441e2d26e443a2b41dccf178be89ba6686951b12189"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "e087285a572474b1a3a58dce2297228eac66dd9e77c6a914469f3d96d25c0254"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/grading.json",
+      "sha256": "a087f0f16d48dd72cf08b3b0c485662305f100f92dfb471e9ea54960807112b9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/judge/claude.result.txt",
+      "sha256": "f38aab5f32bf8a87be22780bbb49c7db13c69b9c4d511eeb3d02351b380624dd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "ea12ae7b0833c34caf98527a7fc7322a37c54496a8c2cc449a427e831950f1fc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/judge/manifest.json",
+      "sha256": "4ca9772389acf26f1e39060e65454163cfa6670e9b4ddc44f8f60df4994c705a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/manifest.json",
+      "sha256": "9c70a67680ab76f6f5d9bfcc8ca922d3298eafb1ad95976705504e8033d3d219"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__with_skill/prompt.txt",
+      "sha256": "5b16ec95060f7a4e5b8790b644657635c4e38e409cbfca9825e66fcc9cd52cf2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/answer.md",
+      "sha256": "ec8084299e434607523dbc76257bc9c03e3b66b3570576bf70b53afb0b352273"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/codex.result.txt",
+      "sha256": "ec8084299e434607523dbc76257bc9c03e3b66b3570576bf70b53afb0b352273"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "aa770e97e934d9476d5b1cb471b1ea8d3022d7fe4e6c5fb6b1c580de61c5905b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/grading.json",
+      "sha256": "a9b2ee374aa27bd8521e6cd8d04f4d4787174d92c33faa6ab7230707da01e718"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/judge/claude.result.txt",
+      "sha256": "f4f9d52e7f7fcd2a04870f69cdf964faf0e3ae15475d825c131bc1ab61c4861c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "68abe52e1f1f822c6deab96bc3d9c34b23690a4686b4da6571ebcdeda971374d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/judge/manifest.json",
+      "sha256": "eed160755f77953ce6a122c2cd8433802760f4b1e4e53703c2504bfa7692c069"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/manifest.json",
+      "sha256": "f20b1b3530dd25b6e14349cb27f06bbaa0d6e8c0f385e5ad5d4a87f88a434639"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/codex__without_skill/prompt.txt",
+      "sha256": "127d215fa6c0a80b3c65a9b8ea6192739fc8033ea122e248068f861716a073c9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-agy/claude.result.txt",
+      "sha256": "9e2375ce0110bb5d36fb1db4c6d90bd4fe02356f52a016d3d350492af608ad1f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "4811e3a8ce808022c7ab461ebb8483ebb4d666fdd61b413f65b71e0cdf9f7893"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-agy/manifest.json",
+      "sha256": "195e78acf60a2834df9d4a96816cbee6317858eea46262dd053e31246bdbf47f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-claude/claude.result.txt",
+      "sha256": "5b0792914b662a386ad47e5efff2df6541532403bd21fad96fde9e1f5c9a9b4b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "fb8435354413e941706f2079def329176ea35b60e8b1906b8a886c39a876c6eb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-claude/manifest.json",
+      "sha256": "06aad200fc27452250b327db0ac47be956b97b952083e9ef89608ab66bb217ec"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-codex/claude.result.txt",
+      "sha256": "8df0541fc64ae7793d586945fa44538d4604bcd21130c15b5e7d1cb438f508e7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "a5c4a2b9b7d87ae959b3d477a49ea7b38cb8b90104460e41b7aa8077834fafb6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/compare-codex/manifest.json",
+      "sha256": "51afffee88bbb1e0d1cbabb18851b1a10167146f00f3769224cee01f279a0665"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/comparison.agy.json",
+      "sha256": "6e443a0c229630891614ce630139247040202c49c32043707d7c5c261dd52b2d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/comparison.claude.json",
+      "sha256": "4652b6871bce9655642c1ebf684db984d58fb378c05a13e6b0cdcaaba590ed40"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-changelog-before-finish-stop-hook/comparison.codex.json",
+      "sha256": "ca94aa7baec9b764861e5f6aef2082498ceec49d7ef6c12634a0c42675dac1d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/agy.result.txt",
+      "sha256": "c2f493e93bbd579c018502d304c81b4629a2a43be83efd8a82cc3894aa916bff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "bcb6e186a9d6abfe73335d8f5e7be3c5d179e77ce9fec6ce1925a9b57a3c96eb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/answer.md",
+      "sha256": "c2f493e93bbd579c018502d304c81b4629a2a43be83efd8a82cc3894aa916bff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/grading.json",
+      "sha256": "bfa08580d1b785d6ce6e65d511d50443b3a21fd877dd04bccab86ef7a86158ea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/judge/claude.result.txt",
+      "sha256": "511d573038278b8f6f47c160eb2aab93bf4fd9e47af063d27987a92c6a6a7319"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4c03a5d0b5db69cc473a8c2d5a5d6d5bdd61cd5a7d9dddba39fcd6db0ce79796"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/judge/manifest.json",
+      "sha256": "b69f340f61be79cfd1238f14a5bc17de2730b1feaa0dd3ca5278fef6f3630991"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/manifest.json",
+      "sha256": "cc5be672ff8000948e40879813d8a169f5ca15929086fe469da7fce011fd9f1c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__with_skill/prompt.txt",
+      "sha256": "6e8985fe20d894c05c8a540103ca89f01a49c7b3c44b611543385cd49c604be2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/agy.result.txt",
+      "sha256": "a2e1a943c4b9160161e8b16978620ec15ce1c8785947bd6e8af9622cd47360a6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "ab711ac9f0c6585103d25deeda7f8b6b936ed6cfe1da37fdcf829a581e8276f4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/answer.md",
+      "sha256": "a2e1a943c4b9160161e8b16978620ec15ce1c8785947bd6e8af9622cd47360a6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/grading.json",
+      "sha256": "a440337e13e1be0f34f9786e941cc929354051cc674fd2e1f1582a9b7a71782c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/judge/claude.result.txt",
+      "sha256": "1b8d563a67e80904cc2f0fdcb8dec2a76f91e75347c2b6dfa89bf0d1926d7aac"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f3647d9940645cc73e416764c2aa7ed89bc60f2125825115c6043437114db723"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/judge/manifest.json",
+      "sha256": "f54a1c2e8fcf4cfc3cb7124335d8c4decf539becdb461bca46985e04d16c11f0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/manifest.json",
+      "sha256": "88accd83f77428152fe4a4775874b6e32e0ea8b216bd061c6c9fa88ff06a6906"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/agy__without_skill/prompt.txt",
+      "sha256": "599df7bab33581cf155295b40a97e6198dd1f5fc28f294b1c05e3cf6b1fd9b07"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/answer.md",
+      "sha256": "3cc06ca77f42658d5a09b8d1f78fd7ce4a476e64b9e4c431ba28455cccbcbbc2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/claude.result.txt",
+      "sha256": "3cc06ca77f42658d5a09b8d1f78fd7ce4a476e64b9e4c431ba28455cccbcbbc2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "630f51cfad67e5d31569c2b55a05c00134cf911938b6e5b5fa883287615be85f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/grading.json",
+      "sha256": "4bab2fc80523d577f64cf0f8c53be701b9a923b612d9dbaf3afe7b4aa4fe6154"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/judge/claude.result.txt",
+      "sha256": "e5aa7607ab1b252df29700828613daa4ae6a9c2263d278e954dea023752416a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "620c4c9bf0c451fcb032027e657eec914deb91f03383a53cc0ba2935a986a9f7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/judge/manifest.json",
+      "sha256": "809816e003ecf6d295660d76f636cdcd6661f61424f83bd5002043cbadb25e61"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/manifest.json",
+      "sha256": "d95dd0c4aafd11190006db5876856c059559d5c9e4f797099a73a0b5a0abbb8b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__with_skill/prompt.txt",
+      "sha256": "17054711599f6969c9d4763d92d04b4fec9fdcfd58a0a25ff9bda1ab49d68a44"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/answer.md",
+      "sha256": "4ae67ab9e9817ca6f062ab1dc19b07a8eedfab84725c92fb5df7b69f2168b108"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/claude.result.txt",
+      "sha256": "4ae67ab9e9817ca6f062ab1dc19b07a8eedfab84725c92fb5df7b69f2168b108"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "8d1d2eb95d57329fc23c3b83a38cf1c324b667c4c309958d04da25e0228bf029"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/grading.json",
+      "sha256": "5821cd0fd19deea70866ecc95bc4c1f647559a8019af185216b1129a5bd6a719"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/judge/claude.result.txt",
+      "sha256": "11595d63079ae29c79335d50a44d5d4b5586c301581b1b3fe019f21612653ede"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "650559282512e08d4ddf7b12244c451b1d261f24877d05ec4ea12ef7af55aec3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/judge/manifest.json",
+      "sha256": "1ad5a76e00be3119094eb0494c0ab7efc8eb13ffc0e205c760c3c94c395d4dcc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/manifest.json",
+      "sha256": "4c0fa98f97a630908719761644987813214c8f7f435509f56fa418bd5139a4db"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/claude__without_skill/prompt.txt",
+      "sha256": "599df7bab33581cf155295b40a97e6198dd1f5fc28f294b1c05e3cf6b1fd9b07"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/answer.md",
+      "sha256": "7a3a769019450886a2e2678716f187098397f57efeb625c6cf3335510a7765e6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/codex.result.txt",
+      "sha256": "7a3a769019450886a2e2678716f187098397f57efeb625c6cf3335510a7765e6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "604ea68838ccebb23819d2f50d606720e6adda20ee393ad07bab64aad3a5956a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/grading.json",
+      "sha256": "2a19fefa8ab548325a1f633bfcbd3d217952c939b3113c9463596039cc6fda56"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/judge/claude.result.txt",
+      "sha256": "0144d743fa0eadf1a34d42b9e8840947798bd4d41672b7442bccb30993592d50"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "c4d2109e81d7c098444cd4f7a3fb4039f1b20edad5fa9a1dad780b6a8357f0e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/judge/manifest.json",
+      "sha256": "3f415c4b6ae2efaeb025ad006efa54cd2920b5a33775f81e6be9597bd74b2ef6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/manifest.json",
+      "sha256": "5dd192b4695f4f66331ccf36b409cdfb01bd1cb7e4361433d7d6b329e65a7e30"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__with_skill/prompt.txt",
+      "sha256": "58b263e94cd1e15851213229f8034e51ced4b3a38ebea01d6b513402c1b0aa26"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/answer.md",
+      "sha256": "35d04ed310fe085276d4e7d0c9dadddc615bfe43f9470c6c24147240e0d15af2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/codex.result.txt",
+      "sha256": "35d04ed310fe085276d4e7d0c9dadddc615bfe43f9470c6c24147240e0d15af2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "82c22d52cb2c5caca02242c6c6b510e909653a02fd443e8a4507f7e35770ed9a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/grading.json",
+      "sha256": "5f88bc68877b12838a89fed2e5d81a05dd3fc32c8ae89a1145ca253c5fe9af6e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/judge/claude.result.txt",
+      "sha256": "bb971c2688f5a9f4e447dc15cd00e4bf9147dd3056f3e971d7ac856aab56f887"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8b2f30babe8593181af5ea40089960f7f9cc6f40c11f72e1fdab5c62461d93f0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/judge/manifest.json",
+      "sha256": "405ad37cc234835ebe86ded7571b19261d063dfe7d4fa54673a5776a5319eed1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/manifest.json",
+      "sha256": "78f612b58bc95fdc0481e89ea4f1cb3e2e6d24db74d2d3066d9d63f6fcb7fa8d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/codex__without_skill/prompt.txt",
+      "sha256": "599df7bab33581cf155295b40a97e6198dd1f5fc28f294b1c05e3cf6b1fd9b07"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-agy/claude.result.txt",
+      "sha256": "e41581414c3db604cad6d2b0a1912e6e9210bfc2470f6be02924f1938aebffaa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "16bc6f3e3a29a0176dbc45a576c4ad79f8236aeab71587e2d2f823da5623b235"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-agy/manifest.json",
+      "sha256": "c799906cbee33d7fdb6388abc1cc41f371b4b98d24cea3815f8a37e3f696c9cf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-claude/claude.result.txt",
+      "sha256": "e284d380504d33b5aa24f42ccdb44b312d0bb3c4631493eef25917ab1dcbed73"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "01dcf1d3ccc8c618b2fd651949ec79439c472e85f0441de6655a6fee2e2438d9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-claude/manifest.json",
+      "sha256": "7fa4972855747bdd7128d60b51d6a5754993732cdc7852a1c324d34b75a63544"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-codex/claude.result.txt",
+      "sha256": "d7f41c3e312f22ae075ba0f99ad95c206a9f5b64f7dc2ea2cca265c0b4ee5cb9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "28b0740534afd524fab0f1966ad07667cb8ac8dd818f7f5e48186f31743244ab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/compare-codex/manifest.json",
+      "sha256": "46a67b54b7c927ae16b90937eb2cb7deb1e386e7ebea650c058fd2c756200d2f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/comparison.agy.json",
+      "sha256": "02b7cc07f55d28eacbb6ad5294d6407af83d0ca78f5ec1ef82e324bfffe35cc1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/comparison.claude.json",
+      "sha256": "00fab1f5b8ce68fb723b38433b4c44cd0a740173d87a0d6d58c52e8855227279"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-warn-not-block-additionalcontext-vs-systemmessage/comparison.codex.json",
+      "sha256": "421737c68200d15aff0f89ea6f49180ae73403c8f2e224771d02af3cafe3dad1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/agy.result.txt",
+      "sha256": "6e84bd55e97210febde6effb13c45745d96df3a62737a3fdaa79dc305be2eee8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "6ade83eaca53a765e604b60b699b0d1c2f5d4abc0a22bff92413a834295bbf18"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/answer.md",
+      "sha256": "6e84bd55e97210febde6effb13c45745d96df3a62737a3fdaa79dc305be2eee8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/grading.json",
+      "sha256": "2223415ea47b38fb0747553f741e4ffd6fcac1825f82e3673741512cf859e057"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/judge/claude.result.txt",
+      "sha256": "5054194e71f66cd74321e0a5583bb5457d682200931b6784b4eac3d9ceb6e375"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "fa3883643f438f891337bcc86c6b9619be92253942727b280421370ab0be32f2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/judge/manifest.json",
+      "sha256": "32de4660d1b1dd9854a123bae25d9be2fbd5a9267e8aec7ee0edec3f7af76d30"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/manifest.json",
+      "sha256": "0ee76970aa5e31129047ce11e28c7677dc5bbe4279c25f825fef824f30c55311"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__with_skill/prompt.txt",
+      "sha256": "c85d05cefda5fe057b539b791b57da86583392de873680e9830976a35fa399f2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/agy.result.txt",
+      "sha256": "d0ebadd77db99f644232cb9699d3453a556eb8aceac8d9f2c4c905cfbc59e470"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "9e7a7cc298e6554f5e8d82b11238b9b58b62f370a1858e6e382b5c702858df37"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/answer.md",
+      "sha256": "d0ebadd77db99f644232cb9699d3453a556eb8aceac8d9f2c4c905cfbc59e470"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/grading.json",
+      "sha256": "395d6acbd5b1f2eb495fdf8bc7da7b9d552843463c644f0ed1e1f2b8305ec3f8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/judge/claude.result.txt",
+      "sha256": "5b1a48831ea8c50aed61fa4e1e66b72c44cb0c0255506776580314d27f012a7e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "2c07d757ac1ce49d45b82a140eaf8946eb34d23472e009254ed11e181636b088"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/judge/manifest.json",
+      "sha256": "b356aa8fcc2e94a0111197c33a948a11dde80f53e6dbf44b7204eac64c55f572"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/manifest.json",
+      "sha256": "01e330472665253e9bb5d38b5eeae11354294d69231916fcc3bab69ea66e0db0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/agy__without_skill/prompt.txt",
+      "sha256": "0ae5d27ea9fd8d058103062381b85fb52479dbceb767b628554d105e3bbd9a76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/answer.md",
+      "sha256": "920466188d95e8febc74d162126b00301376dad4aa378a859be77b92025ff11c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/claude.result.txt",
+      "sha256": "920466188d95e8febc74d162126b00301376dad4aa378a859be77b92025ff11c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "408ba65598c640a2940f716688f91d794bb56674aacddf84353662ef25f2badd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/grading.json",
+      "sha256": "49dce9729d2d9f66c3adc774da6cd70e1eef95b7db89429593f5959a7fd0d61c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/judge/claude.result.txt",
+      "sha256": "5d9a8ede46e3306e58153ac75ef2dbf48381f0dd7767989a5a96c383929833d5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "363eb0a81c467841528633f2f0875d4c58e78b4a32d524172372c8a5e6dec538"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/judge/manifest.json",
+      "sha256": "19858bd5467601a5bd215898dace30d08e26c047808ec9f90981be46b0c0e3fc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/manifest.json",
+      "sha256": "9fe460581bc9da3ad439195d3b3c04ec1ccffbed74348fa7cda0b80d21046abd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__with_skill/prompt.txt",
+      "sha256": "a92d2d1fd1b3cb5813c06ca9391ce2482e5a6883943fe2fd053c9ee9938b4d52"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/answer.md",
+      "sha256": "7f491a30d5938fa38e3bb90ae2fcb17197d489dffeae77478233611c5fb8c141"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/claude.result.txt",
+      "sha256": "7f491a30d5938fa38e3bb90ae2fcb17197d489dffeae77478233611c5fb8c141"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "5740dab9c8a9443378265eb10f06bc4c929e92de3bbe8cdabec4141ce88dfcef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/grading.json",
+      "sha256": "8a1e8b747535601314adcfe72b45cc5fa02dde4ef77c6d0bec8a1600378c2442"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/judge/claude.result.txt",
+      "sha256": "bd7ef0407a23132eb78e208f5d5b3326882998e21d983830f3ad2f0bd1d1ef0d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "81157def4cfa9087cc0b6959c94040c365ef374254d0178f08cb3fbd124b5bce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/judge/manifest.json",
+      "sha256": "020446ff35c13eebddca465878b3951b0a0173f9d3d0025b39cba8a0181f7f40"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/manifest.json",
+      "sha256": "4443dd8a03e79300869d70456967e009062650dfb597d4a8948b5367f97f1afc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/claude__without_skill/prompt.txt",
+      "sha256": "0ae5d27ea9fd8d058103062381b85fb52479dbceb767b628554d105e3bbd9a76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/answer.md",
+      "sha256": "ede32011988fff9112a8b8c2d46d3fb6b8e8cf05d8cdb2a354f0742f8197a6fb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/codex.result.txt",
+      "sha256": "ede32011988fff9112a8b8c2d46d3fb6b8e8cf05d8cdb2a354f0742f8197a6fb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "a5212de9d4c10261d1f65bb8fe7aecb1971712dea38730c52b411b04da4a40b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/grading.json",
+      "sha256": "b531349dab44f2204c842f941c57e972017d45c9c1b413367675d633fa4f4767"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/judge/claude.result.txt",
+      "sha256": "7e737b1586bdcc980513629a42e44c3475aa4d7e93aa28c8725ba8287ba10a5f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5ad3082cbe269ea5100caf1dc5fbc3769ba9dc0ea02ba8f6fd76fb08ad1e4610"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/judge/manifest.json",
+      "sha256": "b19590d8ebae82ce8b87e47f93976a418ba4ee6e1c4e69c9065a0baa1f49e89f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/manifest.json",
+      "sha256": "431894c1170c0f6d08661020db9bf7ba9390b29a51b928dc69785db385f6f85f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__with_skill/prompt.txt",
+      "sha256": "54b5c237edc5c653559ec7a19b17dabab9623c0579bffc4ffd683053066a60c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/answer.md",
+      "sha256": "81c1e3563b8becab9dff130f53fa615a96bebf028bfbcf4e35608d10e7843376"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/codex.result.txt",
+      "sha256": "81c1e3563b8becab9dff130f53fa615a96bebf028bfbcf4e35608d10e7843376"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "5d8716426e68c247023308a4f4ddc31f46ed98327d25e55c0e1a1607314c5605"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/grading.json",
+      "sha256": "8e6b37fbf127baaf67fe86f601a5aee6d518458e6d97237ad5e6e8b2d45752af"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/judge/claude.result.txt",
+      "sha256": "9c149e6bce53a6027a5ebdf9273f3aee4c5cda9613034dcdfdebefc080794ac6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "93e99c98e8004eb6b3e71e53ba8fb807435b77a41981f148c1fb19d7a3c8c4bd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/judge/manifest.json",
+      "sha256": "7b0451674aa3f3eb70d83f6cfed6de748c68aaa7a2ee6c593e0ce516c67044a2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/manifest.json",
+      "sha256": "a59564739a70d36ee6b91396be37438f129a4bed03d832f03d7629feacebeccb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/codex__without_skill/prompt.txt",
+      "sha256": "0ae5d27ea9fd8d058103062381b85fb52479dbceb767b628554d105e3bbd9a76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-agy/claude.result.txt",
+      "sha256": "26d6dc531ac1a94b9bfd37091093456559068b786f8b42fbf944fdd9c8e2e17d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "d8b3537d441eb5ccd0dbec54907b4f17339115f1d2a7e2ed25005cfc49b89b86"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-agy/manifest.json",
+      "sha256": "6021a731538553c33aead11ee6ca6382b2ccb7f2ed4c53d8a18d409b146e05b0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-claude/claude.result.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "215f36437fd2501b218396e4d29aaca61a3752cda8f668fa756bcf65c684a60b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-claude/manifest.json",
+      "sha256": "d2e9894e0ed0fecfba79dbcc7b8af7bd206a8c038e4fcfb3834c52aaea2daf76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-codex/claude.result.txt",
+      "sha256": "d35d3018eccf950f9f4af15e784ee036c41b221c61213ace1a1cd1635c80c7ec"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "e6141eb0b32cdf7bdbd0fe7a4573a0854f48415e16bbdc336aa8f3a499439afb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/compare-codex/manifest.json",
+      "sha256": "4fcbbb8cf823e6f850469a89ccb1713c36fa094058e96859f7a5b9daeff2d97a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/comparison.agy.json",
+      "sha256": "a4e24c606f767c2c177133f3b245bb2c40e21ef6d385c4e20f1c47b381fb8089"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/comparison.claude.json",
+      "sha256": "715f1c5ce441020355d4521d25cebc0c37c9c9440c5aa176d30cece9b5bfd8fd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-defer-reruns-the-hook-on-resume-a resumed defer re-runs the hook and must not defer again/comparison.codex.json",
+      "sha256": "32af32975fd011b759d81889fa5b47bc55a10eaf3301502790d98310bc4b2585"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/agy.result.txt",
+      "sha256": "9f4d747efa61efa9261d4fce47364ab8c9459dc394beaaecb6437dafa799389a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "bc271515b05e8e982db1d9a8178687100e40f3c575e19f45f8e6bc91695f39b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/answer.md",
+      "sha256": "9f4d747efa61efa9261d4fce47364ab8c9459dc394beaaecb6437dafa799389a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/grading.json",
+      "sha256": "26c79968a12f013411f7a8a6ab0c27c23457fbb2b71c80f63ef50e2b13c37584"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/judge/claude.result.txt",
+      "sha256": "410f776b83f89fcc887da0bc8d21b799dfcc04c93f20aa9a8c1b168788a21243"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "bdd00268a393d3d6360f40718f3aea03f71c037177e8ec682dab84627c0fe5e3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/judge/manifest.json",
+      "sha256": "6680bfa1b7eedf7494046f73edf5fe1a152e851187c5634e1a78bf1a7c5a7f89"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/manifest.json",
+      "sha256": "64a49e1d883757b9b180fc0f504ddc844e5d670c623276cd6d70a4a97f107fc5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__with_skill/prompt.txt",
+      "sha256": "9ca77f1a2863b9649840f8743871c4c8d20762d0c674c6616cf8401237ac8e24"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/agy.result.txt",
+      "sha256": "8d36501afc2ada47fe1e5b418111ab6672ba38bfe69fef44312cba36bbcaeb58"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "be592e88dbd50ff0255aef95494b70a8c7f6a1ed1a03301a4dedde6bf53c99fd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/answer.md",
+      "sha256": "8d36501afc2ada47fe1e5b418111ab6672ba38bfe69fef44312cba36bbcaeb58"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/grading.json",
+      "sha256": "0fbedc6cc9edcab3775a162c022d5f46a8608e0688177363e72b4008c945248d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/judge/claude.result.txt",
+      "sha256": "a91e0c501a27629a85cd8e36322bff938b0c2ec57456e8056539110f5951e055"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "900d136e1a1f002f2f983908834ecb5bf633e3f693be333fb226414b978e4189"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/judge/manifest.json",
+      "sha256": "797341eaec39786bfb389382de7efad5278290267e605f2b98bd8ccc741bc0b6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/manifest.json",
+      "sha256": "194f8b9369235bad278844fb91cf0568a30ad6003149bae760ad5a05bcffa6fd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/agy__without_skill/prompt.txt",
+      "sha256": "cc8e7b5910a86f413dbf2f90ed45997a107fe46605ad4b9e866799da133168cb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/answer.md",
+      "sha256": "9d3ed67ab4ba3ef88a84772e1650aea10293a0d6349f74201141f8bccc2c3027"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/claude.result.txt",
+      "sha256": "9d3ed67ab4ba3ef88a84772e1650aea10293a0d6349f74201141f8bccc2c3027"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "93fb2c82af2bde68ee318bfb52d65bb691d6e7f07006c5aa24c80785e964d4d8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/grading.json",
+      "sha256": "4d34c84eb950d85b6a04fa5d165bee62e5bc0dd4462d6592afd4122f9612eb9c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/judge/claude.result.txt",
+      "sha256": "a20c2235a5ab3e571e0ddd9c67cfef40f8345769f5f1221bcf6f110be660d0c4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "29a4b20232d6910d9bc31ad73c4789fe3c590ffb4b565ce9db2d0f4483eeab31"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/judge/manifest.json",
+      "sha256": "ad368526a07365408d421502174fec47c63d9f16d29ec2d3d1fd1b2911bb8a6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/manifest.json",
+      "sha256": "f3d97f396994438248d207f9bc635c3b216f1c6df43b9efd32c7aa0f8199b58b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__with_skill/prompt.txt",
+      "sha256": "48b423a97736aa86007a24853571a89d7d630834243139275ac27284498e601f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/answer.md",
+      "sha256": "fe01b74aed98501cce84c6768444bdad34b5ead9d18728ffd254104d4db6f87a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/claude.result.txt",
+      "sha256": "fe01b74aed98501cce84c6768444bdad34b5ead9d18728ffd254104d4db6f87a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "7cda130e54c567762089c8468c1e828e3f2e766fa7274d726368aa7cf745d19b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/grading.json",
+      "sha256": "d8c2c00e2941e487bc82a3f79eda87407cb91f0ea7af3a94a805099fb198226d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/judge/claude.result.txt",
+      "sha256": "445c966810e871d80dd6dbd88f6930c8bf173de1c4486ec41a89cf34c6dd4eb0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1691718c5d454f49ec6ad0838afba9f5f4e81aa3b5cf431fd4b5f504623102d0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/judge/manifest.json",
+      "sha256": "fca2f53a84b9bc5fef0ec9dac5ccd15ed1aba60614c559c344e55d640baa4c2d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/manifest.json",
+      "sha256": "9dc34720dc62a63c29f8b588bce49e862a9f237c157b8baccb3c5946507dc45d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/claude__without_skill/prompt.txt",
+      "sha256": "cc8e7b5910a86f413dbf2f90ed45997a107fe46605ad4b9e866799da133168cb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/answer.md",
+      "sha256": "38b47f366ed5c003dfba237de9d5d4760c32f3e374ba8f6be6d757f9a8e087aa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/codex.result.txt",
+      "sha256": "38b47f366ed5c003dfba237de9d5d4760c32f3e374ba8f6be6d757f9a8e087aa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "5e820a4f0dd4ecf0300857836dec776ec26f0aa4667f3ddb6aa968d85fccc333"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/grading.json",
+      "sha256": "a31184fdb6fee33a5cb1f43e86feb8112f50c1be1770b9eb8a6dc967a81e670c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/judge/claude.result.txt",
+      "sha256": "acf90ae91e582c984aa615220b98b156f7b8fafb233ecf410b5f3c4e20bbd93a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "93a6f2f9b40aac31d02620d238439d6b17a022334357d19f85d3a1b167c6d972"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/judge/manifest.json",
+      "sha256": "bdfc79675de0f8a3d5218cac0baa473c7f6c0ebec3e3fa33582c64b35d9c4720"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/manifest.json",
+      "sha256": "f21ca93a1e85ddb6d57bf379e4c83e0c52393e9232f5946d05ee149e5f144316"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__with_skill/prompt.txt",
+      "sha256": "6a57c26f550079dfad443be061c7a9cabf4616355bc0e3bdf916f5ed9f43e37c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/answer.md",
+      "sha256": "5d9f6de955958b9e8731a1a4761fb91d61c69b7adaca414cb52ac4a35defcf07"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/codex.result.txt",
+      "sha256": "5d9f6de955958b9e8731a1a4761fb91d61c69b7adaca414cb52ac4a35defcf07"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "7a0b425e5de118811bf5bdbb74a9b84b3acd0d99f9f0e200b7c3c175f7a7aa38"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/grading.json",
+      "sha256": "3be4fdbb8c37efe350c938841f79e25747944de7f6a1f466d25f723c18aec6a5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/judge/claude.result.txt",
+      "sha256": "6e63a6109255cd9978485a227f4ab153ef63e36c845dd8ba9c5614fc1b189b90"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "cc53c0583e3d2a284ccbe8d8a2eff16b09c9774f3d920898368c4e43d6be8673"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/judge/manifest.json",
+      "sha256": "a7a08cfa920f01e3b5ac6c150b7a7729d54fad1d16589015fc3ee65a71a309f3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/manifest.json",
+      "sha256": "878a69ea0b28aa6e83ca071bc0c9719916666d2732db27e1e1494dcca42401fa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/codex__without_skill/prompt.txt",
+      "sha256": "cc8e7b5910a86f413dbf2f90ed45997a107fe46605ad4b9e866799da133168cb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-agy/claude.result.txt",
+      "sha256": "8806b8fdcb898be930326ef2247242bf570938e1732822d8a000803b69e10234"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "62f160555deb4eeb3dfb228505d37d3f88797ac150f69e828d67da3e75eb475f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-agy/manifest.json",
+      "sha256": "71b5fe91401bd35bfd2f2df972f8e5d0885ed4d926920ee795df4023a6c4a108"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-claude/claude.result.txt",
+      "sha256": "6e1d98feb943f8f8492f56ea3224c7764e3a82640e530b70456f6b284300f451"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "bfa94bab64ea2e4b28b7a0b2601342db8291d68ea5245dd7e296ff7a659ebca3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-claude/manifest.json",
+      "sha256": "da8d700c6a40953d2033346caa7b478bb1cabfa819525857d6e10db29505cc31"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-codex/claude.result.txt",
+      "sha256": "11ec90062c5f26f46c0e2aafc6d6b87e5c4b2e4e4a4b8655f10d8ab1c3e2098c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "fa5f9659df5a3f4455b9362d12383b5660873c00294f64ff9d18226677f060ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/compare-codex/manifest.json",
+      "sha256": "0434212746994ea503eb67f5c3ac3e6ba0ea2d6aa17b241c1459fa49b8da466b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/comparison.agy.json",
+      "sha256": "c04750d087807571493c7b737665f4587587bf1f5dd978653540035c245bcdbd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/comparison.claude.json",
+      "sha256": "bf3a32e9ed792e7b423fa8fedf61eca19a7f0b67939b547210cc9605bfea60ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-headless-defer-external-approval-headless pause-for-approval: defer, not ask/comparison.codex.json",
+      "sha256": "9c92daa400a4c406a887bcc92a0f342b234c994be02888494b143fc0ef3f2449"
+    }
+  ],
+  "native_counts": null,
+  "cli_versions": {
+    "agy": "1.4.2",
+    "claude": "2.1.302",
+    "codex": "0.163.0"
+  },
+  "certified_by": "delta-gate"
 }

@@ -1,26 +1,36 @@
 {
   "schema_version": 3,
   "skill": "llm-fanout-execute",
-  "source_hash": "69f578d5597047022af0b6d7957ee8c7b1b1ab752b03beabe16cd6a78eba34fc",
+  "source_hash": "99f31d26482ed6126e237a320b1a54b5b618707f684db22f1ea86ca15b21b049",
   "eval_set_hash": "bf0c20bbd8ce76f2b36c04cadfc4da168c1edf8044926a87cf5a48126d5264f2",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
-  "judge": "codex",
-  "delta_pass_rate": null,
+  "judge": "claude",
+  "delta_pass_rate": -0.053,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
+  "per_provider": {
+    "claude": {
+      "delta": -0.053,
+      "quantum": 0.05,
+      "n_evals": 11,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "judge": "claude-opus-5-5"
+  },
   "judge_config": {
-    "model": "gpt-6.1-sol",
+    "model": "claude-opus-5-5",
     "thinking": "xhigh"
   },
   "source_manifest": [
     [
       "capabilities.toml",
-      "8b64bbb907c9b801a72760359f41124d0ccc7323b775fc417760473243b92759"
+      "83c66a92a211fd838ddef03f78b7c4e5b5f35acd6dcac1ff7040a02664f3f3ef"
     ],
     [
       "components/memory/LICENSE.claude-mem.txt",
@@ -76,11 +86,11 @@
     ],
     [
       "scripts/lib/inventory.py",
-      "9f063a0cf460a301b1b8b7ad5912572c55d72b9961ded7cb7837aa65b94c6136"
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
     ],
     [
       "scripts/lib/reconcile.py",
-      "0175373a8a018883b5d88bd715e4b54ac6b4da9d4baa8e151e111c58fdb5459a"
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
     ],
     [
       "shared/lib/fanout/__init__.py",
@@ -95,8 +105,12 @@
       "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
     ],
     [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
       "shared/lib/fanout/collaboration.py",
-      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
     ],
     [
       "shared/lib/fanout/compiler.py",
@@ -112,7 +126,7 @@
     ],
     [
       "shared/lib/fanout/diagnostic.py",
-      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
     ],
     [
       "shared/lib/fanout/durable_io.py",
@@ -124,7 +138,7 @@
     ],
     [
       "shared/lib/fanout/eval_provider.py",
-      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
     ],
     [
       "shared/lib/fanout/evaluation.py",
@@ -152,7 +166,7 @@
     ],
     [
       "shared/lib/fanout/native_trace.py",
-      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
     ],
     [
       "shared/lib/fanout/plan.py",
@@ -160,11 +174,11 @@
     ],
     [
       "shared/lib/fanout/process.py",
-      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
     ],
     [
       "shared/lib/fanout/providers.py",
-      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
     ],
     [
       "shared/lib/fanout/repo.py",
@@ -183,8 +197,12 @@
       "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
     ],
     [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
       "shared/lib/fanout/skills.py",
-      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
     ],
     [
       "shared/lib/fanout/storage.py",
@@ -199,8 +217,12 @@
       "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
     ],
     [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
       "shared/skills/llm-fanout-execute/SKILL.md",
-      "41068b88cc1b7315a2bf152880071b0b7777b8528348da93d8509286838f24f0"
+      "9ca8e82cf42ffff0df0a2780fd47d006991558e5eeec201f17588eab2867c165"
     ],
     [
       "shared/skills/llm-fanout-execute/agents/openai.yaml",
@@ -208,7 +230,7 @@
     ],
     [
       "shared/skills/llm-fanout-execute/scripts/execute.py",
-      "cd60123668a9dd4376b45d91f9a8a83a9eec77af295f7971edab817f07f99fa8"
+      "3cde0c095aa5d6ce4f166838a1c269330e503b7ee3a0de2bf928b82c25a41265"
     ]
   ],
   "criteria_manifest": [
@@ -238,7 +260,7 @@
     ],
     [
       "tests/test_fanout_execute_skill.py",
-      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
     ],
     [
       "tests/test_fanout_memory.py",
@@ -268,15 +290,59 @@
   "instrument_manifest": [
     [
       "Makefile",
-      "89847c4563a2bcb8bff2f406f62d6c2b15890ef44d9eef8c5c0a628a4b28974b"
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
     ],
     [
       "scripts/eval_harness.py",
-      "726c0851689d5f1465426c9c1532255c37f4019419d35b7e8ab7ccaa0c99ba05"
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
     ],
     [
       "scripts/lib/checks.py",
-      "2a61514bbddd57262172340ea9101c443029cd841775993a46dc9384e9809b56"
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
     ],
     [
       "scripts/lib/portability.py",
@@ -284,7 +350,7 @@
     ],
     [
       "scripts/render.py",
-      "98e9d6f4b581027121431fc7799b6edb4285f47dab18c9d2c858cf41177fd4d8"
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
     ],
     [
       "shared/lib/fanout/__init__.py",
@@ -299,8 +365,12 @@
       "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
     ],
     [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
       "shared/lib/fanout/collaboration.py",
-      "fe48178c6a0f2f383c1c64046dc9863f0112d3534463add4b30eec84b44f2fe1"
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
     ],
     [
       "shared/lib/fanout/compiler.py",
@@ -316,7 +386,7 @@
     ],
     [
       "shared/lib/fanout/diagnostic.py",
-      "9528006b0f77e66f347dd77e172f06c34fe0fe07b179953412e4f5e4e8e5706d"
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
     ],
     [
       "shared/lib/fanout/durable_io.py",
@@ -328,7 +398,7 @@
     ],
     [
       "shared/lib/fanout/eval_provider.py",
-      "a360f54bc9a17477052a05dc42b83b48ffec89cacbfbb60ba03994086253661f"
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
     ],
     [
       "shared/lib/fanout/evaluation.py",
@@ -356,7 +426,7 @@
     ],
     [
       "shared/lib/fanout/native_trace.py",
-      "8d2322d789cef28883b36777614f4204b7248ac8999422a47c42757f3346f336"
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
     ],
     [
       "shared/lib/fanout/plan.py",
@@ -364,11 +434,11 @@
     ],
     [
       "shared/lib/fanout/process.py",
-      "c3f9e67b66bf3d9238d77d38d79c7f95c86ff9602d93252562bcfbe81007dd8d"
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
     ],
     [
       "shared/lib/fanout/providers.py",
-      "86e7886a79ca460b985dfc069c829f583995b82ad3e26402350e36e8d6dc9df0"
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
     ],
     [
       "shared/lib/fanout/repo.py",
@@ -387,8 +457,12 @@
       "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
     ],
     [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
       "shared/lib/fanout/skills.py",
-      "948a79a182ef866179b45d58c6f9d51147a695e93d5a3812853c457b189280e8"
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
     ],
     [
       "shared/lib/fanout/storage.py",
@@ -401,6 +475,10 @@
     [
       "shared/lib/fanout/verification.py",
       "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
     ],
     [
       "shared/lib/wikisync/tests/__init__.py",
@@ -659,6 +737,14 @@
       "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
     ],
     [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
       "tests/test_bootstrap_machine.bats",
       "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
     ],
@@ -680,19 +766,31 @@
     ],
     [
       "tests/test_context_efficiency_pilot.py",
-      "7787a41df248f6250922d43abb82253711ef9db0ebc0a08032c510087aa17f8c"
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
     ],
     [
       "tests/test_doctor.py",
-      "a1676bff8baba1fa3bc17d9638ca6799564714f49f610cab4b3b820b49350a08"
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
+    ],
+    [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
     ],
     [
       "tests/test_eval_harness_receipt.py",
-      "4e92740886e2bfa171b8130ba78ba74e8d16fff5272492b378728feecad9fb5d"
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
     ],
     [
       "tests/test_eval_native_consumers.py",
-      "ec515d96a978bfd79c03a6baa1c8212ad619bd38cc41b65ddd6a2eacca9587ab"
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
     ],
     [
       "tests/test_eval_provider.py",
@@ -700,7 +798,7 @@
     ],
     [
       "tests/test_eval_receipt_v3.py",
-      "f16b39068eea7c0c22637c4afa2d292007640de104d968e92ac775102e41a07b"
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
     ],
     [
       "tests/test_fanout_artifacts.py",
@@ -719,12 +817,16 @@
       "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
     ],
     [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
       "tests/test_fanout_cold_recovery.py",
       "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
     ],
     [
       "tests/test_fanout_collaboration.py",
-      "1c7df80b125f1c308ae1a4b532293c393ddc950b2af672714d4fd9dbe987d509"
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
     ],
     [
       "tests/test_fanout_compiler.py",
@@ -744,7 +846,7 @@
     ],
     [
       "tests/test_fanout_execute_skill.py",
-      "548428dc6d2cb68f78b9d6a0c74c77a32ff38cc723adacb8ba02621322cc5e84"
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
     ],
     [
       "tests/test_fanout_lifecycle.py",
@@ -772,7 +874,7 @@
     ],
     [
       "tests/test_fanout_native_profiles.py",
-      "bbab1f6dc681c6a83dc6c8f1c6cda8c5e4aae636f5eb778adb801b8e6899c504"
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
     ],
     [
       "tests/test_fanout_native_write_policy.py",
@@ -804,7 +906,7 @@
     ],
     [
       "tests/test_fanout_providers.py",
-      "96e95b46fe482a72009a5fa5c694ae9f73c72802d79c6541c0c010182150d693"
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
     ],
     [
       "tests/test_fanout_recorded_cli.py",
@@ -823,6 +925,10 @@
       "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
     ],
     [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
       "tests/test_fanout_skills.py",
       "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
     ],
@@ -839,6 +945,10 @@
       "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
     ],
     [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
+    ],
+    [
       "tests/test_fanout_verification.py",
       "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
     ],
@@ -847,8 +957,16 @@
       "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
     ],
     [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
       "tests/test_maka_skill_smoke.py",
-      "1d0c2077c4f3aca3c2d232ad7241833b70fb9a75c37ded0395e9ceb3546b2abc"
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
     ],
     [
       "tests/test_memory_exchange.py",
@@ -871,6 +989,10 @@
       "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
     ],
     [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
       "tests/test_reconcile_apply.bats",
       "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
     ],
@@ -879,12 +1001,16 @@
       "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
     ],
     [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
       "tests/test_refresh.py",
       "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
     ],
     [
       "tests/test_render_packaging.py",
-      "d6e32a97a4b3117ca1537d5bb5de9f05c3fbaffc3563912259c9f6bc9c7d0821"
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
     ],
     [
       "tests/test_repo_sweep.bats",
@@ -917,20 +1043,8 @@
   ],
   "selected_input_manifest": [
     [
-      "agy:SKILL.md",
-      "41068b88cc1b7315a2bf152880071b0b7777b8528348da93d8509286838f24f0"
-    ],
-    [
-      "agy:agents/openai.yaml",
-      "0f3873260221cde26ae47828c44a695f5027d20b8f2081d1a08e01c8136d6a26"
-    ],
-    [
-      "agy:scripts/execute.py",
-      "cd60123668a9dd4376b45d91f9a8a83a9eec77af295f7971edab817f07f99fa8"
-    ],
-    [
       "claude:SKILL.md",
-      "41068b88cc1b7315a2bf152880071b0b7777b8528348da93d8509286838f24f0"
+      "9ca8e82cf42ffff0df0a2780fd47d006991558e5eeec201f17588eab2867c165"
     ],
     [
       "claude:agents/openai.yaml",
@@ -938,35 +1052,1213 @@
     ],
     [
       "claude:scripts/execute.py",
-      "cd60123668a9dd4376b45d91f9a8a83a9eec77af295f7971edab817f07f99fa8"
-    ],
-    [
-      "codex:SKILL.md",
-      "41068b88cc1b7315a2bf152880071b0b7777b8528348da93d8509286838f24f0"
-    ],
-    [
-      "codex:agents/openai.yaml",
-      "0f3873260221cde26ae47828c44a695f5027d20b8f2081d1a08e01c8136d6a26"
-    ],
-    [
-      "codex:scripts/execute.py",
-      "cd60123668a9dd4376b45d91f9a8a83a9eec77af295f7971edab817f07f99fa8"
+      "3cde0c095aa5d6ce4f166838a1c269330e503b7ee3a0de2bf928b82c25a41265"
     ]
   ],
-  "selected_input_hash": "a97b762b1a7c82ecc29b8a8b07813682ab7e5a27c2579464de094f1d51b5f60b",
-  "criteria_hash": "08175ec72b9ca7ad0f037c7b39e15b38b6fe21d7e84755876db68ac81299bd29",
-  "instrument_hash": "3133207cc4cbfc7c7a505242d555b59ad0541b8ddc37c1911a2e0d1ac7d1a20f",
+  "selected_input_hash": "f30ab2969d3caa28dbdea214885765150b59e3f3e32c908412682a35ecc67ccb",
+  "criteria_hash": "c0fda94a533cdfdc979ace23e5fdbce277616b834c2bf2eb6c4ff7dccd09dc18",
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
   "raw_refs": [
     {
-      "path": "workspace/receipt-gate-wwhpob5y.json",
-      "sha256": "de91281f4cb7387391ed92bd753417bba9442eb8b5763f66356b63d6b2815cfe"
+      "path": "workspace/iteration-2026102101/benchmark.json",
+      "sha256": "b01881d929da755101d1f01939c2c542d8e8817b360115895e1fe0435fff5126"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/answer.md",
+      "sha256": "dadc77f6b132d20921bb53fa3b15bec5a17f898e1c3c575decdd799da07fdbf5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/claude.result.txt",
+      "sha256": "dadc77f6b132d20921bb53fa3b15bec5a17f898e1c3c575decdd799da07fdbf5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "805e6dc469977a2fa908d070a6ca9a829a04738c9f9b115c1a6c816911bcf5d0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/grading.json",
+      "sha256": "6e57b0b1b61e5636ea3b51cedc8947e39a681297fd56c7e8d539f7f50a63167c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/judge/claude.result.txt",
+      "sha256": "b819bd6a998fb825d8be5a60e2ed859180a66d77274d0b7fcca743638b1b3cc2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "e0fb8dd6f05761b4957a83271e8886f14dccc9534b4ff21aba5e03b255ea384d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/judge/manifest.json",
+      "sha256": "7666e58e783a3712da03e7ccc3a0a74a0c1045e66144036b6541bcc326c488d9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/manifest.json",
+      "sha256": "b7632c488ac038c207523fa97e11ddf314bd5557dfd2f60804ae9698602ba2bb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__with_skill/prompt.txt",
+      "sha256": "94b232cf3167cdc6d817260e6f9be468be78b32059a1683194b8cfdfcbb68d6d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/answer.md",
+      "sha256": "d7ca663a232ad410de0f5949f021b31882138f11800fe93950891988b2f2f34f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/claude.result.txt",
+      "sha256": "d7ca663a232ad410de0f5949f021b31882138f11800fe93950891988b2f2f34f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "0c662d487b46f152e854910f25be6091d8c37894f83531b97289dfa10b0354ef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/grading.json",
+      "sha256": "43a6372bbe97b626ff0d1d83c3680f3f68c09be116310f0a8739f1ede52de23a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/judge/claude.result.txt",
+      "sha256": "3e8dfde24ba0bfa56d94bc1b4c2dd3f95511ac78510dd9f768c0f04ef1946773"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "ba7e4aa83029b234cf6a9a0e04cdb645b43c81ef46698c4be442731a4b4f1126"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/judge/manifest.json",
+      "sha256": "c146f995d81bdbbeada93ddb6f0b97c6f3e216ce1c4e735216a3d731cab31a7b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/manifest.json",
+      "sha256": "8c8925f6f1f6188896a49c5a823019248a793728d3e4d60ad646d69275d829f2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/claude__without_skill/prompt.txt",
+      "sha256": "50c28bc891cda0cb104c6976af485ad0f4b14d8af47109857d7601ff28f6ebc6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/compare-claude/claude.result.txt",
+      "sha256": "fbdd04ca0be33530b25decb8c37a8a3d5d0f64043bb1b46b27a47e631b4c84d2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "3c52b5063c3e6b7ed507d0be71953dd93f30b88bebcb93c46f650902a639821b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/compare-claude/manifest.json",
+      "sha256": "bc5044d0840269d5ed55f59384bbb5d03e6038c1f67316cd6364272d2c6a1bbb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-interrupted-round-cold-reopen/comparison.claude.json",
+      "sha256": "3e6d5ccb0aba9febda8b3374649052c513db1b7ebea641b3dd44a413815557ea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/answer.md",
+      "sha256": "0c487dc3bf9a763fff62de209c4d1e9261594459e1dae2251a479f323e49ee92"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/claude.result.txt",
+      "sha256": "0c487dc3bf9a763fff62de209c4d1e9261594459e1dae2251a479f323e49ee92"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "7c1a216049ba2e41d3579a160e003bbf1b8770a2bd2c6ae164821923df750124"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/grading.json",
+      "sha256": "b86e2426e119187eb89b19e1f5600101cde5d5a04e8a8ae882b26caa99c4e3e2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/judge/claude.result.txt",
+      "sha256": "a99c60ac314ae21c797faeacc7790ae105265b94aa5c54599a7f8f7f50c32c6d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "3a55f3c779e64b7498f61911e51b81e64883e3210866d911096cf9e0380aa0f8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/judge/manifest.json",
+      "sha256": "ea11fa0a6233e6acc24829492f875b256f1e0846c64ee79f365deaab96d51721"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/manifest.json",
+      "sha256": "2dfb3efba3ed8caf21cdfb399fbc29a8a92864702822f038c4698a357de8e43b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__with_skill/prompt.txt",
+      "sha256": "3975a17eeffb8c4cfd6e053d0b2f4b28d0cb57392ab057463d99debd23db804c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/answer.md",
+      "sha256": "4cd83f2a63e1fb1b6b197983c03c789b16b2be1f72759af3dcd89b24098d3166"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/claude.result.txt",
+      "sha256": "4cd83f2a63e1fb1b6b197983c03c789b16b2be1f72759af3dcd89b24098d3166"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "1b67a5b05a837af72fd34400c668ef4f9d9391cb5d5198be4b16c0f814eb4b4b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/grading.json",
+      "sha256": "d1f0d7edbae206322a4e4574a7196c3b2949cbd05c7b9ead6330d18b4030ec45"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/judge/claude.result.txt",
+      "sha256": "fb9aca54641586eef4d2c491a017fab29d8dce6c58ff7988bd33befe6a685ee2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6ef81ea5840c35e1bcca99adb5c0b58205b4e319e3232d658d49429d8366e52b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/judge/manifest.json",
+      "sha256": "5f0a06170d7b5f9401de857e84593a75ac597ab7256ac0d18b4c6d9c76c55c83"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/manifest.json",
+      "sha256": "631cfa3f35d52567909be252e60363dc8edb9b7320e08be7d6bbac43533f0b11"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/claude__without_skill/prompt.txt",
+      "sha256": "b52d9900e630c4a99b4698e5212142a452079201302e319da19938a941ffa9ad"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/compare-claude/claude.result.txt",
+      "sha256": "c0cd2df0ce51fe711dba476b152e757d8dbfa2d41afd7a6f07c1f586d8b948fa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "cae4c79499d3ff2d0754a52f30055fff633589bad7ff8b26cdc2c3cd0fb6d4e6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/compare-claude/manifest.json",
+      "sha256": "bc093bff1cfee6a8f564a7734fb551e9372e48830a570c1f742bb7a256194ec2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-partial-seats-and-poisoned-peer/comparison.claude.json",
+      "sha256": "a348e939b3c58e0902d2c5200a66e05e6dafd34821242987e2e1fbdd96d2aa17"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/answer.md",
+      "sha256": "5a4a1ad0b5685dff5f4c9f0c9f35b3e4f49d19da7ed698ac89808841e8389002"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/claude.result.txt",
+      "sha256": "5a4a1ad0b5685dff5f4c9f0c9f35b3e4f49d19da7ed698ac89808841e8389002"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "2f4727ea5847c25a84dc482600135a28c4cee378efef7f805d4deea556021df6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/grading.json",
+      "sha256": "a56ec1f97e05b68aa3111f30fc332d2de43c20d6df5e7467e28b5a73b6d15856"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/judge/claude.result.txt",
+      "sha256": "62e460e1251b34aa36f1f06c4f00580227f8258c4fb61b24f550880a11c31f2a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "c60d05acad93e6aef8841308b6c6ef06e2b3ed2a541b28c4edd000576579a0a4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/judge/manifest.json",
+      "sha256": "f02d6beecf71e84f02356b7f6c3e8e0b28d8ecbb2fce32e54845bcd433825488"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/manifest.json",
+      "sha256": "4c6552ac77572dba9284a5592cc249ca2c07a8c782b3b4e8990b4f88dd46692d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__with_skill/prompt.txt",
+      "sha256": "876eb1ead47325938c4a6381a221e350cb6185ef927a4443f589b30fba65adad"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/answer.md",
+      "sha256": "54939d7f49faec6093604befa5d36f2cdb2a85ffec26356d1f647250d019956f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/claude.result.txt",
+      "sha256": "54939d7f49faec6093604befa5d36f2cdb2a85ffec26356d1f647250d019956f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "e8bf5a27c8480431520c58e37076061e61e1e1c657e73de5dd191e5c156a71be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/grading.json",
+      "sha256": "40a6bf3e3e897ee07d8053ba9be522b70d5acf0bcf79f0ada44b9203e912912f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/judge/claude.result.txt",
+      "sha256": "0ce44b42de7fe9f97a11ff03cc9069a5c6a0059458c176f256a33b428a5d1c58"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "27331d746f25b027732adf92531e3dd3bc91232d2351b6a6a95b6157c62d71b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/judge/manifest.json",
+      "sha256": "e793b457b1b15cd44db73c6d5a7ed50f0e909c256d6b9cfe47bf97f67ab2c241"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/manifest.json",
+      "sha256": "55c912e40c11e1533c2f4b69a3c7ecb9c638158ad03618c3d4fca9923200d5a5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/claude__without_skill/prompt.txt",
+      "sha256": "020c6f5baa63c2779a03027531a9636412b9839273d7a49cdd66db734206b1e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/compare-claude/claude.result.txt",
+      "sha256": "3bdc549ab4e2fcaf27d7ff8653c383d359d263c2b4141c0adee11e9c1eb22710"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "db428cb4f38565b35561c5ea7bb9e4f6f7b0430e4db3e8172c5949cc11b7ee6e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/compare-claude/manifest.json",
+      "sha256": "aeb9bcdc8817101ca91671ea62281f4a991af8624baa84cdb6549a60a6c10f8f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-10-unequal-caps-equal-answers-cold-frontier/comparison.claude.json",
+      "sha256": "96b5a0bbedd5472cbb4db782999539517e873a6f2294a260637d3f0ab0bd07e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/answer.md",
+      "sha256": "fe446b4321bac1ce8afc04bc8b3561851a471fffea342142c9a463967fe67242"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/claude.result.txt",
+      "sha256": "fe446b4321bac1ce8afc04bc8b3561851a471fffea342142c9a463967fe67242"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "99368e2b32caf82ac36f3197ade60d1dcc2f611713dabb1f3e68da5958e91e24"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/grading.json",
+      "sha256": "47a00fd054a6a131ee621c427aa990c920e3ce9cce9139663e0339cfaf476807"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/judge/claude.result.txt",
+      "sha256": "44fe8aab7ded4feb059ac13e30c0284d24d5252a51bf30d34c664aa2f1beb3f0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "41c12f11de3c1a0fbb36df6b7de042127b3efa4a8d5eeecabb933c38df05080a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/judge/manifest.json",
+      "sha256": "99810f9f9f95acd70eda9dfd050a22bc0354d69f5778b9d18d7e02d951edf27a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/manifest.json",
+      "sha256": "d02a9cca01cf67125aa7b0fc9bdad571071bc5c7f7cc1cb3ea22c71da71978b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__with_skill/prompt.txt",
+      "sha256": "478c24cec267935a97859e19d43eec62204915bff57dc59940fdb4b6973af718"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/answer.md",
+      "sha256": "e9093068ab428b3d1cb78211d29c251092f1f648b204006295357390940d54b3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/claude.result.txt",
+      "sha256": "e9093068ab428b3d1cb78211d29c251092f1f648b204006295357390940d54b3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "c95527e490c89d09f259d680f2f878cbf71a003e485adef3b5dae6f2c3d78c0b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/grading.json",
+      "sha256": "1603d523f0461a74919be2ca2e93230bfb00359cda84d51ee20ec4a5016fdadb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/judge/claude.result.txt",
+      "sha256": "20864038c6368cab9b642a1ce852f19c4f0e1c0397fc6c6839bc021d72072d40"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "96513457058ef93fdd6091c7efc1adf2920022a03a9ad3c55556559b3b86b445"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/judge/manifest.json",
+      "sha256": "b0f5d8e8e58a05f2beaba8818a37fc5a263b99a93599a76d0659ca4b9973ef0c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/manifest.json",
+      "sha256": "38692da4ae781e9a01506526449ad697edffdb908c2a97d165d51ead8b143553"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/claude__without_skill/prompt.txt",
+      "sha256": "f6487dde8c4b49b7c80d5c0baf03ea1fe6b4b76c6d05f855531adacfe182d8a2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/compare-claude/claude.result.txt",
+      "sha256": "2651d4e6aa6e9a6c1d04abf8fa3356e97e29e9d5cdb38f5f371e443a26b33d03"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "614baff0dc9b2c5a3f0520016455a6cb5727734d0751322e6d3f6e91cbdd124b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/compare-claude/manifest.json",
+      "sha256": "9d5764b1e5c94ae29996db1cbcb4dc83e55f82126763132e3c0da8fac21e8854"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-memory-worker-or-authority-outage/comparison.claude.json",
+      "sha256": "a80cb0c1ff5cc0310fd07e220c20e8cf96e6124d36f81c4cd1ad61c2c9b209ec"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/answer.md",
+      "sha256": "a5cb829a1b78fd0505bad2ace2233ecfa4d2e7cc3b056db475fedf4f7b9f18e4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/claude.result.txt",
+      "sha256": "a5cb829a1b78fd0505bad2ace2233ecfa4d2e7cc3b056db475fedf4f7b9f18e4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "31c35f202ea749d453b95e89133de61c3e9f5023c29f46b4034a2a327afe7b1c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/grading.json",
+      "sha256": "826f8d69dfcf3e760b0ef4fab3a5049aca008f8fae5ede9e8219ee381e5973e4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/judge/claude.result.txt",
+      "sha256": "d37a4a0d798187cda31e0090c6e700ce0ee3ad3a4d98453de16b055cb1e2cff4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1e285f6f87af0e73488c9fde48dd7307f4e1acb1ebea11ea6d65683b95bb9391"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/judge/manifest.json",
+      "sha256": "2d212368ec0f722d86c34d417e09eed1c405ac7f31886b35251ff6ff9e1855e7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/manifest.json",
+      "sha256": "396d2dc3cd15ace1eb2696ec5cd9a93456d2c0a72066aa9a8e5b060ffded1937"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__with_skill/prompt.txt",
+      "sha256": "34bbd19325a4779b55dfad9d2a6b6e50d24ebc1d430d18e11c8304d5539962cf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/answer.md",
+      "sha256": "3dab649e4fed060696b3912f07e711002a69d5e6189dadd544810ac9dea58015"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/claude.result.txt",
+      "sha256": "3dab649e4fed060696b3912f07e711002a69d5e6189dadd544810ac9dea58015"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "d79d70873b2d0ad392e6939c1743cecd4547d0937dea456879c249de54087cb8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/grading.json",
+      "sha256": "7dbc06f8334e3366726af7ff12f5d15e407de46e9012ad97db98638e61d82fbc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/judge/claude.result.txt",
+      "sha256": "d74e1639eed639bcc2337b162c95dee78fe187b12c8accbc99237283b9f1d3a5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "60bcad4d3031d5a73bfd279faa3fcdf9b896672db172e8880cac2ea9929b6ad7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/judge/manifest.json",
+      "sha256": "20ab282765380c711e35ce7b645b2b14932bb2896cd74346fbf3efef5b22ac52"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/manifest.json",
+      "sha256": "1476e002f54103fe3a4b926e00ce30efe9f8a5e60c85814cbe75b5290b70533b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/claude__without_skill/prompt.txt",
+      "sha256": "b2c3d3bde7af3a8448c8c43229e737d00513e31e64b55321ae444f60e14efd76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/compare-claude/claude.result.txt",
+      "sha256": "f9c3375af2be6cc2f76bc649c031dc28ed5da385138ade50eaa12b8010342316"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "de5325d5e3ea7e90a3f576f7f1d7d86eb3c11d137ef704037a42962f380d4a21"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/compare-claude/manifest.json",
+      "sha256": "f84e50f8f1adb9f448787ab1b04ad868d79889144ce68b2b63109f04b48b94c9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-nested-recursion-and-skill-mismatch/comparison.claude.json",
+      "sha256": "4a92d55b2c7cd2dbf1a2ea08e43a403a91e3c114aafca5edbeae1749260aec37"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/answer.md",
+      "sha256": "f5afa47dad1ad63fdc18eecca0ec628366efd63f77eacf66749ca4978b749ca5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/claude.result.txt",
+      "sha256": "f5afa47dad1ad63fdc18eecca0ec628366efd63f77eacf66749ca4978b749ca5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "4908236ebf2137fecd3d2142fe3717bfe4da2528488b77f80225255a88306f28"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/grading.json",
+      "sha256": "df2404c019462762b41c07d4e5cfc1f48f74b9b258a0f958afbbbe32ed5510e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/judge/claude.result.txt",
+      "sha256": "7e462881dca84b8925f2efb48009a88a392e1d391b5bdfbe0bfc7c090e74fc72"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "278a09a14524b786d749676d174d6059d670574989cd6769208f4a4ac184a2b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/judge/manifest.json",
+      "sha256": "964523a9a8e6efcf19e97e519351cb0155b28f313ed66f36dbbfd09ebad8a55e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/manifest.json",
+      "sha256": "b860563f5138746cba4fc550b26976234a39ae73441a328c7c3886fc3be75bde"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__with_skill/prompt.txt",
+      "sha256": "64d1fabdb757a46bb307a2540e19e8f2cdf7b71383a3b4ee10cd5137c9689949"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/answer.md",
+      "sha256": "bc46c8c748b95c74aaa9ca499794eb68cf85878a063d5e67a0abef7b40d4ad27"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/claude.result.txt",
+      "sha256": "bc46c8c748b95c74aaa9ca499794eb68cf85878a063d5e67a0abef7b40d4ad27"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "cebc6f9e1e62650fdf09c908a6b8befd9f4664ec9487326ba324ed87b3901fd4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/grading.json",
+      "sha256": "327693d9fef2d3aaf34c1c8911a2af4c123d4ffa2a2164c43217683e8b8eb642"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/judge/claude.result.txt",
+      "sha256": "11953480fe6b1ad598161bc10fa4a4335c5e0a3770cb8d8eddfd3c649535507b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "d23973c8931d9b3def2fc60cd37d8e88c8322413bc287667d8e1e8c21cb03006"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/judge/manifest.json",
+      "sha256": "18972383acf26a10f6aa7b69defec6e2f6ce25d01ebada13a443c2694d813cde"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/manifest.json",
+      "sha256": "254b1f9f66f20393893935ce7877ea462a040a924ec2fe5d86b476709ec3c4f3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/claude__without_skill/prompt.txt",
+      "sha256": "9de7af7410333e91e66d320035413ce3d9a7228b011b1762fd15f9422ce5bd77"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/compare-claude/claude.result.txt",
+      "sha256": "edd12141b5d5bac93948ef20ae75f2d6409176800c5258026011799ab8faab33"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "19b1d550773bc48e955f3038ac6ab3d1f102706b7acf4e561e9e250c09f76eff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/compare-claude/manifest.json",
+      "sha256": "86a467eec10df125a802f6aaa95224b6eb1083a59dbd7269134e0b42ddc3c434"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dirty-repository-and-write-bundle-review/comparison.claude.json",
+      "sha256": "5b1982a09d2c0f486b02746a46ee526074575cacc28ebf5c26e0878cf81fd862"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/answer.md",
+      "sha256": "53e1653784f518f775b27ca61e13854335ec2aa7e7fe024a94e4c12b891f43c5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/claude.result.txt",
+      "sha256": "53e1653784f518f775b27ca61e13854335ec2aa7e7fe024a94e4c12b891f43c5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "04bae7e27d0d5d46f3553ae4ba672f692c4c01fd978d4e860378278de53e0c9b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/grading.json",
+      "sha256": "b916bb876763821489938afbd0641a647af8ecd9dd96fed6325f32ef82de38ef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/judge/claude.result.txt",
+      "sha256": "a5cdf1dad2e1d901fbff11de307d8c83322337b1d28fcc5a3f75e3e174eb1de5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4031cfafccf48f8babe7e2c9421e3c263b38d9cebcfcb436efe76024daaf680a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/judge/manifest.json",
+      "sha256": "3e1da1b9accda824d2a96653930ca572b50695aa01a950869061032390e483a8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/manifest.json",
+      "sha256": "6f183e7b55eb1066f1f227acd4bf98eacb102fef2606bed9ce82d1df98144e31"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__with_skill/prompt.txt",
+      "sha256": "caa0029fca90738ca1749d6161c668100cbcdee34c9ecaa831429a9c267e2d7a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/answer.md",
+      "sha256": "adc9771e226100baf4570691dd0c2a3ef69c5820eabc328c8fe395c86713e951"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/claude.result.txt",
+      "sha256": "adc9771e226100baf4570691dd0c2a3ef69c5820eabc328c8fe395c86713e951"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "c1592e1876c05906c34af881ed1403581b70c10ab2652381ba13bb4c07092de9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/grading.json",
+      "sha256": "3aca823f05b3238d02ac496fecf90caacc81b8794a7220e50f58101c955a9041"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/judge/claude.result.txt",
+      "sha256": "e8447753d49b82a47a601eba216ac450c0da5f91ee8b280cfb35a4cba7759c1a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "e77d4f6e9033ac7832f09402000b5a4eca68dbda6e654ebd2df95019beaf78c1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/judge/manifest.json",
+      "sha256": "a105a81f07d86854ba96193780e34d2b0a71455f486a2f019fb89e9e4bbbcc96"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/manifest.json",
+      "sha256": "f00d991ec07712b45736cf4900c75540902d8fc173db81e0a4f7ecc62feeb60a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/claude__without_skill/prompt.txt",
+      "sha256": "b0cad9413de7a5f9cc7d39e0e156350fd01098c8527b4f54af85152151a70ff8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/compare-claude/claude.result.txt",
+      "sha256": "4c862ec375f326d1df0fef0f3a55835ce7ab8f0bfb9c95321070bd5a595c1b2a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "60d56778ee895a6cd8aa1ec14ca08a31d86d97cafffc7e2f0e8fb1ffacd16289"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/compare-claude/manifest.json",
+      "sha256": "efa89c25d277963ce927369293d358a287607153952f18e648982a7f3a532e13"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-action-barrier-and-failed-reconciliation/comparison.claude.json",
+      "sha256": "73fd38359a4b45e0aed15193aca8e7440f26b270b891f212f591523b6b259dca"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/answer.md",
+      "sha256": "6d036ccbe11e044f0301b12b4d88ccdddf25049a10bf0f3498cbb758f573ce7b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/claude.result.txt",
+      "sha256": "6d036ccbe11e044f0301b12b4d88ccdddf25049a10bf0f3498cbb758f573ce7b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "e7a9c2951130836751b8156a08ea5906c72eba8a7f967b872428b05613c80858"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/grading.json",
+      "sha256": "0c6ecf6e279a1cefb4d31683f8f3f3ffa4cfe4a0076a92154f7c1bf2da364e4d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/judge/claude.result.txt",
+      "sha256": "b786f3310daaf651914ccdecfe6f59c8462a83e5021235151179c6ee0e8dbef4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "78f8d869a9ce4140d7813ec628defbab6e89aa4631b84b4a785fe90c6e28ef26"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/judge/manifest.json",
+      "sha256": "369a66d59d80086c521c5ca51792a61b8f78087b86a8cfa13da880936588d1b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/manifest.json",
+      "sha256": "92b3ceb384075d331776b146583ea6d839a32f5c6695a623cad5cca7bcc16ac6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__with_skill/prompt.txt",
+      "sha256": "3d4222add7832851debc322e6b082a6c90dd2607b740f6acb52b9b8006df27a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/answer.md",
+      "sha256": "278978646b3f7204048df3865937a94fe6c7fb25a407b2970b47b414e5a30787"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/claude.result.txt",
+      "sha256": "278978646b3f7204048df3865937a94fe6c7fb25a407b2970b47b414e5a30787"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "04a6457d9237c906b59beb087302b55659da9ff8b50bd1d813ec42d509543610"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/grading.json",
+      "sha256": "25387a3a9603c7be494ba5d19bcee2f37f25af5f2614e602bb09b43c6917dda5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/judge/claude.result.txt",
+      "sha256": "aedff3be5d1f7cff065058ea576496692e59b9ff4d5f26aeeaf0add1b872fc26"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "92d4da071499999fa81f224e6455d51396a2d7ea87f940b1fd922341444553bf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/judge/manifest.json",
+      "sha256": "fb9e5107265210c46191263bbf70f1a14b8197a5265236db2d3c809107b9bb88"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/manifest.json",
+      "sha256": "93f2baec89b15d6093e9d0f23eeba66fd8688e4f974bf3cadc7b1c03835fa30b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/claude__without_skill/prompt.txt",
+      "sha256": "280c3f6f09da8d4116325230947f5e85442274aedca54f6f2d4fc2a37b67f884"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/compare-claude/claude.result.txt",
+      "sha256": "3654af971b9115f759b154c3d73e702d1eba03e788b9740ea67fedca9462154d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "853b0c3015fc6afe4412719872865df459d0bbdcaff72396c0b207d194508604"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/compare-claude/manifest.json",
+      "sha256": "625b9a8f85103487b0a6dc041f9e2986274f2d795b04555f33b928c204790f1a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-6-resume-after-profile-drift/comparison.claude.json",
+      "sha256": "af7bf19d814de8ba13a9b533eda1ec90de553d097307642668fa04c19716011b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/answer.md",
+      "sha256": "c449b48c673c8f006cde3a73c29b207be1d83ddaab61bddff665ec7ec9a83f6f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/claude.result.txt",
+      "sha256": "c449b48c673c8f006cde3a73c29b207be1d83ddaab61bddff665ec7ec9a83f6f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "2b48a3ce3e5c0a8f3a9788d28f6c78b7cf7c55b65460580a9cb32aaf3b01415d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/grading.json",
+      "sha256": "9134c5874587b76cc9ce560e63ec757eeffb6ab25c7c64ed90addd6363a6a2d7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/judge/claude.result.txt",
+      "sha256": "d797fa922176b78677fc5c97a0bb1619125c4b194fb84882fcda82dfdc8d62f8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9261a5570a3ab1c23a6096bf8f51bc316cc89f42e81af202ae34b0725a9b35f7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/judge/manifest.json",
+      "sha256": "ffdd444f7f15335a96a1d7c29251d8bea65291eebcda0db73b8b623bd9358494"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/manifest.json",
+      "sha256": "ed50dc7137933399325f9f4a52253fe62bfa5f71857f2db0bb5e89c12ee54d2a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__with_skill/prompt.txt",
+      "sha256": "dcd97d7be54fcddbca726a48b892e3f5c442010927c1a3ae59120835a0353fd0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/answer.md",
+      "sha256": "c550a805d82dda6566df97a935800d30d697fc612dc06064f2d09fc69ecc323c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/claude.result.txt",
+      "sha256": "c550a805d82dda6566df97a935800d30d697fc612dc06064f2d09fc69ecc323c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "1b093918e78b6663a50cd163969a6ca10ef05bf18572a8a9fecc47316c190eee"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/grading.json",
+      "sha256": "5719f4bfd4dc08c7f1471e8ebe1103ae6b5d036725edc23f5bae176d2913c011"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/judge/claude.result.txt",
+      "sha256": "64241dfaef1e73c8c63894665cefb3f2244c959320379e32f0f041fea6a99c88"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8c3a77b2d37d79ccfaa428c3c4451fd3b33d97ab812a7ad25f8d211c5d97bc34"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/judge/manifest.json",
+      "sha256": "49738125cf4de1581969dbc0b8a129b95df13202d61ba174fd4ae44424b3db85"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/manifest.json",
+      "sha256": "b34b94a69cbc5ccbf48758ae350f0a10ebd24e88af65e7860da7be494e7b7243"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/claude__without_skill/prompt.txt",
+      "sha256": "3d9db85498dca93934f8d388f3605d8ea11b1e99650c1fb00ba4192edf5fabc6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/compare-claude/claude.result.txt",
+      "sha256": "7fe7c00a65dc2d055e358c472dd1b4bd946365639d39efe3ae3d5c5d98402984"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "570f46cb7dc02a2674a05c26e1d2b5355432e806c55ae87c6cf3844bb80cb06c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/compare-claude/manifest.json",
+      "sha256": "d36c88300556abdfea5e2ce04c3a23a504445038b3442562e561ee198b82ac9e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-7-status-collect-handover-boundary/comparison.claude.json",
+      "sha256": "6b282fde808be8fc37b78998972f2fc7d5d2f1f7c7a81525cbe551a89b750d42"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/answer.md",
+      "sha256": "54ef027f3bc0880f327b0dba2c3dc0df9077fcb1b9e8cfbde577b00e8476ce1e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/claude.result.txt",
+      "sha256": "54ef027f3bc0880f327b0dba2c3dc0df9077fcb1b9e8cfbde577b00e8476ce1e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "eb6c3ff84523a481d7b5bb0e8647e5f65703e73877beb877acc35af9c296131e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/grading.json",
+      "sha256": "ccc4789ae5b243469e7a854498852262a7a3927a0e789dce6faf3d419615bce8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/judge/claude.result.txt",
+      "sha256": "af255a28ea1f2bbf9cc16dc62e9eeef5e131b6fe1df358e3de94efea32d7bd58"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4016e6e15d19d9488d8f1197b0d7515e9ddf782ef36783ae011d4a6883ea4c92"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/judge/manifest.json",
+      "sha256": "4cf279d714679d3da7e95fb54db48588f2fd7f926ec28488bec7a9239e020e6b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/manifest.json",
+      "sha256": "31c335535e2c8b771e2828fbffd817ef878edfcc18e54cd8d577784882f66194"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__with_skill/prompt.txt",
+      "sha256": "b4476b2768c2947bcabce63637ac8ac0bb1454b769940f62c10254c830355573"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/answer.md",
+      "sha256": "e5b17dba2eada7f614e71cbafec43edcfe2da3836b96da74541dbb49147916c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/claude.result.txt",
+      "sha256": "e5b17dba2eada7f614e71cbafec43edcfe2da3836b96da74541dbb49147916c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "27526095bd7b6e1b0ed9df32fc936b65c45b69e1479877ef9b1ef6739d03637f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/grading.json",
+      "sha256": "cfb1c0b48fe65240c3340b1a2a686b716e81866d3bf8dc70c9b02d8c2c1e4875"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/judge/claude.result.txt",
+      "sha256": "9ea1a95d251f041ebae5ebd67218785fc5d8b5e1b5cd866eeaca8e332458af88"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "7084814c5ea7544afc4f99350c6d73c7d3a1fdeafde31e2b76a6b2cdf780fbd9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/judge/manifest.json",
+      "sha256": "60a8215a5868e48762cdb61a7527e505d40ca4533df13b531205ecf1853826cf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/manifest.json",
+      "sha256": "916de190e114cd925697f1c5623f0c7ec3676a81a17c44710a4d1d30cbfdb16d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/claude__without_skill/prompt.txt",
+      "sha256": "f0ac276c1995df203cc70a66862454c7c98408f4191b874316a6ae7512ff63db"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/compare-claude/claude.result.txt",
+      "sha256": "6fe315cfa00e35e2523ee9b9035c02e52bd4280151946e05300283909a4b9f1e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "6897fc6012c718b96a8fe15a763ca934a795d50b6005c91421047c353fe6613b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/compare-claude/manifest.json",
+      "sha256": "0015d952a9baf1a4bb8d72f45f72595f5339b266167e1acb3eaa73c675b5a394"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-8-owner-candidate-byte-inspection/comparison.claude.json",
+      "sha256": "85d550121d348f29bf2baf525d354407efef1854176973e892a1ac68c3ce3463"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/answer.md",
+      "sha256": "0a7170dea5ed8a63656b0b4427dd9728135b03e3c001d57835297c16023676b0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/claude.result.txt",
+      "sha256": "0a7170dea5ed8a63656b0b4427dd9728135b03e3c001d57835297c16023676b0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "30dba2c08cd88c86b660a2d5c45ebcc38bcf758d0e716635f15442754fdfb5d2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/grading.json",
+      "sha256": "520dbb2fc7cef14d3177f61f72be738d3488c25ed713f1ef0cf16ee8d4d5a922"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/judge/claude.result.txt",
+      "sha256": "1844f6dfec1cc2cbe5c56e76d7a93db4f9042fef7647153de2737e9ed528b0b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f2afeaa4b030e9a48db65de187661180af412bffa7cc0721e8fbbabb4ace094f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/judge/manifest.json",
+      "sha256": "303390d56c0a07fd01aa2ce445dd020306c55241aa74eb398bae9f8ca30be8d6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/manifest.json",
+      "sha256": "c1ac66108decf6e10f74ad2b69a4c5d841fc6f1452faa712d3e049f4e46be9e5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__with_skill/prompt.txt",
+      "sha256": "2bfd9e9b457ff6ea054fce4b2693d249e4139bcb1c2ce9fa256e85bb4b1cd8f9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/answer.md",
+      "sha256": "cadcd164569da5f81758191133a0b87ff0939b13371cbfd1ce5460723d2e11f6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/claude.result.txt",
+      "sha256": "cadcd164569da5f81758191133a0b87ff0939b13371cbfd1ce5460723d2e11f6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "01e9b7f4c6e6a00c56d9e27173e8231c89cc8c4774fd7a7d595eab22d9956017"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/grading.json",
+      "sha256": "14361c982638bde5123cd20aa4be7e847ffb342b694e36b61fb5a1035ce928ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/judge/claude.result.txt",
+      "sha256": "2b51c54c84405b09f82ab7ebdb09a58c01b494ec1f3442acb6e4026db6080a91"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "214f0b3b55abd78e0c2329f8139ee995ec292f5ffe68f09b10c4427fe65cc716"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/judge/manifest.json",
+      "sha256": "d9cec45762c6c0c388a81f10c8684b70c80c79fd1edcfdf5f9ca8bae15db9d72"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/manifest.json",
+      "sha256": "6b46d50e8db1e117415c905cbec5420ed1f44e5d38c381b54c22ed93e3da4666"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/claude__without_skill/prompt.txt",
+      "sha256": "6447b84afa8f3f8593ab3149d29e9a2cde5dbbd22a6e8f54d7515300e65b3c80"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/compare-claude/claude.result.txt",
+      "sha256": "fbfb26c0a116c450f4afc71aa252a5dee4737909aee7c32ce9b1c1c80051aa95"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "14e927f2f35c30cd7edc8f6af7cb198e93801625f56f12a583b04a5ea0895549"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/compare-claude/manifest.json",
+      "sha256": "e2c68b2ae2a40fbd7cad05bbc878b5450b94baa0986c03b8a108f0a61a4804f5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-9-native-read-skills-not-confinement/comparison.claude.json",
+      "sha256": "1d6aaf960d74e17cd8be7b066e2065023a7d5b39a58ba169343e7655d12b9421"
+    },
+    {
+      "path": "workspace/receipt-gate-57_84wct.json",
+      "sha256": "93351e98b7a7833a319a485fa1df6bd5a6cd5a30bf9d821420cd0de1fdad4f75"
     }
   ],
   "native_counts": null,
   "cli_versions": {
-    "agy": "1.4.2",
-    "claude": "2.1.302",
-    "codex": "0.163.0"
+    "claude": "2.1.302"
   },
   "certified_by": "fanout-execute-contracts",
   "deterministic_gate": "fanout-execute-contracts",
@@ -1002,7 +2294,7 @@
     "tests/test_skill_delivery.py"
   ],
   "gate_counts": {
-    "tests_run": 1199,
+    "tests_run": 1213,
     "skipped": 0,
     "failed": 0
   }

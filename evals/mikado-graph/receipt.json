@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "skill": "mikado-graph",
-  "source_hash": "d86b587a939ab4a9760e29622628d524e506091b4fd610a323670de06c457b63",
+  "source_hash": "a0a188385073777c1f80caf2c57c00f6cd14708f4df2bb178ccb0d513f395d03",
   "eval_set_hash": "8d370ee3a400828463b4b3072f67f372a95641d296f68d1af7965cd3b50b338a",
   "providers": [
     "claude",
@@ -10,7 +10,2821 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.2222,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.25,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.1667,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.25,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
+    "judge": "claude-opus-5-5"
+  },
+  "judge_config": {
+    "model": "claude-opus-5-5",
+    "thinking": "xhigh"
+  },
+  "source_manifest": [
+    [
+      "scripts/lib/inventory.py",
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "scripts/lib/reconcile.py",
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/skills/mikado-graph/SKILL.md",
+      "c0e95b5f840646957218abeb2c1700e45a144ddcdbdd0d64e6dcd07da256d156"
+    ],
+    [
+      "shared/skills/mikado-graph/agents/openai.yaml",
+      "5b84e0f70aed5c3e36cdf810fd1495efdbff6ac86a4bf8cd637fc858d1542644"
+    ],
+    [
+      "shared/skills/mikado-graph/scripts/mikado.py",
+      "428ad4ab1ebc1881e769c465d46ca4fa24410d8ea097ce73ad66ca59eb73766d"
+    ]
+  ],
+  "criteria_manifest": [
+    [
+      "evals/mikado-graph/evals.json",
+      "8d370ee3a400828463b4b3072f67f372a95641d296f68d1af7965cd3b50b338a"
+    ]
+  ],
+  "instrument_manifest": [
+    [
+      "Makefile",
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
+    ],
+    [
+      "scripts/eval_harness.py",
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
+    ],
+    [
+      "scripts/lib/checks.py",
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
+    ],
+    [
+      "scripts/lib/portability.py",
+      "4f53d7a9668b07b6c1f733c0f750f1f1536a3e4a9dab34e64c9106f11bc67437"
+    ],
+    [
+      "scripts/render.py",
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
+    ],
+    [
+      "shared/lib/fanout/__init__.py",
+      "0307efd7a8b2aa54a12cce49a04d7732e0827e395bb4ef1adc080efafcea0e2e"
+    ],
+    [
+      "shared/lib/fanout/artifacts.py",
+      "920fe65ca7f42417e2b8227011998447bda71d62caf7e8323a649e0860269bd9"
+    ],
+    [
+      "shared/lib/fanout/branch_handover.py",
+      "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
+    ],
+    [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
+      "shared/lib/fanout/collaboration.py",
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
+    ],
+    [
+      "shared/lib/fanout/compiler.py",
+      "8fff7727eecae58b45c6b52c727fdcae5617f559e9395872aed5de1e95aed1ae"
+    ],
+    [
+      "shared/lib/fanout/context_view.py",
+      "e249652b46b3f4c76cffe73db4d859df5ac5b46daa6257a7c6fa01cf7571f3df"
+    ],
+    [
+      "shared/lib/fanout/controller.py",
+      "a839354834065e64f5a5ce54385617144b620bc702a68d9dec24b9fa593fab66"
+    ],
+    [
+      "shared/lib/fanout/diagnostic.py",
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
+    ],
+    [
+      "shared/lib/fanout/durable_io.py",
+      "571c045a1ec2ba711ec693c7d1e5d82213d4d753b0c8ca3b2f2cf98113c1e1f4"
+    ],
+    [
+      "shared/lib/fanout/errors.py",
+      "ca865c3cbee33ee3937d9c49fc2e282333c12673c1a9e99f90f07ab81c569d9d"
+    ],
+    [
+      "shared/lib/fanout/eval_provider.py",
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
+    ],
+    [
+      "shared/lib/fanout/evaluation.py",
+      "f62a6e14851d9c7c33eb4a9861f11059837518b2826afa7e1dbb979832c59883"
+    ],
+    [
+      "shared/lib/fanout/execute.py",
+      "53914524078019edd94435d82a7f6af53e22e6818e7fabc46ba5f6c74dea48d7"
+    ],
+    [
+      "shared/lib/fanout/lifecycle.py",
+      "a90a56ac7da93c19d8db5c1fe697726eb8332f18051ea4cd0790dc4ff369ea27"
+    ],
+    [
+      "shared/lib/fanout/maka_native_session.mjs",
+      "1932bead31bc89e4d808397071533a1ef3b49cf92824aabd154c5532339742d0"
+    ],
+    [
+      "shared/lib/fanout/maka_transport.py",
+      "295ebffbb03bc7b73871c2f17ed080289c6b59a6cc4d9a5f8b8ead5259470f84"
+    ],
+    [
+      "shared/lib/fanout/memory.py",
+      "46bcebe5633dad9d2060ffa12dc3754ff401d4636683f835a24074c508565429"
+    ],
+    [
+      "shared/lib/fanout/native_trace.py",
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
+    ],
+    [
+      "shared/lib/fanout/plan.py",
+      "d7c912f7d365d5babe23d35282f79541de072393780f7824b5c59b05b34fc3da"
+    ],
+    [
+      "shared/lib/fanout/process.py",
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
+    ],
+    [
+      "shared/lib/fanout/providers.py",
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
+    ],
+    [
+      "shared/lib/fanout/repo.py",
+      "f733a2936d5ad8f38ffc143df65bfa4a39642579edb035211ef61752fad84ea0"
+    ],
+    [
+      "shared/lib/fanout/runstate.py",
+      "915b35b6a913d45abf704c57be5e148cbe9228ed06f27c505cf37521559aec40"
+    ],
+    [
+      "shared/lib/fanout/scheduler.py",
+      "ff27c6487463cd4cbac13c7e8e061ac0378e3c1ed4e8a83c8b06cf269e6afd18"
+    ],
+    [
+      "shared/lib/fanout/scheduler_authority.py",
+      "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
+    ],
+    [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
+      "shared/lib/fanout/skills.py",
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
+    ],
+    [
+      "shared/lib/fanout/storage.py",
+      "4e3ee7dd8b341d32122c51c7655d0ee8341b47a6505962cb18a7acabe7f0d963"
+    ],
+    [
+      "shared/lib/fanout/targets.py",
+      "f1f7f35bc8034844a92cf9eb0c67b3fd2d39e1659826757cf7ad227afbfe22f1"
+    ],
+    [
+      "shared/lib/fanout/verification.py",
+      "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/lib/wikisync/tests/__init__.py",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "shared/lib/wikisync/tests/chrome_profile_smoke.py",
+      "40019026c804a69271513f4d5fdc38cee5dbdde59a6ed3c13be893161b8994a1"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/Bookmarks",
+      "ceb38149d7614cd7a77fcbf6426017155a46c1e555d3ac48fc696500113e2a1b"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/ig_live.json",
+      "74f60d0765aa7d00f2f28eab348fa47f8fe40ed5dc5cead79b6e29847d9a8ad7"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/saved_posts.json",
+      "6df764e9e1dd1797384c8dda5834bab72bf20337bc64023a6c905ce698288c99"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_bookmarks.py",
+      "5d38afeade7598c46e07b1d0d4aeb6d39bebb0a792ddcfe377f87fbde8427f63"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_canonurl.py",
+      "dc93f98cf2579a2e5f1cdf3d77808b1da2b032497337a4953164f9cd70edcb1a"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_capture.py",
+      "84d6fd0ea27fe805999b7c8d9065750f78f9b3716f97c3591723b1d8d5f415ca"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_cli.py",
+      "0bafa8aae96e908a547d7c74c4b17ef279f735574937f33eb2dd318121ae6e8e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_instagram.py",
+      "b11e6adbd292dcdb18231cfe0caf8056e2f3a835b01631066ccb4aa6fa097ed2"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_ledger.py",
+      "e4b3a24151603bfa6b27ee77058872377373cd6ea193eccda8970929a3149d5e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_render.py",
+      "b996048993a040d31deaab1010f52d0bc338fbd4354a288cfe4373c0623d8066"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_vocab.py",
+      "a8f3f7e93d022d280d224ccad8cd7bb9b0ea75f1fd9efa088bb3acb0d1062a31"
+    ],
+    [
+      "tests/bats-fallback.sh",
+      "38ed9f03a33cd2fa8ddec12f3f6c4c29722c3c57a18b25ff5c8cb5bfcfab9cf2"
+    ],
+    [
+      "tests/fixtures/context_efficiency/README.md",
+      "bfe1869f2b5401bb963fdf57002cc314d27ac16836b47fcf568707d8868f3917"
+    ],
+    [
+      "tests/fixtures/context_efficiency/gold.json",
+      "e9632384e8f7e7262fab73bee895b098eeec091498a44e3c588b748e33e92d51"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/manifest.json",
+      "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/birch-attempts.py",
+      "298cee8e7e41e6bf12f54a7ec3926ea8acaf5babaf56c01ed70b33312dd64257"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/cache-exception.md",
+      "ef3fa6667725b6615caf8aac8793dba7783685d3dc5470104256bede21f352a6"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/crate-attempts.py",
+      "1a0779f78d5afc424ebae73df098b3c56e10b3062f10464e2b83f5a952e5da93"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/earlier-test.md",
+      "b9295e3b26dda3e934ab724a76a03b9d71c59c2a5f4b45e241aac91c3a86477f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/late-correction.md",
+      "6283e72f1493210e3186fe71a3b59f6b8069d8229b5cc112f4f5f8c79b8db66f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/later-correction.md",
+      "b2fdb8e7bc15362bf26abf4e672832cfee993bdd9296489577d52ab50ba658ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-amber.json",
+      "a4b3640012ed6e3528c1958f9c4f1f81c9c1c20a5e0d53770ed67b5b0f84a37d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-blue.json",
+      "3ea9b92d069d67dc3f8e0855cf1c013ff06ebbc69cab33aff1c39bcf6d9b6ec8"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-coral.json",
+      "4b2632c21f680be957a1c2b951cf3bf78c226f2e0deb5127b19ae5353c2af9ea"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/original-decision.md",
+      "ea67468e364aed4d6e7fc61e85a6face8e30f8edd86ff24e50447adc075ff83b"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/overlap.log",
+      "1b5b908b74987a4a7b590d21d775bcab8bc3f128db2878d3e70fb3e457918e1c"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/profiles.json",
+      "2d9dcc5f2d9dd82e8a8a65a4931dd00591b296052d6be9c0ef005eb105bb8458"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/quoted-example.md",
+      "fe736a4e84e4518c28225cbb328dc784d334c20adce8db43a29b3b00dd8a3b24"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-new.md",
+      "bfa7ba36446e92cd5c977b91cb6301d7f28ec850f256ae4ccefbeb8d200b753d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-old.md",
+      "daddbc8388125b2eeac8dc54e1048e3af1206d3785a544346ce3b89face71cc5"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/separate-operations.log",
+      "87f1285b113dec4a3035608a64e8379916e9561340b5d97cdd6d9b72138a6091"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/slot-decision.md",
+      "74ffd596595f3718167879b52df25db99d09067f97fae3b5a2279a9e64e4c6bf"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/spruce-attempts.py",
+      "c416de20f738871cdf1859fbb4754a7428f95fc4855553f9138e7c1b0ddfaab9"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-amber.json",
+      "0535f3044495f89d38b9c191f8112ed192f34fd761d98c2b11cc947c84fb75dc"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-blue.json",
+      "21b18e42d2ca77e12bd811b1343bb9bc1fed8417b8ca89ef1b3a8c91689fa7ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-decision.md",
+      "ce8eaa491e69218783fc3d9bd3bba4ba23589a3c8a825c76321509dcddfb581a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-replay.md",
+      "37ca4e8b07eea4e5eba9a7b7790a9b828cd00417ec7b3a6ba0d1fc5f8d111d11"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-new.json",
+      "1ee1ebee9a88c5f050e3861d94a08c2766953dcf5b8d2e5534e273a2fba5c6d3"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-old.json",
+      "85b9d0096dd9939fef4592c883963cfe83d3c8c0e4d8c27d794a4fc85acfbcba"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/uncertain-ack.md",
+      "fa8eae6977c27267224537a5dae79314afb8cbf1ca152cf5f0ecd2f523a37398"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-agent.md",
+      "fc85520188dea90225008f1758d093a0a16e5ce255c9f8c7193715f80c788a33"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-human.md",
+      "4e6f18132e4d34e99161968cd77c6cee19200051a473fbc18edad6687037c879"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-test.md",
+      "64132d32006005c06b402d551d438acabdf0340bba70a66ce6f0309fa7750ca1"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-aster.md",
+      "928d56ca92218b906a7e3609a9d3ebe7f3bf041ff901eaffff0ff423bee8cb68"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-bryn.md",
+      "ac7c826213bc5d5c7b150e86ff04413ec1f9a8794e0f911edc2e292bf589708a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/zones.json",
+      "3d4a40c2562c8b525e93039ccb59e2e3f0483e6e3181c0a1a54f7470893e5521"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/README.md",
+      "ba8cd8cb4039cd85c9ea2745d6a11f69db848cae951ed0794addfcd94848dbfd"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/descriptor.json",
+      "da5ede0b0f5af33f119287b6382d3837022cb05a041401eb099d72bf024b109e"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/events.jsonl",
+      "b788a3fad8c739f5304b7560d212d4b75f5b6a947bed5435294e43c5f2f502eb"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/generate.py",
+      "55340a72da844675ddf230ccb6ad799b7e5b327434c20f3275b3bab203c8fb31"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/inputs.json",
+      "0ec53c0613592346b41a8006578223d99a29b0653e7b0d7d9e350d19a6f643e4"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/manifest.json",
+      "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/owner.json",
+      "8a8690fecb1d966d3af540ffa93f99faeb28e76018b43e0cc2c3b33d801c4428"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-meta.json",
+      "3e30e3d242e030079c33f7910f35806a084b202468ed55b31bd59e6b8e1f028c"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-record.json",
+      "cca7f0e62d5ab255020fd51259bd2ff4b626828bda816b7a1645f29105cb7366"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/snapshot.json",
+      "83ebf490f03ed7df416f12c156471b9d14e5de0dfb78a4fe3edd3aa32fb05f1a"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-error.json",
+      "821e598806c48b2b91ec10c4929206c227c91916dec7a2cdcdac6df7e1767ec1"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-success.json",
+      "fa69a34a01105bd501d11d0fa67d1aae40fe003cb61ff93fc918319fa9ad7a58"
+    ],
+    [
+      "tests/fixtures/fanout_providers/claude-success.json",
+      "fc0393d0312453c115db00c61d7428d79929f8aabdeb55d0071aa87a8f8e5b93"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-error.ndjson",
+      "050a62511a60087f2ffe12cb2695a02c7da847fbcc681df8538364029645d277"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-success.ndjson",
+      "735107f037e9e188f40bd20d8cbc1c6b1a8797fad5b712243813dcf49d9762f8"
+    ],
+    [
+      "tests/skill_verbatim_cases.py",
+      "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
+    ],
+    [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
+      "tests/test_bootstrap_machine.bats",
+      "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
+    ],
+    [
+      "tests/test_bootstrap_tier0.bats",
+      "678c491ad0eb1f912bdf1a49f5bfea39522b5f49bca6da628026dc7f5431282e"
+    ],
+    [
+      "tests/test_bootstrap_tier0_host_smoke.bats",
+      "0b58e407a8f8ee7fc68e806a4f02e96b400a6f8390005b518bb8450e69f1e28d"
+    ],
+    [
+      "tests/test_checks_secrets.py",
+      "4c1e970c82ff7ce9abd73af4ca03847ddb57243e65fcf9937b883a29fcdf8c98"
+    ],
+    [
+      "tests/test_context_efficiency_corpus.py",
+      "7b0177a8a8ba026d785c81b171071201fd0351633a4e25f289fbbc711e60ac6c"
+    ],
+    [
+      "tests/test_context_efficiency_pilot.py",
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
+    ],
+    [
+      "tests/test_doctor.py",
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
+    ],
+    [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
+    ],
+    [
+      "tests/test_eval_harness_receipt.py",
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
+    ],
+    [
+      "tests/test_eval_native_consumers.py",
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
+    ],
+    [
+      "tests/test_eval_provider.py",
+      "7e322acfa591726aa9ddacee046241e9953987ca2e50b90f9db0faef505c6b16"
+    ],
+    [
+      "tests/test_eval_receipt_v3.py",
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
+    ],
+    [
+      "tests/test_fanout_artifacts.py",
+      "dc07415db0eb0aa3f9fcaec52b7bd82f98af28f3f598ff2b9c28ae55cb86ef8f"
+    ],
+    [
+      "tests/test_fanout_benchmark.py",
+      "d88b89e61d2b0ba31d997f502dfd256a8f2ab519551430246e0501f6984bab86"
+    ],
+    [
+      "tests/test_fanout_bootstrap_packages.py",
+      "19744e368077b50f01855c5148d179195c771871a316d964518b6e124403de8a"
+    ],
+    [
+      "tests/test_fanout_branch_handover.py",
+      "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
+    ],
+    [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
+      "tests/test_fanout_cold_recovery.py",
+      "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
+    ],
+    [
+      "tests/test_fanout_collaboration.py",
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
+    ],
+    [
+      "tests/test_fanout_compiler.py",
+      "662ad6d87a7be97b2f5c2d96c7cda7af930803b0e7902e3b8bcf82d7907c3442"
+    ],
+    [
+      "tests/test_fanout_context_view.py",
+      "cd6695751689339c30847321cf655c21f996ff5e21d60d109eb5da650c848184"
+    ],
+    [
+      "tests/test_fanout_controller.py",
+      "0c28c87fff7321f0a5e9888c35e75a7aa89856c833f123d88902c9e7ddf17943"
+    ],
+    [
+      "tests/test_fanout_execute.py",
+      "5e18acda9b70ca6338deec59738b0b8476ee7a4cdf93f742783d3eb1c5a12316"
+    ],
+    [
+      "tests/test_fanout_execute_skill.py",
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
+    ],
+    [
+      "tests/test_fanout_lifecycle.py",
+      "fbd5b11a328354dafd4f6e84cb6edc838969c88a369927be1f43dbb3375f130d"
+    ],
+    [
+      "tests/test_fanout_local_authority.py",
+      "c7ae473e39bde7a9e42d2acabf6120a42fc2b51609b8466bb1b39099e8a14dac"
+    ],
+    [
+      "tests/test_fanout_maka_native.py",
+      "aa6ee48e660d17a94829c89d8d542e131f32f145bfc7d22509f31aae5d44bef8"
+    ],
+    [
+      "tests/test_fanout_maka_native_session.mjs",
+      "5b0559bc0751ab3b4fe0864c1669175156d813feeb53c88adf7a862f1ef77ecd"
+    ],
+    [
+      "tests/test_fanout_memory.py",
+      "d5f92c90809dc3f194b1142614dddd830e5728b7c8c4e49ee7c81e0762bef56c"
+    ],
+    [
+      "tests/test_fanout_multirepo_integration.py",
+      "89e709440321c0b5edbedca00826153cbe89c926e478a537d947b57bd966c965"
+    ],
+    [
+      "tests/test_fanout_native_profiles.py",
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
+    ],
+    [
+      "tests/test_fanout_native_write_policy.py",
+      "7b6420452829426410689621a7e2f58681c944454662ec64de1f58ec361192aa"
+    ],
+    [
+      "tests/test_fanout_owner_actions.py",
+      "b5dccdd7bbc3af5b33c244c1f9cc57eda717484ccbafc0f4493b4bef6e96c899"
+    ],
+    [
+      "tests/test_fanout_owner_reconciliation.py",
+      "f2beab4d49f8bc353bb63fd6c1eb7725e9cc3e0555e2e82b9d8b7fa6b1f57e01"
+    ],
+    [
+      "tests/test_fanout_plan_schema.py",
+      "40b624f991c3c441084b0e77fe4d041f0a9129d7ef66b7abe615eb8e261d3045"
+    ],
+    [
+      "tests/test_fanout_plan_skill.py",
+      "3af1c030c1d98f3664745c01b13d256d7d562df9421aefdf15476ad1972cb68b"
+    ],
+    [
+      "tests/test_fanout_process.py",
+      "69a30ebe39b9374d61da16672c13626351f378e1b6b6f7638bfd263115f406ab"
+    ],
+    [
+      "tests/test_fanout_profiles.py",
+      "8cb3d5dd527c8a5c4d38c3623f770e950efa35a0ad1ba6c0fadf06e63ea33a77"
+    ],
+    [
+      "tests/test_fanout_providers.py",
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
+    ],
+    [
+      "tests/test_fanout_recorded_cli.py",
+      "af63ea99d350fa223cf3865e1cf76368d4e0f21849b49724d230c6a79f805c59"
+    ],
+    [
+      "tests/test_fanout_repo.py",
+      "dc7b411ea8ec602d72b50c146a96240d5b1a8a4887278c36fdc7bbf6471d496a"
+    ],
+    [
+      "tests/test_fanout_runstate.py",
+      "86e0646c576d231e52d036cb39d9b0dffc7b14e619a4bcf3d4bd12e8bbcbfcf3"
+    ],
+    [
+      "tests/test_fanout_scheduler.py",
+      "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
+    ],
+    [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
+      "tests/test_fanout_skills.py",
+      "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
+    ],
+    [
+      "tests/test_fanout_smoke.py",
+      "64f5c0647d2844686f03150e03a0ba9581041ba3b682be772f448b4de0333107"
+    ],
+    [
+      "tests/test_fanout_storage.py",
+      "be38f24a4e6ec2c69d5d49448d3eaf6acb4dea96c12747e578764ba4b8e47a99"
+    ],
+    [
+      "tests/test_fanout_targets.py",
+      "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
+    ],
+    [
+      "tests/test_fanout_verification.py",
+      "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
+    ],
+    [
+      "tests/test_maka_colima_mount_migration.py",
+      "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
+    ],
+    [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
+      "tests/test_maka_skill_smoke.py",
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
+    ],
+    [
+      "tests/test_memory_exchange.py",
+      "578e1bc7bc9165a53b645aeaabfe2a564e0a680cc026238e5b8463b9c0b7e423"
+    ],
+    [
+      "tests/test_memory_ingress.py",
+      "43fdfbdaa5bd4c7b9c19d994006a360c44c318689aaea4e2b58121d1351527c2"
+    ],
+    [
+      "tests/test_memory_runtime.py",
+      "4c69ad098fb37077ccf305823f1755822536bc5bf494e00d4b4aec2cdafa7374"
+    ],
+    [
+      "tests/test_model_policy.py",
+      "4a95f529736f0b1943ba80762787cf9dad1e718ceb1b960c82437a11ae153e6c"
+    ],
+    [
+      "tests/test_mutate.py",
+      "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
+    ],
+    [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
+      "tests/test_reconcile_apply.bats",
+      "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
+    ],
+    [
+      "tests/test_reconcile_defaults.py",
+      "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
+    ],
+    [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
+      "tests/test_refresh.py",
+      "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
+    ],
+    [
+      "tests/test_render_packaging.py",
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
+    ],
+    [
+      "tests/test_repo_sweep.bats",
+      "08b8cc4a229c4af406b6bb99b6db1df5eba7aaa4d816911de7aa856d6cf86b11"
+    ],
+    [
+      "tests/test_setup_audit.py",
+      "43a4798870afe5a98637983e9eb20f0750a334bf45d75fc2edd79caa6a3c4809"
+    ],
+    [
+      "tests/test_skill_delivery.py",
+      "bc3e9b54e2ad72b8b867a8d9aceed4696ddc76630d2c419f58c7bcb3dae6c2cd"
+    ],
+    [
+      "tests/test_skill_upstreams.py",
+      "c9bf886aa5c8d85870631fa7a84b14a5a208bc6637e3b443a1b7c477eafdac22"
+    ],
+    [
+      "tests/test_statusline.py",
+      "d1c2b35c3ae583001b4571551b3d270129d9b5420440065d187774dcb179ba54"
+    ],
+    [
+      "tests/test_statusline_reconcile.py",
+      "7df1d88e3d92998b4b22cada045dae644167b70d960c43caee6e5883347bb197"
+    ],
+    [
+      "tests/test_tuneup_fanout.py",
+      "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
+    ]
+  ],
+  "selected_input_manifest": [
+    [
+      "agy:SKILL.md",
+      "c0e95b5f840646957218abeb2c1700e45a144ddcdbdd0d64e6dcd07da256d156"
+    ],
+    [
+      "agy:agents/openai.yaml",
+      "5b84e0f70aed5c3e36cdf810fd1495efdbff6ac86a4bf8cd637fc858d1542644"
+    ],
+    [
+      "agy:scripts/mikado.py",
+      "428ad4ab1ebc1881e769c465d46ca4fa24410d8ea097ce73ad66ca59eb73766d"
+    ],
+    [
+      "claude:SKILL.md",
+      "c0e95b5f840646957218abeb2c1700e45a144ddcdbdd0d64e6dcd07da256d156"
+    ],
+    [
+      "claude:agents/openai.yaml",
+      "5b84e0f70aed5c3e36cdf810fd1495efdbff6ac86a4bf8cd637fc858d1542644"
+    ],
+    [
+      "claude:scripts/mikado.py",
+      "428ad4ab1ebc1881e769c465d46ca4fa24410d8ea097ce73ad66ca59eb73766d"
+    ],
+    [
+      "codex:SKILL.md",
+      "c0e95b5f840646957218abeb2c1700e45a144ddcdbdd0d64e6dcd07da256d156"
+    ],
+    [
+      "codex:agents/openai.yaml",
+      "5b84e0f70aed5c3e36cdf810fd1495efdbff6ac86a4bf8cd637fc858d1542644"
+    ],
+    [
+      "codex:scripts/mikado.py",
+      "428ad4ab1ebc1881e769c465d46ca4fa24410d8ea097ce73ad66ca59eb73766d"
+    ]
+  ],
+  "selected_input_hash": "a2b58bb379160769f54dc1becbb4388c2edd30ad476481b4cb20dfbc0dbbc9cb",
+  "criteria_hash": "3681e2901c46adc4bc46b94267cecf1a6acc0a515045b80231e299a9e199b895",
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
+  "raw_refs": [
+    {
+      "path": "workspace/iteration-2026102101/benchmark.json",
+      "sha256": "12fc597fb031af1c4d67c312d8e1dc1422452aa6b62aea87a750b69d88325897"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/agy.result.txt",
+      "sha256": "776f720ac5403d6796aaef8cfe837c779699a614a0a7296caa93958dedc84a3f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "ba65c349a36515f0943a6c1cb3963d663b2332b570df9810b78151c558ceb274"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/answer.md",
+      "sha256": "776f720ac5403d6796aaef8cfe837c779699a614a0a7296caa93958dedc84a3f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/grading.json",
+      "sha256": "e90913c07a50c046676897888b10a455ae53b6e0bebea64f64c372cb00caec8b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/judge/claude.result.txt",
+      "sha256": "019fc836441c7f53c7dc3a8b881fd72711e4e5c92d4079ca7d319d58fb819ac8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "15e904798e132bcab42375db2c4c2bacd4511585c563833166ba7acbadf24433"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/judge/manifest.json",
+      "sha256": "4171a3a9b4c8c0acc18d91af6a0775f5fba277cfc5b3eda6ae91c7a692efe80c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/manifest.json",
+      "sha256": "ef1aa6b68498cf2abd5a1c4bc0db100809af4b42f96e6f59a81ebae034613201"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__with_skill/prompt.txt",
+      "sha256": "18a04eb0d23e018e1cfb3f4dc25576292e3a5aef7a9e3e92ac801a890406e6a3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/agy.result.txt",
+      "sha256": "36df7283ea2e0613190184570a39a9256bd329a0cee256ebe9ad00637c7218f1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "8017278d8e324058d0986a62e8b885c2422d3a1c2ed85f534bb96d56ea9f8ad8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/answer.md",
+      "sha256": "36df7283ea2e0613190184570a39a9256bd329a0cee256ebe9ad00637c7218f1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/grading.json",
+      "sha256": "955c2a6d35c3c136ebe071b7fa5b061e076dd1577a4bf0ec8e6808f33c0f064c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/judge/claude.result.txt",
+      "sha256": "43a3471142527bfeef46fd2db29782830cbc39cf2b830a1b6e8b7f4c0bc791a6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "e8e3d42ad34d7b6a8a2f2b0e0a56a9912d14a8ccb5929e30487d26300bd6e4f0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/judge/manifest.json",
+      "sha256": "5c84147c405399efbe505c7371ea33a0e132e411e48349afc2f365418570cee9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/manifest.json",
+      "sha256": "fef3b5d9d2b9d1d0121b73fbc3aa750ebc6116c8e2cf23f96c47cad7f7714530"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/agy__without_skill/prompt.txt",
+      "sha256": "e08c7b5bc5d830a1a5abb3ccd20241d2b1555541af4e06ab43b9481545a98e04"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/answer.md",
+      "sha256": "1f3b64f6c407c016af75d26e299a33846d40866e39b8110328255cbd69baf6de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/claude.result.txt",
+      "sha256": "1f3b64f6c407c016af75d26e299a33846d40866e39b8110328255cbd69baf6de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "285a01cbb3db5c2f98336e1442b0b5363505829039bb29659efbbbe6812566ef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/grading.json",
+      "sha256": "63f9994091e20821989fbcb31e127b3761655a634e1b112b594c8c75ee3f61e4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/judge/claude.result.txt",
+      "sha256": "7a4f897f5f014ebdbedecfda0085d3c0b2d8731a5e6e36b8374cbd0c65b10322"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b80a787aeac6b8d0c011d6674788cbfcc9cb2c12f623b294bd7e5c0bcaeefefb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/judge/manifest.json",
+      "sha256": "010bfcbf3a6ca5616794da545b018adb392743835e568d43f642b962059cafe5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/manifest.json",
+      "sha256": "7076a3043a697a0b471b146c6626b944ca7ebea7b22d99c965d7aa2558d994e7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__with_skill/prompt.txt",
+      "sha256": "9edb00e7390e5d065acba493ce76db96860e24a7216f6d1d1e9e207e29cabd29"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/answer.md",
+      "sha256": "937ecd34513fcdcfe49b87f14978250e7951d8e67c33f64066c5af735ebed54a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/claude.result.txt",
+      "sha256": "937ecd34513fcdcfe49b87f14978250e7951d8e67c33f64066c5af735ebed54a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "733186acb524d63bef438b96b1553ac9f099161e31eff99d6f4cb1d3f00610dd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/grading.json",
+      "sha256": "eb0141196207dac8be0e3b09389ddbb09b08f951318cc22e5525d34899deea9f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/judge/claude.result.txt",
+      "sha256": "9f8095fb0ca0c7ac181c4e71138e0719e2d6f7c5605abfeaf1ec875c3b07048e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "30990e850a1cc04250baf13c1cc760c8ee47903d216f2996497a8eb005ca0d37"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/judge/manifest.json",
+      "sha256": "f4021e9465a94598779beacd734b4104fb0939746939be01007831b32bcdb8f1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/manifest.json",
+      "sha256": "4a09a784e6a86abf9dff574a4742b8456a1f274ff23e9cec1199921af83b8ebe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/claude__without_skill/prompt.txt",
+      "sha256": "e08c7b5bc5d830a1a5abb3ccd20241d2b1555541af4e06ab43b9481545a98e04"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/answer.md",
+      "sha256": "e23f590f5f26cf780085232905fa67ea2e9abf661125016c8fb494b26b4faa35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/codex.result.txt",
+      "sha256": "e23f590f5f26cf780085232905fa67ea2e9abf661125016c8fb494b26b4faa35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "6f3d3a4c95dc30820871cbcfb2ca1eaa7d2bfc2b2bd6b80528517cba88375844"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "5708dd17baf55c1819a4b2421da7b25ac0215b98d38bf5219febc258be1e64ff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/grading.json",
+      "sha256": "40fa5be4cef3d8f8dde92f0b8a8b3afde9d2f1de46a8032fa3c4a7fedef4f2c4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/judge/claude.result.txt",
+      "sha256": "8ee73b0d35920d8e79192c7bf40e2d53e6aea974cb38b4a801f694a921bc74ec"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "7e2486b61a1c2c18253ec9c54008c2f5ce64643de94a2fb8d6093467c557c106"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/judge/manifest.json",
+      "sha256": "429044ab82f2805828b4135941e028bac29eee3ae9843e4c3c0660adbd0d5a6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/manifest.json",
+      "sha256": "d5d74b8c553a060874632ab917c5decd7f6c074b24523e268abb97f6605ba958"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__with_skill/prompt.txt",
+      "sha256": "cc735eb96a24fb25f279a7bae073cdadf5e09912d32ded3502a9c7789e185a96"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/answer.md",
+      "sha256": "10731324a9b148d8be1ef35a1d543a4b7fc64a31a363edfc111cdf3afbd442d9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/codex.result.txt",
+      "sha256": "10731324a9b148d8be1ef35a1d543a4b7fc64a31a363edfc111cdf3afbd442d9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "db9a5f284f1f4bd46a91c381b1a394e1eb78f8163c90adafd0a9e27bb1ce960d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "afff3127c659b49ca6497605fb7f99d2e0ebc684a99aa69130b005ed0bb7c803"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/grading.json",
+      "sha256": "9eeb8489ccd3f82655918e7b7bc2a5ed0177ec2c5e90c1740c693fd9a50df805"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/judge/claude.result.txt",
+      "sha256": "7ba7008e930d450a74513a694006edf59e5cca9b305190a48598f565f484c7a6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "17012bc3b2ef6c998109a2d160c99fc8b4fab05b6f20de4b3b76fd35b2cd0cca"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/judge/manifest.json",
+      "sha256": "4d85d3cd90c335617b0bbb78fc2cd64c4dc84ef6bace326213afb67ab6907465"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/manifest.json",
+      "sha256": "2fb1c7c667e1339b942bc0bf600bc58646187bcb0be770d169397ee6d02c0ac3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/codex__without_skill/prompt.txt",
+      "sha256": "e08c7b5bc5d830a1a5abb3ccd20241d2b1555541af4e06ab43b9481545a98e04"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-agy/claude.result.txt",
+      "sha256": "9a04fac69e75b5f988364dc7e7842d2d7201583a1a14eb50d46244e4e3179668"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "888bb7205ec5d3089d8fc6b9b52cf55566b0434bff04883c9e5e55469ccf7c0a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-agy/manifest.json",
+      "sha256": "55a97da9da1d23872ba9fc1d503b52d35599754aa91dde396adc3ead14b2ac8d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-claude/claude.result.txt",
+      "sha256": "d3881f8c495ba396a7c1c40cf8200917098246d0334215895e3079aa068345bd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "1dfc6e1a903a3de942c9af146ad999b48828c60cf8583a18f603a0ed97a1e74c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-claude/manifest.json",
+      "sha256": "cc327bbd166a6229e265c18345576e9fc734b6159cb091707d88aaeaeab467c0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-codex/claude.result.txt",
+      "sha256": "45d833ef6eff41e2d148f74f344931beb1eb67a2116871f91c255fd1a4574df9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "dd86a5da3b1ac19cc4068fdff81dd6cf627b01cf7b850740c50e808d72582328"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/compare-codex/manifest.json",
+      "sha256": "48cdca6ef5d2add76b7a7b5e0587e869357720ce038114a13e3478a112e0aee0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/comparison.agy.json",
+      "sha256": "e2eda5f255dca0ed8e20802b58e6febb633eb26c92aced1e3ccd03f1da0fc2fd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/comparison.claude.json",
+      "sha256": "4df44a509d3cfb4ff3b9cd446555c728a32e0a5743003127946c12c27bd02599"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-revert-on-discovery/comparison.codex.json",
+      "sha256": "12bdf42cf04d301da87d4230844de3477740742b40316abd6363e7a5a494cc5c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/agy.result.txt",
+      "sha256": "20d98c91c2d2b50b75315772418f8c2761346d232cafe0fae71eabb88af89cd3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "dabc4f03b6bcfb0aab870ce95751d45682131091834a8f27aa33fbfafb1fb657"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/answer.md",
+      "sha256": "20d98c91c2d2b50b75315772418f8c2761346d232cafe0fae71eabb88af89cd3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/grading.json",
+      "sha256": "2f397fcacd5e8c9a76249aee9fb1c3e4d38298d1b1180c3415110b1d601c8904"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/judge/claude.result.txt",
+      "sha256": "fcbd1e6791ac84bad16550936028cc8c0df26d00146844e486c3b4a1c8c0c595"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "4b5bba6ef076961c29e3abf6f1732512bce94f80dff84f4a16a9c3ae237c94a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/judge/manifest.json",
+      "sha256": "0dad158a5a133ea89389e153a69817b7a43239fb9e7feac364fd2e90fd8653bb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/manifest.json",
+      "sha256": "329278d6a5734d27d9da4903afea8788088b1cfb2361fc2df3511688738b692b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__with_skill/prompt.txt",
+      "sha256": "a1c72ce23b147acd3c5f89818fa73e8637511e735ff79c0530ffde13bf5fd8c0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/agy.result.txt",
+      "sha256": "9f70f9107c93e8b6e7844338d927252b1894bd3e19251df50eafb8db1a75c0df"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "e5cce20687285352cb33b5b574269ba94d7f4549bf22c310562980025f640712"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/answer.md",
+      "sha256": "9f70f9107c93e8b6e7844338d927252b1894bd3e19251df50eafb8db1a75c0df"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/grading.json",
+      "sha256": "b39007f68ac2133daaf897034f3b0fbf5626c0aa3f7984a47678012c038d6793"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/judge/claude.result.txt",
+      "sha256": "ed35b9b2a1e8b42c5655d157b4a808924676f95c76e02b38e9eca064ca884640"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5a35a9cc6a38368e2d5fd77a64096c660d0a6900b4f1d46019e2964103afc9bb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/judge/manifest.json",
+      "sha256": "cac23b4e05f0f64bdc57276e9da7362a481ece5f9b370d9dc5f0f7c87d9353de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/manifest.json",
+      "sha256": "91615be7f084fe089761d1a5adc4bb971275d5a0c97cc84128f183694d6bc55a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/agy__without_skill/prompt.txt",
+      "sha256": "9ea6ac1cdca1d45b588e738a56b262e7200a17ee0ad4db816c1cb28b6b762c97"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/answer.md",
+      "sha256": "f6fb94dacce22ff35c1079fe8d96aaffa40d7605fd400a8adf255e620f3686fc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/claude.result.txt",
+      "sha256": "f6fb94dacce22ff35c1079fe8d96aaffa40d7605fd400a8adf255e620f3686fc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "4bede2acefab846db1a6c8cf6af2cae8b8a15716cb3108269cd51e29d6354e89"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/grading.json",
+      "sha256": "b635a88efde3eb8de1fbd52220573019395f3876782b15e407ba7d9b8da785e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/judge/claude.result.txt",
+      "sha256": "2f09a7f46b8900188e1d68e85188150b12523d0b4800bac4e142f5ac57b66f6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "fc24b023d48f8ffb2f7ff0703b91863281ffc78af00e26f80fad3f603a7a8016"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/judge/manifest.json",
+      "sha256": "3122ec65e914608683d009f6abed0a9a8e8be81cdad97540807c6ca38dcac410"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/manifest.json",
+      "sha256": "404ae3af22712b354af2f7b1268890aaaa9d9abbf18aafe4b1b2eea19e335b70"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__with_skill/prompt.txt",
+      "sha256": "434bb680fdb0e63b6e157eac8e17fb556865e712c879cdd5fb955680afc5ad24"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/answer.md",
+      "sha256": "146f67b99b6f118ad73e9161c7b7a95972eedbdf9b9f8d94b8132e138b96d5d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/claude.result.txt",
+      "sha256": "146f67b99b6f118ad73e9161c7b7a95972eedbdf9b9f8d94b8132e138b96d5d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "b2b9148f1e5ca39468f221ceee185e9002a12343e4abf7060f9413e2a1be6e0d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/grading.json",
+      "sha256": "abb9ce445310b64b8d1f331ecac2bed1321123ef0ffbbe27f425c496db545ba2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/judge/claude.result.txt",
+      "sha256": "9d0f53b52f87df9d2145d78cc81608120fadf2a0e1e16da366d72b2d171f3773"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "0e061880ca1833d1d82ac9b93ea62c2220d9c28a9b1c97842dcd87b0846948db"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/judge/manifest.json",
+      "sha256": "aa582e3399e97fcf1aef9b5070cf8464ce4c3d110351c459b9796c53f556d84e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/manifest.json",
+      "sha256": "b3b89d5842d23db1a0baf76074f02af4f1f682ce7eecb4ca1b1c10c5d2703e7b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/claude__without_skill/prompt.txt",
+      "sha256": "9ea6ac1cdca1d45b588e738a56b262e7200a17ee0ad4db816c1cb28b6b762c97"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/answer.md",
+      "sha256": "fbdee8955a69e66e429c20f4e6fd325592623caf64a493163b707c4cb7c6d187"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/codex.result.txt",
+      "sha256": "fbdee8955a69e66e429c20f4e6fd325592623caf64a493163b707c4cb7c6d187"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "2d13f441052c2c4d8d0093ac88715490d7a21059e06a4ccf41d144aba7da6a5e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "70f97ccd9a591cb1a0b467bcd1562b314bf885fc7db180db4508f35a2043ec1c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/grading.json",
+      "sha256": "d630f528bd9316160d621ae7d084ebf673508b723543977418534fadef64599a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/judge/claude.result.txt",
+      "sha256": "cead55ad43e0e3d4876ffdb2d8a73c8d0fd2cbbaf1419ecb11d71a0d4737a3fb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b738293e523ce5c6ad9bd24bd0f0892b75bc6b2cd1fb823aceff17b42fae3924"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/judge/manifest.json",
+      "sha256": "cda118b2d1fcf48a3ad7a12a695a51ba9cb059a97204a54bf020555f6e361461"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/manifest.json",
+      "sha256": "dfd780970dd70a1657e6d34e5ecf5881dab968970b348dd4406e0565a9a9db17"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__with_skill/prompt.txt",
+      "sha256": "903141bca9a25fa1c472c25f5103666cd1e4b9afaa58b2bbc783e304df5d4713"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/answer.md",
+      "sha256": "c740c9b5304234f9ac3d6a844ae381b10999c11ae25508adeb68b9e239c4c693"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/codex.result.txt",
+      "sha256": "c740c9b5304234f9ac3d6a844ae381b10999c11ae25508adeb68b9e239c4c693"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "6373091e98cb2305426ab5faf5d7ba1094866bf53013072fcf02e6b6643770de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "6f3a9304ed4c6f67be2bf4130dc69f5ad23bb5157516cfabc06f4f96d0d5317e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/grading.json",
+      "sha256": "e3696fe303c971c70c38351e3f59b944a5924a59bbda1c05a7e9f7b34fa952fe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/judge/claude.result.txt",
+      "sha256": "5720a095bc4b7e991ee8ce9293e9a3bb932d58b99cae71b776bd007e28a72dcb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "febe9dfde2407ea4f7dbe5e4dbeae3e08c91017a68c457fec737c2107172c0c1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/judge/manifest.json",
+      "sha256": "092d1320c169039fc8404a300b13b344c160d36fcb9b03601d9d21d79cad5dd8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/manifest.json",
+      "sha256": "34fb38f0ee64d33b1cdbadf1cbb41998f62af942ac80f7afdf7f5c12ccfb8ccd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/codex__without_skill/prompt.txt",
+      "sha256": "9ea6ac1cdca1d45b588e738a56b262e7200a17ee0ad4db816c1cb28b6b762c97"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-agy/claude.result.txt",
+      "sha256": "2d8922a3d5aaeaa83ee1bcea7b5daf1792b7727683143094835848d6bbaf693e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "3d070e918b6f4d5bbf72700705467cff47b9aa1ef1b565ab836927a2b8c92fee"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-agy/manifest.json",
+      "sha256": "4d00ba73f4ae66debf9f60778abe54962ab0f64e3be098c0a82b7fa53624be29"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-claude/claude.result.txt",
+      "sha256": "a4cbbeb6cd9fff01dbc8fcc9e7ebf4568cec749b21be185e036c1f4a58ccebde"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "f6c9672c58ab7c3d644c7929f8a8d0895bca888be4df0d5c70fb0f99248f7e98"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-claude/manifest.json",
+      "sha256": "a3bb7212895fe42f70086cb8bc3b0354f3b8a417a11ea8c38145d4e436871934"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-codex/claude.result.txt",
+      "sha256": "f7ca1d26d86de45999d70d27b01378050321ae68bea73a71898fc010b0912519"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "8fc94b625e6a4b9e3fcb8f3ac86582d1f28aa62195662cf87ea173f20993d0a4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/compare-codex/manifest.json",
+      "sha256": "172b9b2719d017b6c87af2add473c10b2fea9180bb7ae0caed518d71c192c631"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/comparison.agy.json",
+      "sha256": "6d66e7e427393a6f1e3e9b07d7cf1c8b9e09545cb24f771fa23b86b57a399d7d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/comparison.claude.json",
+      "sha256": "2894c9816d022cfaad7f6dfa322d71e339bbdd8ed1d376733710fc10803e34e5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-1-leaf-first-only-ready/comparison.codex.json",
+      "sha256": "df343cb91c03437e14d595c1703ffd294816a36c9aad9dba8f1eff8b90c4a72d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/agy.result.txt",
+      "sha256": "24897c5b849260d6d547c6088b2356325e0b9175c9bbf5491c10b1aeebc91bca"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "8a12ca3ff1a2faba97d6a2e9dced16db34ed6c209a500df30c23837fff3522b9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/answer.md",
+      "sha256": "24897c5b849260d6d547c6088b2356325e0b9175c9bbf5491c10b1aeebc91bca"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/grading.json",
+      "sha256": "590aa0e75290f46b2d99dc644bc4df0af56b8210b2588fbc47b2df99b9a6f4fa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/judge/claude.result.txt",
+      "sha256": "d2a32d1a080019ed2957bd55d6d4a8c8a58f0e14146fc96807641a97a57ae359"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "50d2c308f8413d803010a4ff33c470ec23d7527c33ab09f909e4c33ea580ee2d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/judge/manifest.json",
+      "sha256": "53670df6189a9d8fe32327f040bc986c9837440996b794b2837996e88b1dc157"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/manifest.json",
+      "sha256": "488082449dd334eeab572ef6e5bd9e27356a7563debda300cf9f70f34c168f2f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__with_skill/prompt.txt",
+      "sha256": "29e1f690405a9f757a51e80d329cc57d36a2ea956b5c3e9fd8d45ded53872880"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/agy.result.txt",
+      "sha256": "98987fd96df0195fa481b0746b2cbcd75b44b6b659340d9502020d7c24ee45c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "852091d75b7f474168d37c6feef217cbba24bd65fe417237ca13ca32fb44893f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/answer.md",
+      "sha256": "98987fd96df0195fa481b0746b2cbcd75b44b6b659340d9502020d7c24ee45c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/grading.json",
+      "sha256": "00a98f134faf780773f16c247146fa9108bb23828e1b25a01e1a17804b9f156f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/judge/claude.result.txt",
+      "sha256": "d2f9d6b1bdf3138ffb33061426a6d6a961d78bbdfa9904bcde4690b4ff9b3fd7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "add0a8a6e5eb05cf532cea3d1a5752f83caed04af9466cc91867a9675f10f1a4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/judge/manifest.json",
+      "sha256": "5030ece15c7714b996595e715354c1511294d0e0393f311f12e99bffb95b2d2e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/manifest.json",
+      "sha256": "4e3bb397ad114e7174097cf7270f7d8a0e8d4aecd18dad54ccf77c52615ecd8b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/agy__without_skill/prompt.txt",
+      "sha256": "4692611fcb69efbc1814d84da32f298d7d0ea4851fc2f5a034d6fd6eff699398"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/answer.md",
+      "sha256": "4d33a9076cb2b3e5b253fa53ca1ccd48d868ba92195aa0001dabb5a3faed4e7f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/claude.result.txt",
+      "sha256": "4d33a9076cb2b3e5b253fa53ca1ccd48d868ba92195aa0001dabb5a3faed4e7f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "26eb9363eb37bffbe832bc3c370e81bc82fb4f401cf9ba54d54423180d19c761"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/grading.json",
+      "sha256": "89371c82c59761d7564617e2f9d3309236653b317a46507b9dd9783249c367a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/judge/claude.result.txt",
+      "sha256": "16d73ef917d6a8a596dc60e7e4f021d2a96203094f2e1eee9e48edfa091e9924"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "25b7f3076a75c2c2d3f4bfd895435cf29a7ccb0774585ae2acf425d4365fb364"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/judge/manifest.json",
+      "sha256": "f8bb78347ccad7a94532751070c9d199f2d6612ee9ef538458648671fb8b2a87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/manifest.json",
+      "sha256": "a52c3db18ac51718f2790078e17c723b0cf05d6df28a9c1d7df038f26ca3e4f2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__with_skill/prompt.txt",
+      "sha256": "2af1ba0406627937f20eda9b98573f852c7c4fad21271c8d297e800d467dcc63"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/answer.md",
+      "sha256": "ee0d182390aadb8a2fb05061936c8a0ea321677dca6d19e21090f73057527b5d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/claude.result.txt",
+      "sha256": "ee0d182390aadb8a2fb05061936c8a0ea321677dca6d19e21090f73057527b5d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "95e3bdcf0e5112afc9f26ca8c0907e1754223f39306b8d436acd93b84d39ae4f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/grading.json",
+      "sha256": "5648bb7ca40ec49f6e0092f25f904b1ebcb781305e39764fb182f0fe0c30ef36"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/judge/claude.result.txt",
+      "sha256": "f4defa1b12e762985cca4a159a2b07d4dd7bb02dda0f1669786759bbe492feca"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "80daeb69e60e21cf3d9e37a86635a73ec2b83a7afb28abd5e4d777adf71e755b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/judge/manifest.json",
+      "sha256": "e55934670a9c80f1056eeec32c8d2b3a8d963fbc10ee9a45174ee711d57bf3b1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/manifest.json",
+      "sha256": "db7417a718982d6175028aa4bb94d8e53c7cad86cd92e7d852d47ec7fe3b7d52"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/claude__without_skill/prompt.txt",
+      "sha256": "4692611fcb69efbc1814d84da32f298d7d0ea4851fc2f5a034d6fd6eff699398"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/answer.md",
+      "sha256": "95979bc223d053c581a36ffcbd92039323ca59f3fa319df796d50dc7dadbd506"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/codex.result.txt",
+      "sha256": "95979bc223d053c581a36ffcbd92039323ca59f3fa319df796d50dc7dadbd506"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e0f510a63efe6cd7bf3902a0c32caee81401fdb540e7fdee4b0451b5740b502f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "c25b6926d7a102ecf583d0b3de3c7319d372c870388cf258dc55c6fb6776f9ef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/grading.json",
+      "sha256": "4ee42a7dc36eac9a73a1c36b2ee7ffa28a8ee378095805fa7fba597a94326b37"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/judge/claude.result.txt",
+      "sha256": "c071ace597b7d6f5f17d11c8fc07949f794816aa937ac0e16a7985cf8fc3f892"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f06e729eb36a01a4725b925f5870ec79b5e612276f0d2ce9fd9933e0ee0c9fa0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/judge/manifest.json",
+      "sha256": "6449be50e9a58c73ccad85d7f6260fd74a1863ad751010b9739ed4dac4782960"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/manifest.json",
+      "sha256": "540cd6ce5eef471404470c4b0e8ee394709c7d6e065914006a076491f9f3c112"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__with_skill/prompt.txt",
+      "sha256": "7a770892d8db53d647ff0f84ded6324cc1feb3a6dde82bc5181c7ed1fe0d1bf5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/answer.md",
+      "sha256": "70703f463b8bc73c645e35ecec697e168044341d57534e1946719b9697453986"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/codex.result.txt",
+      "sha256": "70703f463b8bc73c645e35ecec697e168044341d57534e1946719b9697453986"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "a47b9be2d099f5ea71d6ea4c0d7766a2bbbbd5747252d7c2baafd0b327f0423a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "ac211074b79adbef51dfbb2077762ae9eddaea5b80e105c46a52c971e07e967c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/grading.json",
+      "sha256": "df519dec8ee856a2c726653eb2d1f21a86db298852e65176269b27e770914a86"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/judge/claude.result.txt",
+      "sha256": "16fac309d36b4a2c1d4731996840a7ef29c531def6e2c9d5a6e3c0295d13b84b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "fd16e5c13063074c79815690a0d81ec0b88c4a70035b9787a673f8a9ae43667c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/judge/manifest.json",
+      "sha256": "ccfba16b1618f15b1a28d899bc6e861bb1a080256898fa179bdf761d73256237"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/manifest.json",
+      "sha256": "e4b7c90b0afd68e4033f9c976f833991af6a81daf21b3c1c500e09ae95b86fe5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/codex__without_skill/prompt.txt",
+      "sha256": "4692611fcb69efbc1814d84da32f298d7d0ea4851fc2f5a034d6fd6eff699398"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-agy/claude.result.txt",
+      "sha256": "c241bb6c1203b5254c0a34fa0e27b7f9dbcfa8243e4464b504d1eff0dc797d33"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "85f0170fefc924ecfc07f9ac316b2a21e8e24702259370370a2153a4b9c50f45"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-agy/manifest.json",
+      "sha256": "37229cd0f78475390667ed44698c51733303d015aa1a4879aa72004d0c695fa1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-claude/claude.result.txt",
+      "sha256": "e57e9011e86e5f78492f981a30b6e0d3621bccebb04baa22fa93739f7e113e57"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "c62741693c10329fac2c778cba6f25ca5f57815a3c7248c3579eb79bc6843859"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-claude/manifest.json",
+      "sha256": "1d2a9e586fe2114b68801d7b116e90118136daae59f272d5cbe8df6ed2651d2d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-codex/claude.result.txt",
+      "sha256": "a61d1d2b92f7f72485a333097ab850632bc7398379227b0592653dc28e3039df"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "26c1ae303666cb024c04111b77efcf1a44acf57268b713e8b3e897bd4f25e913"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/compare-codex/manifest.json",
+      "sha256": "1f21ecb74cd283ca7c907630d501c11b48b596343e0785da6486d764ab0d6495"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/comparison.agy.json",
+      "sha256": "af9e9155a693e346ba2f76ff705cb3607e8d49bb2d4a9505a116cea31b4d9a8c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/comparison.claude.json",
+      "sha256": "cd5172a8be77f757524b6e24552750be1bba6bd8a807dd25cbb2f45ae263b37d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-reimplement-not-cherrypick/comparison.codex.json",
+      "sha256": "064f84d752e65bbd6545f60e3699cca3e81cc087d5bf804fe9174eedec89ab3f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/agy.result.txt",
+      "sha256": "ef4517c4cacbe4147114cef10d20e5d54566b92221feb02efeec9dda3b0fd21e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "8b5a93ec9b461a11a6efa85115c423f5be863c1ac8e4b79a096f49e85fac00e3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/answer.md",
+      "sha256": "ef4517c4cacbe4147114cef10d20e5d54566b92221feb02efeec9dda3b0fd21e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/grading.json",
+      "sha256": "b9d126071cd3bac0cd0bb6d4c556bba9e3e5ab7afb6e4aaaeaf7049d59510cd9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/judge/claude.result.txt",
+      "sha256": "03ef5cb929625e2f4290fe5b2a0dc617a3c88ed9eb883b82bb9b2b1455c66cde"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8d9e3475f5ca5e8d2cee6531ef645f694333a9b91631890d65d43287fc4e9c3f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/judge/manifest.json",
+      "sha256": "d3ceeeaa8e1e9db845aeb9d0ea1193bbe12b5ed2d7dd04cd5594d15bf901fed3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/manifest.json",
+      "sha256": "db56909cff430e5558de45ae932e666ce31d2be076302c7433d1420a08c06958"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__with_skill/prompt.txt",
+      "sha256": "d44fd5edb2024c73d996f08dd61ae4c453fe4d2b8a1fbfe127e94abae5d0b901"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/agy.result.txt",
+      "sha256": "e81586622136635f5a8f461be07ade43315b33b35d105fabfdda05668beea170"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "9ddc29f9698d78157d7e020ee1b3fe4ea75aa9a5078bba47431aaf9206c1ca6d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/answer.md",
+      "sha256": "e81586622136635f5a8f461be07ade43315b33b35d105fabfdda05668beea170"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/grading.json",
+      "sha256": "ebd60ef93d0a4e342135970e0cda4b7bedbb9a1f0caccfc5a00d3198d6a5e6fa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/judge/claude.result.txt",
+      "sha256": "8dacf524abc88789b93392da495bddbd56c3ab010e395b48f92694a0e2b53231"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f8c44001873f9dd602b2dc0b5e71573b238ebbe4b370e32db2f4b28216ae5418"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/judge/manifest.json",
+      "sha256": "ec3c0c3dff03445429f570dd2e969ccb340e355ea4c8dfbc123d64f36a9c6247"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/manifest.json",
+      "sha256": "52a98b29a2e697fbc839b571df6f99b0736800696cfbed550e2fe6672fd245f8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/agy__without_skill/prompt.txt",
+      "sha256": "89abd39ce973f6de73308f7a89a0be694b2b287bfedfdac5b3a7ca1c0cd58bcb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/answer.md",
+      "sha256": "ee1377f289d2f4a1758846173f775e4ee2c40c97b31b07ec8528c79a72b7bbe0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/claude.result.txt",
+      "sha256": "ee1377f289d2f4a1758846173f775e4ee2c40c97b31b07ec8528c79a72b7bbe0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "2c3c0a04e778cfee4fe9e64bd49c010b7b58a13fe34997fa5464a915411324bc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/grading.json",
+      "sha256": "e2a85704b9f6547ccb99e0cd98d55eb6d8b84c5165c90e46c95bb7f21f03a7bd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/judge/claude.result.txt",
+      "sha256": "09ff4909f584803b3378f721127c45a4bfdd95a5d7733cee56e4c170e81e8cde"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "c994c2563b4d1ed2bb9575e590704ba383b0fc39958c5912a70fbe2f3d6d7c05"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/judge/manifest.json",
+      "sha256": "a193ea626932678d10364cebe01af856e48e8fb967566160886ab6aaaaef85c5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/manifest.json",
+      "sha256": "6f82660ba8d5a21e17350d44578be56000975d25f3ecd5990359819535773146"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__with_skill/prompt.txt",
+      "sha256": "f128067f0deb51b237f09528c2e073d11207075d7deb568639a1743e3f9b7091"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/answer.md",
+      "sha256": "be46b290ef2f1ffbcef8a5f4bfe7479bdf1400330f49cdb58ad1c923437cd21b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/claude.result.txt",
+      "sha256": "be46b290ef2f1ffbcef8a5f4bfe7479bdf1400330f49cdb58ad1c923437cd21b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "d478148d20ecee31a2f2a4d36559c278c1e20f8b52f47e579a5843b0d189f34b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/grading.json",
+      "sha256": "b88a4711ca1a9bf2b4fae5aba5bdfe96a4082328ac2253ea03a9d58e7f30db9c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/judge/claude.result.txt",
+      "sha256": "230b6c42ab1712c10fb3d94b7d06d85a9881c830d4cf71c307778d156fd48e61"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "24e80d1b3e0fec8516f096f651277c00264a76f68d8174f0c454226527c33f68"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/judge/manifest.json",
+      "sha256": "67effbfa17a690b9839fdbf90cb15c947c2410bc5e78d0d64d3bdffdc6fc8ab8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/manifest.json",
+      "sha256": "b837626fdde3c0c8406f7a6b8895a83175a9a39fd9be8cb8ec673de80f347103"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/claude__without_skill/prompt.txt",
+      "sha256": "89abd39ce973f6de73308f7a89a0be694b2b287bfedfdac5b3a7ca1c0cd58bcb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/answer.md",
+      "sha256": "fe34ba554b6b796147512c164add84d069c8f4a3fd490ed4660f12d32f1f03da"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/codex.result.txt",
+      "sha256": "fe34ba554b6b796147512c164add84d069c8f4a3fd490ed4660f12d32f1f03da"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "d1f308c0fb4b9872fd5126729e74001443e6b775d1d5aec259849aaf42505fab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "5b1c50b3d76c62ea9d54b3d73064abb48e131566b91917bfeb2b26fd76ce4c49"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/grading.json",
+      "sha256": "d80a8ba941963df9916232ea1d8819bb48d5d3b41b28f8fc21f76b1cfba3a701"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/judge/claude.result.txt",
+      "sha256": "004b30b9e8730f2b55630af38577ca080c6515d3e6fdb3b29b66aaacaf99902e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1c296f892120c9277a4ca8fb71f1e73a53b852ff43c8bf50f4cf4b8458fe5dab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/judge/manifest.json",
+      "sha256": "4ae73bb5b8378e5322609adf085c9574b53439a46f522311ea8b78e07077a0f4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/manifest.json",
+      "sha256": "37ce02db9b2823c63b4581d5e5a39e094492ed5fbef85743466229cfd351639d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__with_skill/prompt.txt",
+      "sha256": "672746e0946c4e7a0731e0490455e858d5a289987ea653e444333efc76f66fc5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/answer.md",
+      "sha256": "c763425291f437e9858894c7d907ebf76d1db1cfd23b653823d97d92b3605fe4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/codex.result.txt",
+      "sha256": "c763425291f437e9858894c7d907ebf76d1db1cfd23b653823d97d92b3605fe4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "cb77dec4c3d537b97028f90f5e90dcb2bc6c22c2245fe37cbb102def96757299"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "c6ceb6622e07909598c55c8d3445f6e8b76d6e6ef229df9d396350c47df96611"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/grading.json",
+      "sha256": "2e2e0588fd5c9711302e31a92db3ad9512af86b10b54a821307282aba6525dd2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/judge/claude.result.txt",
+      "sha256": "7c1d52c84adc383d81971824c11d3129f7617bfb532f6be7b0812a227af25022"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9b7f325280007238792cc16147c4158ef91b5e5fccbdcf13e655c49dd02d136b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/judge/manifest.json",
+      "sha256": "144c2634895facc80c1fc8d8f9d18b6a5e4d57c85fbfc86596c572b05cef0cdf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/manifest.json",
+      "sha256": "ce6160a28ceb013a37abaa6d1d406981cdac425612e8f731c25bd36410027674"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/codex__without_skill/prompt.txt",
+      "sha256": "89abd39ce973f6de73308f7a89a0be694b2b287bfedfdac5b3a7ca1c0cd58bcb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-agy/claude.result.txt",
+      "sha256": "f12834a56593f6faac0e9115999984773dfc6548691dc1fd18ae69a3500a03d4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "b1b201218d38b1f1799e101465c50ca856b565d3da21cbc86117e2aa30298b2f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-agy/manifest.json",
+      "sha256": "3cc853182101be434f45886468d559c348994d3d27a54042ae218fbe65b3aa35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-claude/claude.result.txt",
+      "sha256": "02983027ba1b15e63df0d404e47b3ddfd24c9ba9a2de5f86b81290833635653b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "9ea96951394bd1caba6402bfab34e140ea32db91f7f2e38cbb86b474862b260d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-claude/manifest.json",
+      "sha256": "16dda705ab887b2e6da266f7d0d11f0d884c1e2b36ae08c4ec113701307b4b12"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-codex/claude.result.txt",
+      "sha256": "cffc8b920588136a14f9642984e377badec2fcc0c53a3289b0b2d3c74f7ff925"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "ce851ce41b78bd73cb93caf721fc95bc097c3d721381aad97876d6111964d1ff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/compare-codex/manifest.json",
+      "sha256": "88cddfa4d0289c935bfcd13d69d3662982abf32c5a55eafe85647946768ee589"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/comparison.agy.json",
+      "sha256": "685ce5b0de2a037f39c9283e61eecd0d223037750e3fc6b2a1b8ba3fde9fbca1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/comparison.claude.json",
+      "sha256": "8fd7d5e1b08afb7fe9e98d84108bcf36f64704e00edf569cd8b292c4f61308be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-reactive-split-sprawled-branch/comparison.codex.json",
+      "sha256": "8c74a8e82ae4f98dd1b8edb3c2ef580f93b544c5331354652f2f79ee02b8fcab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/agy.result.txt",
+      "sha256": "6b798b6f493d656e262f41568acc5f570cb488626803753eb12ee2fce4958c4f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "c8daad5cd16f5b876a35901c6b0af432cbd365d54bd04e501f8b1fd8c222d097"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/answer.md",
+      "sha256": "6b798b6f493d656e262f41568acc5f570cb488626803753eb12ee2fce4958c4f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/grading.json",
+      "sha256": "18094095a5cc61d0063a86209430a998925d0b6ea7f7e0adce9bd8a9e35927a5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/judge/claude.result.txt",
+      "sha256": "988652aa298339554f0534a301f209c3a972b0d6452657292cb8db37eba7343b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8d83acf2b80564379487eff6dd86d27897586aedff3b3f65f4e91f43afdf4531"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/judge/manifest.json",
+      "sha256": "18998d036ad1c2c093cef6620f5851f3652d4623c27ffe052602bbb048a87dc6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/manifest.json",
+      "sha256": "2a4a22894d05fd70445519508e54de3c24b7083183e73f6bc500a808765b3f15"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__with_skill/prompt.txt",
+      "sha256": "1e0e12aa5f82b1b50f7074e04a8770e0cdf0ae63d55896af851e79bc721a29b4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/agy.result.txt",
+      "sha256": "86276a6daeea15b63e162856d4808ce3f0890ef01223deefdc6997b0ff065a46"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "76cd691dc5182d2b503b4fe27d94c40373bc57bb119fb3de47f20178fd9fa91b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/answer.md",
+      "sha256": "86276a6daeea15b63e162856d4808ce3f0890ef01223deefdc6997b0ff065a46"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/grading.json",
+      "sha256": "6a64f3cfd67681882063a1308f065dd23e676da0b5ad8aa68b841171f9220e62"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/judge/claude.result.txt",
+      "sha256": "3246de05298c0db190979e41b7a4240cd2fea4b944fb63d3eba995902a9b606f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "a2d1ea28a555bd80448d015c5d0d8f37b807abad7c90266107f9a8e3bd72f056"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/judge/manifest.json",
+      "sha256": "b3aefe3c8a97ee42ea14153e497dee715866fc3bf80b991db20f3c8f1b5dc733"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/manifest.json",
+      "sha256": "871a04bc1ef406b1c655aaf2e5944c2c58b7209278ef5789949d2b2aeadfe885"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/agy__without_skill/prompt.txt",
+      "sha256": "7b6e44247f78a465643e3df784a3bdb175b07d9c06f0728966efc6ff7781ca18"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/answer.md",
+      "sha256": "0861c2ffc20d54dbf9f4c45be67005fead07be23927fa36f5a3821940a39cf87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/claude.result.txt",
+      "sha256": "0861c2ffc20d54dbf9f4c45be67005fead07be23927fa36f5a3821940a39cf87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "d965bfd70b3f24610c63653291b51fb2381337852d6a25471323d2f7ddcd0d97"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/grading.json",
+      "sha256": "bef112024725582f617130e2da3ac0ef84c7da1b5a38b41d5cda3942556dc286"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/judge/claude.result.txt",
+      "sha256": "1c2a05e58c2d081cbf704892c6992de4c275dded8eb9628adb9b07e76ee2b4d6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f86d0bc2e16f9a065c6efcc24e03af2832366ee6209ff1e20e5ee85f8cd24f91"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/judge/manifest.json",
+      "sha256": "4696de6d7db13eef48c4dc1a5755f477c960e0d27ea6d5bc64886765f2667385"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/manifest.json",
+      "sha256": "618f303b39778991d8cd38b6d8be54856ed42972c5b942de64785d0d4528a849"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__with_skill/prompt.txt",
+      "sha256": "f149ce63a1d61994e92299a9ffaaf7e0bbd963f95a00eaa3fc45f8c7f6505b35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/answer.md",
+      "sha256": "f0214ce74c8923a4bb9a3576301be0947688f530031b313941c941dfaacf381e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/claude.result.txt",
+      "sha256": "f0214ce74c8923a4bb9a3576301be0947688f530031b313941c941dfaacf381e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "2336c21f7dbcf1d8db9e383df2ba112e4004214f67eebc914a4f27b76b3f3420"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/grading.json",
+      "sha256": "d3db7b2380721e56a63c73aa162832d476bfdf0476036e5e25e22e0f22633e34"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/judge/claude.result.txt",
+      "sha256": "db407b71a15924c0718545bcf94b36c22ee7dab8f11b22ac727f4d9a3f51f6e4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "53a37bb812b0b69c65ad305ab73d3a3cd1aa60c6e9186892104a770942c95efd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/judge/manifest.json",
+      "sha256": "f466251f59cd18e45b03cfc217b84f39125493c5cf2e11d26050e2d7568bc70b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/manifest.json",
+      "sha256": "e4407d42b3314ef70f4b93d102d0643f35f8dc98d873f107f90624eb5553c366"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/claude__without_skill/prompt.txt",
+      "sha256": "7b6e44247f78a465643e3df784a3bdb175b07d9c06f0728966efc6ff7781ca18"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/answer.md",
+      "sha256": "395d16bbd394fe41c0a66d3f7678bcec093a0ee725c199841498fe91949e8596"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/codex.result.txt",
+      "sha256": "395d16bbd394fe41c0a66d3f7678bcec093a0ee725c199841498fe91949e8596"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "5d8ef40e7712ba8ba30b293de42bdd4d4822fdbe0d5729b14b5255393eae5a4d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/grading.json",
+      "sha256": "a265d785698c5c5986f10ae35c7f9b23a5ee1602d7ad58bf3a6359875846d4be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/judge/claude.result.txt",
+      "sha256": "10c73d60da0b6bb7882d9c15efde77e0206efc301065dfa5e405632f5b2fb681"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "3e87640e4b14102afa8764aebf1da572f6fd89cb3ece15ebf119cf600f329bae"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/judge/manifest.json",
+      "sha256": "4c94616cfcf09574bbb2461f3228db3e97ea778e6caae53cba94bc990cf1024c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/manifest.json",
+      "sha256": "11d78a94e6ba7cf7686642d5dd6209f37e5ccb18513754df4656d6390667b52f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__with_skill/prompt.txt",
+      "sha256": "eed18c5834097b2fb8e1787e7e857e6b1c14fe4dea14ce71ea985df34ae22fd4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/answer.md",
+      "sha256": "b28af6eab75ae566871c3e1ee89124cb6544910125c81e726ee77be5a8288fd6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/codex.result.txt",
+      "sha256": "b28af6eab75ae566871c3e1ee89124cb6544910125c81e726ee77be5a8288fd6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "ef36e564aa14590ba6bdd73e05c6619745d836b79962254e14bb7f2d790ba7c7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/grading.json",
+      "sha256": "aff269eede347897cf006f2407902cbade3be8c621bcde781c4dafae08021149"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/judge/claude.result.txt",
+      "sha256": "cf78a569c88cadc62cd065459471b342efab42013d7c653094cbb9907ffef8a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "62c342f88b4755884eb4df7d61d853380f66a557e2921fafd5d6ef4add2aa5f5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/judge/manifest.json",
+      "sha256": "700f746389e5501f08845ec51c9736c80b39d37b61334fc934e3af0ca0243250"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/manifest.json",
+      "sha256": "1b3801ecc7bf5ea9ca38d3a30f5e7af8d3c95a1a5cd4b57418e80329847feede"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/codex__without_skill/prompt.txt",
+      "sha256": "7b6e44247f78a465643e3df784a3bdb175b07d9c06f0728966efc6ff7781ca18"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-agy/claude.result.txt",
+      "sha256": "78101e4a329caaa096ce8d35bab80bbf6cba980c6bd58f3bd86f41f0f3f92bd2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "c2501aca6acbf630801a463c4eabdb24aba9a0af9e872017ab3fae5b226999c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-agy/manifest.json",
+      "sha256": "4d60b7b53260dd783660d9bfeb1df4817f9c8e969596e0099747dc1e4e070bda"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-claude/claude.result.txt",
+      "sha256": "d0946936e7522b6aa427c912964a22e5c6c3945e227fee8ac93a351b2be462ef"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "93d83f11eef2584d9953b656f713212c00c417514999599be15d03b0f9c655bd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-claude/manifest.json",
+      "sha256": "cc2c5f29b9ae6c00933b6a507ce9349a8150b325d0ae60b90f485366ae0834c1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-codex/claude.result.txt",
+      "sha256": "35a8058be449858ea773c2fe2724c63055ed35743c419adbcb612cbe2e56f8c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "5b3cc1e1f07a5ef745e38af3045bde3830b621d6abad02a791423ad992325c1a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/compare-codex/manifest.json",
+      "sha256": "0f6a31fb62b16fe1f0ca68bb84ae7907b02cff86666c01f6dcfa2792c2eb1dfa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/comparison.agy.json",
+      "sha256": "330cb42afa117bb021aa957c220d5d62ab3a5f6096da43e74d9bfceb46d93faa"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/comparison.claude.json",
+      "sha256": "cf7d9ff768be61a3320f566cea9059365e19b9898a1dbe06c64d8c4faebf869d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-4-dangling-dep-engine-flags-undefined/comparison.codex.json",
+      "sha256": "eab88a1e9a208b98f4b6745201d005847d48f6159a04e43e40016874c696f7ba"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/agy.result.txt",
+      "sha256": "c3cca2ec546326df42bbd85853b18a32b661bddf3d932d86692ec98ea6c53659"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "c5dae891b04e9eb9ac9c39f443c8f6ef49e6ae8fd41a069219df84a9708be961"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/answer.md",
+      "sha256": "c3cca2ec546326df42bbd85853b18a32b661bddf3d932d86692ec98ea6c53659"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/grading.json",
+      "sha256": "86a253f2ef405b5da75644293dc4f2723e2002574e0961e2df4bc0c9241588d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/judge/claude.result.txt",
+      "sha256": "087cbc2b5f6fedd10cb73fc2ddd56dece23872f221a27d4d84945e9d3bdeedae"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "056458bc1eed9c457ad8d06560cde879d520d775085f62c7836d4553682fd17f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/judge/manifest.json",
+      "sha256": "d8654f70b2a3c3756ead19f6249131f66866f264b3e91f2e5760d00b5cdee27c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/manifest.json",
+      "sha256": "36bec782ae26b04d188ab793522be9a298f6ebbe054b9293239e0679f35a6745"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__with_skill/prompt.txt",
+      "sha256": "1f9d9976daa50f31eda62b4b10caa6f804289b8524afefe7eb7d62aba7f15747"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/agy.result.txt",
+      "sha256": "f60d9d881ca3e042a6d1336a660caeaf8ad173fe83b3954cc73bd0529eb2f7d0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "2729c67c31503f6bfbf44e4285a37082b43e0f120c985abe9dd24f910ce1fed3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/answer.md",
+      "sha256": "f60d9d881ca3e042a6d1336a660caeaf8ad173fe83b3954cc73bd0529eb2f7d0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/grading.json",
+      "sha256": "1beae8574066281991d74cb1feb55b3f822e62c04c7aad7bdfdf76b5c0b27746"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/judge/claude.result.txt",
+      "sha256": "5182161345fd5c59709772d6fefae08ce0c20450b250286680354c7dd8f4c90d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "5035055165771e5d024b8c0c2388659156fce748bea5d6ebdeb6f441f47d6501"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/judge/manifest.json",
+      "sha256": "1dc80ffdc0f9b9058996fadc8d9be8d51b50edae6ec55bc6a79c6cd93850c879"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/manifest.json",
+      "sha256": "532533ded4f2233902e0c0a40e0f6fe7b7383f0b0f86b3295cf7aadb0bd98e54"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/agy__without_skill/prompt.txt",
+      "sha256": "09556a884a1f84ae0fd37b445207a018df9468057ba0080b2d6cd5b659e540d5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/answer.md",
+      "sha256": "4ced01b0ff35a1f4bd64fc0453100fd0ef95780e7a1d1f5a959810626426eb5e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/claude.result.txt",
+      "sha256": "4ced01b0ff35a1f4bd64fc0453100fd0ef95780e7a1d1f5a959810626426eb5e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "b99b5794a9a086542d1ce0c9454673cacf9c1408937408f06eea3c874db9c243"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/grading.json",
+      "sha256": "e57b2a4587af05ede822b3eb29301df6a40f347fa787998969d70af560c66c2b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/judge/claude.result.txt",
+      "sha256": "2d52850d0411502bbffb4269e1945f1b36b16ef1b01ddf367c3d8ed42a473d46"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "71e1fcca59f5d97f65f514101dab942adaf8650666af94dfc89f8a8be32653d6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/judge/manifest.json",
+      "sha256": "5011611f7b73608fd4f3213a6c6d0a2a7269b4be2d7108885df8a175f7fe4448"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/manifest.json",
+      "sha256": "2f1270ca3b05bfbd1a73a5c7b8232013e63279129fd3a542e884edbb03b352cf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__with_skill/prompt.txt",
+      "sha256": "78aae7d02d9d9007b9fb26be3608e84e4709ecb2b195e7c5fd68f3fbfb41602c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/answer.md",
+      "sha256": "691d820bd5d8bba70e9ab63a31156e2c4e32f4ab5d0cb05560123c675ab90d35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/claude.result.txt",
+      "sha256": "691d820bd5d8bba70e9ab63a31156e2c4e32f4ab5d0cb05560123c675ab90d35"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "875fabebdaecab22757b9f3be59158830a46a821b311f27ae99dd425c11e35be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/grading.json",
+      "sha256": "eec8216ec35843c8c3a10fdee32711d7eef32521e83a4a56fa2c5990c7d13214"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/judge/claude.result.txt",
+      "sha256": "d7c08a67878ae31082f42bd2a1f9c5bd91436849bab22ddc652213711738e670"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "ac36264b31b52a5cfd45f356f2d9041a4fb5a80e95a1fe00698024ee9617d42d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/judge/manifest.json",
+      "sha256": "980370762ab802b5206e6393fc47c3ffe7afeae89ea6e2886d21f0dfd0c27e29"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/manifest.json",
+      "sha256": "6c6c8f42654a2445b709337f983ddfd2d06286e2d2cc1de8eb1530bbab8045b3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/claude__without_skill/prompt.txt",
+      "sha256": "09556a884a1f84ae0fd37b445207a018df9468057ba0080b2d6cd5b659e540d5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/answer.md",
+      "sha256": "f6ca8f18dc847c5daaf790424c449ec32a459b62ead9a33c31848bf0891ba678"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/codex.result.txt",
+      "sha256": "f6ca8f18dc847c5daaf790424c449ec32a459b62ead9a33c31848bf0891ba678"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "d0577f258e1204a05dc29ed1ef7a7004a9449d9933c6c58c4be6562e7a8b864c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/grading.json",
+      "sha256": "184469762c069d2c703c14db6c6a038efc5f44614cc110ecbe014a2333a4864f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/judge/claude.result.txt",
+      "sha256": "1b12a6aa845366b1429ac39dc03f0a01b93a251bc9e69ddda656d4d57334e446"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "966ba237c49c6458c5c6f47f90e3583e1814d2cb9643d450bfd1f5c9efd4fde8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/judge/manifest.json",
+      "sha256": "b2d2f6d510d7c32ecfdb4f92bf0e00fe9fdfec7ba8ada318bad7f0a67833b39b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/manifest.json",
+      "sha256": "d61a422c373562a8c9b9aa2008c7b4e4e9677605e5071cf9dff33dc2a891ef03"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__with_skill/prompt.txt",
+      "sha256": "babefc45d5d9a20026dbef3bcfe153616c5a0b38815439fa9ffedfbb582ea2d9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/answer.md",
+      "sha256": "524e33c827565b6ae96bf91f830a666768cff7a79214f53dac0b30070f9777fe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/codex.result.txt",
+      "sha256": "524e33c827565b6ae96bf91f830a666768cff7a79214f53dac0b30070f9777fe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "ad10253f75b21d72f731586d1cd2ab8d56f3f03053f4940371b0202080540a7c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/grading.json",
+      "sha256": "7a87d0b936897011c51279baa837813fff77226f6f38cac62065e3eee286dbd5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/judge/claude.result.txt",
+      "sha256": "867e30e150b8723a7a8d0e712111dc40c9c86a96383a1dd46ffb83f9af2ffa7a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "f18ef1a6dbe67e32053e51bf3417bfd653363e139b7307c22ac7779b93ea1032"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/judge/manifest.json",
+      "sha256": "08da58d29799ca98a95c9e5004a3bb93a3163666e6effb6c96742c2beb010969"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/manifest.json",
+      "sha256": "01d69099e994a89505d3fa4161c4d437cdeb9ea439cf01b9697f654d1c91862e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/codex__without_skill/prompt.txt",
+      "sha256": "09556a884a1f84ae0fd37b445207a018df9468057ba0080b2d6cd5b659e540d5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-agy/claude.result.txt",
+      "sha256": "e738a018d1eb59d326213a2b27e81ebdac432d335ca6492946da2ff88cca491b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "1cc4efb43f0b69209d761d8022821666a1324fdeb6850ceb6c205d257e2f2f21"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-agy/manifest.json",
+      "sha256": "07b1bb47ace567f58ccdf9b799ac12a26cbc362440d25cf79d999c8ff2b82da4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-claude/claude.result.txt",
+      "sha256": "c992060fd25d34df2a47ba79521d525d4bd54ce39e04c9a6b9868ff000c23942"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "e173528eea19f26bd97121560a507bf11f16766ff88ccf0b2299845de737e4b9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-claude/manifest.json",
+      "sha256": "1197571a2e156d56db8d05ccc9925b4a315b1f6c5d5eabebaf6d5f1499eacf02"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-codex/claude.result.txt",
+      "sha256": "85cf82480aea0bbcb2ce22a5b800bf00b4606ecb340c992542c8c823e277c8ac"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "0ec78e4dcd841053ca562599629f8532cc85750097705971c543e846dd77a529"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/compare-codex/manifest.json",
+      "sha256": "5b76dec03ed8cc1036ca20c6afb8f1d724f4d17ad8ab918c834b05cb4474c6ea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/comparison.agy.json",
+      "sha256": "ad9963393fb205fc23e1443071ceb2459cfd58e3b79bcbb0a1ebde5edff1b2c4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/comparison.claude.json",
+      "sha256": "004e64aad042e92e8e172c4bab6b3aedacc232671c5dc045a3a0287d874d6921"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-5-cycle-engine-errors-nothing-ready/comparison.codex.json",
+      "sha256": "305a436bcd2f7969cdfa27dae308b3398e0e3b5921c9fdd0202e9b35ddaa9a18"
+    }
+  ],
+  "native_counts": null,
+  "cli_versions": {
+    "agy": "1.4.2",
+    "claude": "2.1.302",
+    "codex": "0.163.0"
+  },
+  "certified_by": "delta-gate"
 }

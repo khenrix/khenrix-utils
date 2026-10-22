@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "skill": "chunk-map",
-  "source_hash": "938ddae990a9077112e2836f9a8b2fcab1500e7f269ddc14b7f962f6777e25ec",
+  "source_hash": "449001648207230f83e2a9351ba2cc64b7456ea036c6604063a4334eaee27dad",
   "eval_set_hash": "cf2852ace66aa7c807950580095188965c194c2c38e57c7c24ddb7e6c1005b0c",
   "providers": [
     "claude",
@@ -10,7 +10,2173 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.4167,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.3125,
+      "quantum": 0.0625,
+      "n_evals": 4,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.375,
+      "quantum": 0.0625,
+      "n_evals": 4,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.5625,
+      "quantum": 0.0625,
+      "n_evals": 4,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "codex": "gpt-6.1-sol",
+    "agy": "gemini-3.8-flash-high",
+    "judge": "claude-opus-5-5"
+  },
+  "judge_config": {
+    "model": "claude-opus-5-5",
+    "thinking": "xhigh"
+  },
+  "source_manifest": [
+    [
+      "scripts/lib/inventory.py",
+      "9070d7b760cc8be7fef2049eff58a456222b3fdcfb9e4b11f84cfba287432c78"
+    ],
+    [
+      "scripts/lib/reconcile.py",
+      "5ca83d740a5182d56b84524784a264d3d6f5697fcd2661e4bec980793ea01acd"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/skills/chunk-map/SKILL.md",
+      "37e10ffc28c51ed11fb9fe09a07bd496d983f8b51b05165206d6007085ce9d2f"
+    ],
+    [
+      "shared/skills/chunk-map/agents/openai.yaml",
+      "5989014d4f285310cf98df67d3e05520722be8aa7c78505723d17153022badad"
+    ],
+    [
+      "shared/skills/chunk-map/scripts/codebase_stats.py",
+      "63f46c4ca449bdbff3773adb2f1bb29e70627cc37f04b6dfd1a165630f1d7f88"
+    ]
+  ],
+  "criteria_manifest": [
+    [
+      "evals/chunk-map/evals.json",
+      "cf2852ace66aa7c807950580095188965c194c2c38e57c7c24ddb7e6c1005b0c"
+    ]
+  ],
+  "instrument_manifest": [
+    [
+      "Makefile",
+      "522d4e80540daf2cc2a665728f651d07b124884e4b3f6968c9f2f457b2e88a48"
+    ],
+    [
+      "components/maka/interactive/configure_maka_openai_relay.mjs",
+      "588cc9154867e9041da434fbdc1d132cdb8b82da552a26e4cfb531f44b632a82"
+    ],
+    [
+      "components/maka/interactive/maka_skill_routing.mjs",
+      "9ab11a43ac7535ad9d330d99aacbb24588c5d5125a2d2dac4215c21249ec495b"
+    ],
+    [
+      "components/maka/scripts/apply_gpt6_compat.py",
+      "b08f5fc11a808ba58ea36f76b499cc02b82fce90f5749b933403eacf8c960a37"
+    ],
+    [
+      "components/skills/maka_native_api.json",
+      "e4f372734049cc180c334d3072c6c20c5861a42b8825776a639f6a5d7a1c17c1"
+    ],
+    [
+      "components/skills/maka_native_host.py",
+      "bbcc1fcdee4ded8e7107f856f3710096c5a35944c4c5bd75070b67e695e28eb6"
+    ],
+    [
+      "components/skills/maka_native_owned_host.mjs",
+      "71362b88b6fdf38291c150dfdc25635ee9d5ae945a371d308dc15db9b59e24df"
+    ],
+    [
+      "components/skills/maka_native_probe.mjs",
+      "d162a3bed2118e75a7e2a550d69bd93b2554784b293f2b5b1c0286a9ee57567b"
+    ],
+    [
+      "components/skills/maka_read_aggregation.py",
+      "0a09f599051c2f5ceab055d5e12559d6679bd01cf9b34928ec5c876994cbf5e3"
+    ],
+    [
+      "components/skills/maka_smoke.py",
+      "da48be8b8f4049a4f1782f949bb8466005d585f26c5053660d161ef707e2b197"
+    ],
+    [
+      "scripts/eval_agy_read_policy.py",
+      "9d58f66af7e04283c07071eb49cd9a924cad51ef2b566681fd086ab9fe2f6e68"
+    ],
+    [
+      "scripts/eval_harness.py",
+      "788b65b70f4dec47f4550be96bdbb6e43b391711828e9211ab2bea09cae8d03a"
+    ],
+    [
+      "scripts/eval_patch_acceptance.py",
+      "2a20ee68288feb8ec4e8f201eee1e522e4358a4d96bb0992db947cfb39c3f45d"
+    ],
+    [
+      "scripts/lib/checks.py",
+      "170ee8ef34ab3f54136101384f664b422580c97c84ed7985f67e1384954b79c0"
+    ],
+    [
+      "scripts/lib/portability.py",
+      "4f53d7a9668b07b6c1f733c0f750f1f1536a3e4a9dab34e64c9106f11bc67437"
+    ],
+    [
+      "scripts/render.py",
+      "690a55a0b67939966c6044e3ceef034384fc480f671cfc572979dd14c6b8144f"
+    ],
+    [
+      "shared/lib/fanout/__init__.py",
+      "0307efd7a8b2aa54a12cce49a04d7732e0827e395bb4ef1adc080efafcea0e2e"
+    ],
+    [
+      "shared/lib/fanout/artifacts.py",
+      "920fe65ca7f42417e2b8227011998447bda71d62caf7e8323a649e0860269bd9"
+    ],
+    [
+      "shared/lib/fanout/branch_handover.py",
+      "3843b4b8a16e0ed5775438fcb5682eab71a20aadda93574a823336a9f62c4d55"
+    ],
+    [
+      "shared/lib/fanout/child_choice.py",
+      "876eae2460147b440a7fcbd9cf04c512a32fab56fbff30438bbf507d70756927"
+    ],
+    [
+      "shared/lib/fanout/collaboration.py",
+      "4b6f8b057432d0ac4391ce0f14f75d35ec3d84f6842c905125e2e5a3aa33b90e"
+    ],
+    [
+      "shared/lib/fanout/compiler.py",
+      "8fff7727eecae58b45c6b52c727fdcae5617f559e9395872aed5de1e95aed1ae"
+    ],
+    [
+      "shared/lib/fanout/context_view.py",
+      "e249652b46b3f4c76cffe73db4d859df5ac5b46daa6257a7c6fa01cf7571f3df"
+    ],
+    [
+      "shared/lib/fanout/controller.py",
+      "a839354834065e64f5a5ce54385617144b620bc702a68d9dec24b9fa593fab66"
+    ],
+    [
+      "shared/lib/fanout/diagnostic.py",
+      "2588fb3f9b20172a3bc5ec0b233cbe5c6ce0a86940259b3d31947e8c2f1e30d7"
+    ],
+    [
+      "shared/lib/fanout/durable_io.py",
+      "571c045a1ec2ba711ec693c7d1e5d82213d4d753b0c8ca3b2f2cf98113c1e1f4"
+    ],
+    [
+      "shared/lib/fanout/errors.py",
+      "ca865c3cbee33ee3937d9c49fc2e282333c12673c1a9e99f90f07ab81c569d9d"
+    ],
+    [
+      "shared/lib/fanout/eval_provider.py",
+      "611bb3cb79ee37b7b774b3c3c554b7a4929ab88974fe72a326a60ad67f9d9b62"
+    ],
+    [
+      "shared/lib/fanout/evaluation.py",
+      "f62a6e14851d9c7c33eb4a9861f11059837518b2826afa7e1dbb979832c59883"
+    ],
+    [
+      "shared/lib/fanout/execute.py",
+      "53914524078019edd94435d82a7f6af53e22e6818e7fabc46ba5f6c74dea48d7"
+    ],
+    [
+      "shared/lib/fanout/lifecycle.py",
+      "a90a56ac7da93c19d8db5c1fe697726eb8332f18051ea4cd0790dc4ff369ea27"
+    ],
+    [
+      "shared/lib/fanout/maka_native_session.mjs",
+      "1932bead31bc89e4d808397071533a1ef3b49cf92824aabd154c5532339742d0"
+    ],
+    [
+      "shared/lib/fanout/maka_transport.py",
+      "295ebffbb03bc7b73871c2f17ed080289c6b59a6cc4d9a5f8b8ead5259470f84"
+    ],
+    [
+      "shared/lib/fanout/memory.py",
+      "46bcebe5633dad9d2060ffa12dc3754ff401d4636683f835a24074c508565429"
+    ],
+    [
+      "shared/lib/fanout/native_trace.py",
+      "471cc8f98de44cf6474013a528db55e1bbcbcd5e0d6190686075f08199924d98"
+    ],
+    [
+      "shared/lib/fanout/plan.py",
+      "d7c912f7d365d5babe23d35282f79541de072393780f7824b5c59b05b34fc3da"
+    ],
+    [
+      "shared/lib/fanout/process.py",
+      "9c8f36bbd3ed9a98fb9b0ac645fc411fcc5f052ddfbfeffe1b5c27cec5d65702"
+    ],
+    [
+      "shared/lib/fanout/providers.py",
+      "3fa9218c89d8d537202b5bfcd0cab203f28af837f5b7828c60f5771e75d2f188"
+    ],
+    [
+      "shared/lib/fanout/repo.py",
+      "f733a2936d5ad8f38ffc143df65bfa4a39642579edb035211ef61752fad84ea0"
+    ],
+    [
+      "shared/lib/fanout/runstate.py",
+      "915b35b6a913d45abf704c57be5e148cbe9228ed06f27c505cf37521559aec40"
+    ],
+    [
+      "shared/lib/fanout/scheduler.py",
+      "ff27c6487463cd4cbac13c7e8e061ac0378e3c1ed4e8a83c8b06cf269e6afd18"
+    ],
+    [
+      "shared/lib/fanout/scheduler_authority.py",
+      "0ee5be125d5999958c12817b9312457877080c08d4f2572885ed861904da187d"
+    ],
+    [
+      "shared/lib/fanout/skill_projection.py",
+      "25d5720b8ddda676c6ed705d96ae3361840d5e19a6c4a402f55fd29afa14463e"
+    ],
+    [
+      "shared/lib/fanout/skills.py",
+      "b7a62fe00414e9bca1d33f93b075a2a87f65d8dde588276ef9ee8ce46edb2e5b"
+    ],
+    [
+      "shared/lib/fanout/storage.py",
+      "4e3ee7dd8b341d32122c51c7655d0ee8341b47a6505962cb18a7acabe7f0d963"
+    ],
+    [
+      "shared/lib/fanout/targets.py",
+      "f1f7f35bc8034844a92cf9eb0c67b3fd2d39e1659826757cf7ad227afbfe22f1"
+    ],
+    [
+      "shared/lib/fanout/verification.py",
+      "3a146303988aec094ed9a6b01cf23fb70eb4546be9e5b9bdd49013e262f1db00"
+    ],
+    [
+      "shared/lib/native_context.py",
+      "b3e605b6ac48de7684529477063201795d4c320cc0bdfe521f4198165022193d"
+    ],
+    [
+      "shared/lib/wikisync/tests/__init__.py",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "shared/lib/wikisync/tests/chrome_profile_smoke.py",
+      "40019026c804a69271513f4d5fdc38cee5dbdde59a6ed3c13be893161b8994a1"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/Bookmarks",
+      "ceb38149d7614cd7a77fcbf6426017155a46c1e555d3ac48fc696500113e2a1b"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/ig_live.json",
+      "74f60d0765aa7d00f2f28eab348fa47f8fe40ed5dc5cead79b6e29847d9a8ad7"
+    ],
+    [
+      "shared/lib/wikisync/tests/fixtures/saved_posts.json",
+      "6df764e9e1dd1797384c8dda5834bab72bf20337bc64023a6c905ce698288c99"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_bookmarks.py",
+      "5d38afeade7598c46e07b1d0d4aeb6d39bebb0a792ddcfe377f87fbde8427f63"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_canonurl.py",
+      "dc93f98cf2579a2e5f1cdf3d77808b1da2b032497337a4953164f9cd70edcb1a"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_capture.py",
+      "84d6fd0ea27fe805999b7c8d9065750f78f9b3716f97c3591723b1d8d5f415ca"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_cli.py",
+      "0bafa8aae96e908a547d7c74c4b17ef279f735574937f33eb2dd318121ae6e8e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_instagram.py",
+      "b11e6adbd292dcdb18231cfe0caf8056e2f3a835b01631066ccb4aa6fa097ed2"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_ledger.py",
+      "e4b3a24151603bfa6b27ee77058872377373cd6ea193eccda8970929a3149d5e"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_render.py",
+      "b996048993a040d31deaab1010f52d0bc338fbd4354a288cfe4373c0623d8066"
+    ],
+    [
+      "shared/lib/wikisync/tests/test_vocab.py",
+      "a8f3f7e93d022d280d224ccad8cd7bb9b0ea75f1fd9efa088bb3acb0d1062a31"
+    ],
+    [
+      "tests/bats-fallback.sh",
+      "38ed9f03a33cd2fa8ddec12f3f6c4c29722c3c57a18b25ff5c8cb5bfcfab9cf2"
+    ],
+    [
+      "tests/fixtures/context_efficiency/README.md",
+      "bfe1869f2b5401bb963fdf57002cc314d27ac16836b47fcf568707d8868f3917"
+    ],
+    [
+      "tests/fixtures/context_efficiency/gold.json",
+      "e9632384e8f7e7262fab73bee895b098eeec091498a44e3c588b748e33e92d51"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/manifest.json",
+      "51bfff57d3a7d094f02745cbe63ada827180815d947ccc1d5791678d1e8e4047"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/birch-attempts.py",
+      "298cee8e7e41e6bf12f54a7ec3926ea8acaf5babaf56c01ed70b33312dd64257"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/cache-exception.md",
+      "ef3fa6667725b6615caf8aac8793dba7783685d3dc5470104256bede21f352a6"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/crate-attempts.py",
+      "1a0779f78d5afc424ebae73df098b3c56e10b3062f10464e2b83f5a952e5da93"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/earlier-test.md",
+      "b9295e3b26dda3e934ab724a76a03b9d71c59c2a5f4b45e241aac91c3a86477f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/late-correction.md",
+      "6283e72f1493210e3186fe71a3b59f6b8069d8229b5cc112f4f5f8c79b8db66f"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/later-correction.md",
+      "b2fdb8e7bc15362bf26abf4e672832cfee993bdd9296489577d52ab50ba658ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-amber.json",
+      "a4b3640012ed6e3528c1958f9c4f1f81c9c1c20a5e0d53770ed67b5b0f84a37d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-blue.json",
+      "3ea9b92d069d67dc3f8e0855cf1c013ff06ebbc69cab33aff1c39bcf6d9b6ec8"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/number-coral.json",
+      "4b2632c21f680be957a1c2b951cf3bf78c226f2e0deb5127b19ae5353c2af9ea"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/original-decision.md",
+      "ea67468e364aed4d6e7fc61e85a6face8e30f8edd86ff24e50447adc075ff83b"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/overlap.log",
+      "1b5b908b74987a4a7b590d21d775bcab8bc3f128db2878d3e70fb3e457918e1c"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/profiles.json",
+      "2d9dcc5f2d9dd82e8a8a65a4931dd00591b296052d6be9c0ef005eb105bb8458"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/quoted-example.md",
+      "fe736a4e84e4518c28225cbb328dc784d334c20adce8db43a29b3b00dd8a3b24"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-new.md",
+      "bfa7ba36446e92cd5c977b91cb6301d7f28ec850f256ae4ccefbeb8d200b753d"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/retention-old.md",
+      "daddbc8388125b2eeac8dc54e1048e3af1206d3785a544346ce3b89face71cc5"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/separate-operations.log",
+      "87f1285b113dec4a3035608a64e8379916e9561340b5d97cdd6d9b72138a6091"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/slot-decision.md",
+      "74ffd596595f3718167879b52df25db99d09067f97fae3b5a2279a9e64e4c6bf"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/spruce-attempts.py",
+      "c416de20f738871cdf1859fbb4754a7428f95fc4855553f9138e7c1b0ddfaab9"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-amber.json",
+      "0535f3044495f89d38b9c191f8112ed192f34fd761d98c2b11cc947c84fb75dc"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/summary-blue.json",
+      "21b18e42d2ca77e12bd811b1343bb9bc1fed8417b8ca89ef1b3a8c91689fa7ac"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-decision.md",
+      "ce8eaa491e69218783fc3d9bd3bba4ba23589a3c8a825c76321509dcddfb581a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/swedish-replay.md",
+      "37ca4e8b07eea4e5eba9a7b7790a9b828cd00417ec7b3a6ba0d1fc5f8d111d11"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-new.json",
+      "1ee1ebee9a88c5f050e3861d94a08c2766953dcf5b8d2e5534e273a2fba5c6d3"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/switch-old.json",
+      "85b9d0096dd9939fef4592c883963cfe83d3c8c0e4d8c27d794a4fc85acfbcba"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/uncertain-ack.md",
+      "fa8eae6977c27267224537a5dae79314afb8cbf1ca152cf5f0ecd2f523a37398"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-agent.md",
+      "fc85520188dea90225008f1758d093a0a16e5ce255c9f8c7193715f80c788a33"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-human.md",
+      "4e6f18132e4d34e99161968cd77c6cee19200051a473fbc18edad6687037c879"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/validation-test.md",
+      "64132d32006005c06b402d551d438acabdf0340bba70a66ce6f0309fa7750ca1"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-aster.md",
+      "928d56ca92218b906a7e3609a9d3ebe7f3bf041ff901eaffff0ff423bee8cb68"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/windows-bryn.md",
+      "ac7c826213bc5d5c7b150e86ff04413ec1f9a8794e0f911edc2e292bf589708a"
+    ],
+    [
+      "tests/fixtures/context_efficiency/model-input/sources/zones.json",
+      "3d4a40c2562c8b525e93039ccb59e2e3f0483e6e3181c0a1a54f7470893e5521"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/README.md",
+      "ba8cd8cb4039cd85c9ea2745d6a11f69db848cae951ed0794addfcd94848dbfd"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/descriptor.json",
+      "da5ede0b0f5af33f119287b6382d3837022cb05a041401eb099d72bf024b109e"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/events.jsonl",
+      "b788a3fad8c739f5304b7560d212d4b75f5b6a947bed5435294e43c5f2f502eb"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/generate.py",
+      "55340a72da844675ddf230ccb6ad799b7e5b327434c20f3275b3bab203c8fb31"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/inputs.json",
+      "0ec53c0613592346b41a8006578223d99a29b0653e7b0d7d9e350d19a6f643e4"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/manifest.json",
+      "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/owner.json",
+      "8a8690fecb1d966d3af540ffa93f99faeb28e76018b43e0cc2c3b33d801c4428"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-meta.json",
+      "3e30e3d242e030079c33f7910f35806a084b202468ed55b31bd59e6b8e1f028c"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/scheduler-record.json",
+      "cca7f0e62d5ab255020fd51259bd2ff4b626828bda816b7a1645f29105cb7366"
+    ],
+    [
+      "tests/fixtures/fanout-v1-pre-multirepo/snapshot.json",
+      "83ebf490f03ed7df416f12c156471b9d14e5de0dfb78a4fe3edd3aa32fb05f1a"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-error.json",
+      "821e598806c48b2b91ec10c4929206c227c91916dec7a2cdcdac6df7e1767ec1"
+    ],
+    [
+      "tests/fixtures/fanout_providers/agy-success.json",
+      "fa69a34a01105bd501d11d0fa67d1aae40fe003cb61ff93fc918319fa9ad7a58"
+    ],
+    [
+      "tests/fixtures/fanout_providers/claude-success.json",
+      "fc0393d0312453c115db00c61d7428d79929f8aabdeb55d0071aa87a8f8e5b93"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-error.ndjson",
+      "050a62511a60087f2ffe12cb2695a02c7da847fbcc681df8538364029645d277"
+    ],
+    [
+      "tests/fixtures/fanout_providers/codex-success.ndjson",
+      "735107f037e9e188f40bd20d8cbc1c6b1a8797fad5b712243813dcf49d9762f8"
+    ],
+    [
+      "tests/skill_verbatim_cases.py",
+      "58e8364b92cd8c5b5d959c0df9d9ed89dc30a81f9440f63944d1d60af008c79f"
+    ],
+    [
+      "tests/support/claude_fixture_executor.py",
+      "f06ab12f26bab50be0f7e55725687b7cfbb1a9dc79f85a0c2e90dbdaeb8bbc4d"
+    ],
+    [
+      "tests/support/eval_claude_scratch_policy.py",
+      "a31bd8d15dc1379f9f09152b79069b2bbce04f2fe29cb5f28d6c7412d282a632"
+    ],
+    [
+      "tests/test_bootstrap_machine.bats",
+      "67d4a7885ae96a6cee5122262504d44ea0352b5fc5518cfe3c393aed5f9761bd"
+    ],
+    [
+      "tests/test_bootstrap_tier0.bats",
+      "678c491ad0eb1f912bdf1a49f5bfea39522b5f49bca6da628026dc7f5431282e"
+    ],
+    [
+      "tests/test_bootstrap_tier0_host_smoke.bats",
+      "0b58e407a8f8ee7fc68e806a4f02e96b400a6f8390005b518bb8450e69f1e28d"
+    ],
+    [
+      "tests/test_checks_secrets.py",
+      "4c1e970c82ff7ce9abd73af4ca03847ddb57243e65fcf9937b883a29fcdf8c98"
+    ],
+    [
+      "tests/test_context_efficiency_corpus.py",
+      "7b0177a8a8ba026d785c81b171071201fd0351633a4e25f289fbbc711e60ac6c"
+    ],
+    [
+      "tests/test_context_efficiency_pilot.py",
+      "30f779f98fc6b8162de5f036a40de03f9a8cd3de3cfecfde9a34071404a36e96"
+    ],
+    [
+      "tests/test_doctor.py",
+      "1f2363c1df0bbbbf56c9a304a4c926c20e322bd543ee5d5e323fa6ffee100916"
+    ],
+    [
+      "tests/test_eval_agy_read_policy.py",
+      "ba0a72cf1c68c40beb982c3b53a4d5cc027e79af34dc89de74b9c0b87d5512ba"
+    ],
+    [
+      "tests/test_eval_claude_scratch_policy.py",
+      "abe26ca2e970a47b6cff707423b194da2b0107fb15d98248f4208ff0ddb69b03"
+    ],
+    [
+      "tests/test_eval_harness_receipt.py",
+      "87c29fdc6dccbc34a366fb27d64e6fb59282c95e769a809a57157d7485f1cd47"
+    ],
+    [
+      "tests/test_eval_native_consumers.py",
+      "ee7b371408f7cde71894a9d2407821ac68d7c8f9b4ae8fb0347a2ebdfe32d5de"
+    ],
+    [
+      "tests/test_eval_patch_acceptance.py",
+      "eca00e59fbc33ecdc60c009c6e08fed7a6f8edff080a461659e6a2f20aa81cfd"
+    ],
+    [
+      "tests/test_eval_provider.py",
+      "7e322acfa591726aa9ddacee046241e9953987ca2e50b90f9db0faef505c6b16"
+    ],
+    [
+      "tests/test_eval_receipt_v3.py",
+      "ee0fdb0c4c16b41307296d485590040b2d575d8b3962560d80565fcd2d0d5a60"
+    ],
+    [
+      "tests/test_fanout_artifacts.py",
+      "dc07415db0eb0aa3f9fcaec52b7bd82f98af28f3f598ff2b9c28ae55cb86ef8f"
+    ],
+    [
+      "tests/test_fanout_benchmark.py",
+      "d88b89e61d2b0ba31d997f502dfd256a8f2ab519551430246e0501f6984bab86"
+    ],
+    [
+      "tests/test_fanout_bootstrap_packages.py",
+      "19744e368077b50f01855c5148d179195c771871a316d964518b6e124403de8a"
+    ],
+    [
+      "tests/test_fanout_branch_handover.py",
+      "f93aeee5eba9d8fd317e05b2da42e990abbfb3435120f3bf25b271a1b4a5279e"
+    ],
+    [
+      "tests/test_fanout_child_choice.py",
+      "617fed695d80a018d1bbf45f6bbd69e7e03869ca4960d039d5498f546b7a2824"
+    ],
+    [
+      "tests/test_fanout_cold_recovery.py",
+      "3abc7781748ce700fbedef6ab6a5636f049377a3ca97fdea9debea14490287ea"
+    ],
+    [
+      "tests/test_fanout_collaboration.py",
+      "168d65d6079f2018762652a089b55bac59e68811c643f022823f2996860945fa"
+    ],
+    [
+      "tests/test_fanout_compiler.py",
+      "662ad6d87a7be97b2f5c2d96c7cda7af930803b0e7902e3b8bcf82d7907c3442"
+    ],
+    [
+      "tests/test_fanout_context_view.py",
+      "cd6695751689339c30847321cf655c21f996ff5e21d60d109eb5da650c848184"
+    ],
+    [
+      "tests/test_fanout_controller.py",
+      "0c28c87fff7321f0a5e9888c35e75a7aa89856c833f123d88902c9e7ddf17943"
+    ],
+    [
+      "tests/test_fanout_execute.py",
+      "5e18acda9b70ca6338deec59738b0b8476ee7a4cdf93f742783d3eb1c5a12316"
+    ],
+    [
+      "tests/test_fanout_execute_skill.py",
+      "e1f0b36ead34493e621e9956b8adde219659429eeacf518fb9ca3afb375a2b39"
+    ],
+    [
+      "tests/test_fanout_lifecycle.py",
+      "fbd5b11a328354dafd4f6e84cb6edc838969c88a369927be1f43dbb3375f130d"
+    ],
+    [
+      "tests/test_fanout_local_authority.py",
+      "c7ae473e39bde7a9e42d2acabf6120a42fc2b51609b8466bb1b39099e8a14dac"
+    ],
+    [
+      "tests/test_fanout_maka_native.py",
+      "aa6ee48e660d17a94829c89d8d542e131f32f145bfc7d22509f31aae5d44bef8"
+    ],
+    [
+      "tests/test_fanout_maka_native_session.mjs",
+      "5b0559bc0751ab3b4fe0864c1669175156d813feeb53c88adf7a862f1ef77ecd"
+    ],
+    [
+      "tests/test_fanout_memory.py",
+      "d5f92c90809dc3f194b1142614dddd830e5728b7c8c4e49ee7c81e0762bef56c"
+    ],
+    [
+      "tests/test_fanout_multirepo_integration.py",
+      "89e709440321c0b5edbedca00826153cbe89c926e478a537d947b57bd966c965"
+    ],
+    [
+      "tests/test_fanout_native_profiles.py",
+      "8e4fe50b1f8c6781cd8b8790fafaa614694c68f6ebed2878c98f5bdc9b45acdd"
+    ],
+    [
+      "tests/test_fanout_native_write_policy.py",
+      "7b6420452829426410689621a7e2f58681c944454662ec64de1f58ec361192aa"
+    ],
+    [
+      "tests/test_fanout_owner_actions.py",
+      "b5dccdd7bbc3af5b33c244c1f9cc57eda717484ccbafc0f4493b4bef6e96c899"
+    ],
+    [
+      "tests/test_fanout_owner_reconciliation.py",
+      "f2beab4d49f8bc353bb63fd6c1eb7725e9cc3e0555e2e82b9d8b7fa6b1f57e01"
+    ],
+    [
+      "tests/test_fanout_plan_schema.py",
+      "40b624f991c3c441084b0e77fe4d041f0a9129d7ef66b7abe615eb8e261d3045"
+    ],
+    [
+      "tests/test_fanout_plan_skill.py",
+      "3af1c030c1d98f3664745c01b13d256d7d562df9421aefdf15476ad1972cb68b"
+    ],
+    [
+      "tests/test_fanout_process.py",
+      "69a30ebe39b9374d61da16672c13626351f378e1b6b6f7638bfd263115f406ab"
+    ],
+    [
+      "tests/test_fanout_profiles.py",
+      "8cb3d5dd527c8a5c4d38c3623f770e950efa35a0ad1ba6c0fadf06e63ea33a77"
+    ],
+    [
+      "tests/test_fanout_providers.py",
+      "9c8ca2fc38d5538698dcb05bfefa527c9e4f6e40c150fafcd8c13270e036f6c5"
+    ],
+    [
+      "tests/test_fanout_recorded_cli.py",
+      "af63ea99d350fa223cf3865e1cf76368d4e0f21849b49724d230c6a79f805c59"
+    ],
+    [
+      "tests/test_fanout_repo.py",
+      "dc7b411ea8ec602d72b50c146a96240d5b1a8a4887278c36fdc7bbf6471d496a"
+    ],
+    [
+      "tests/test_fanout_runstate.py",
+      "86e0646c576d231e52d036cb39d9b0dffc7b14e619a4bcf3d4bd12e8bbcbfcf3"
+    ],
+    [
+      "tests/test_fanout_scheduler.py",
+      "6a9c46898dd0f4326009485ed844693238b01d3e172526607ae0c45aceea30af"
+    ],
+    [
+      "tests/test_fanout_skill_projection.py",
+      "19fccded4dbf5c548207ad53cadedd026218ce8f31f450fd0d1bc5912ad9b3b8"
+    ],
+    [
+      "tests/test_fanout_skills.py",
+      "428e82d071f712e57764d4cc27335af885086d258474c09323868d9a3f4e1b20"
+    ],
+    [
+      "tests/test_fanout_smoke.py",
+      "64f5c0647d2844686f03150e03a0ba9581041ba3b682be772f448b4de0333107"
+    ],
+    [
+      "tests/test_fanout_storage.py",
+      "be38f24a4e6ec2c69d5d49448d3eaf6acb4dea96c12747e578764ba4b8e47a99"
+    ],
+    [
+      "tests/test_fanout_targets.py",
+      "4f79022f7fe199fa8b07da9b468921878cb3b091d45fee41e2b57e51d074b6e8"
+    ],
+    [
+      "tests/test_fanout_usage.py",
+      "b0022ccdd9c008c56bd1025a266e5e818e9024a07f18f623bc7059cc0821573c"
+    ],
+    [
+      "tests/test_fanout_verification.py",
+      "ccca76210d476bd2c06d232c7709817cbdf7f94304649fbd628d5496d1f60e7c"
+    ],
+    [
+      "tests/test_maka_colima_mount_migration.py",
+      "ddc65ddd69161ed3f497653a5547ef0702b1496b4fabce2418805561d25d1d1d"
+    ],
+    [
+      "tests/test_maka_native_host.py",
+      "739bf7a33ef54d9c85041e29beb9a5ecfa3421cb346cba08f20e2dd74c8d0e95"
+    ],
+    [
+      "tests/test_maka_read_aggregation.py",
+      "87fac100f59c2fd93af78ef87995bf86b591e2f4a523e6ee44f59a75081cd07c"
+    ],
+    [
+      "tests/test_maka_skill_smoke.py",
+      "c15a0ae62b565d8893853e8de191ff79ef5ba199500c97efa1221d2e76964910"
+    ],
+    [
+      "tests/test_memory_exchange.py",
+      "578e1bc7bc9165a53b645aeaabfe2a564e0a680cc026238e5b8463b9c0b7e423"
+    ],
+    [
+      "tests/test_memory_ingress.py",
+      "43fdfbdaa5bd4c7b9c19d994006a360c44c318689aaea4e2b58121d1351527c2"
+    ],
+    [
+      "tests/test_memory_runtime.py",
+      "4c69ad098fb37077ccf305823f1755822536bc5bf494e00d4b4aec2cdafa7374"
+    ],
+    [
+      "tests/test_model_policy.py",
+      "4a95f529736f0b1943ba80762787cf9dad1e718ceb1b960c82437a11ae153e6c"
+    ],
+    [
+      "tests/test_mutate.py",
+      "2273300c446526729f51c33ebac0037f6bb7e33e0fbd556701f40adafff85505"
+    ],
+    [
+      "tests/test_native_inventory.py",
+      "f95dbebaa679386d1795cfc1c30115dbc4294616347d1fbe28fd4d4c89f69886"
+    ],
+    [
+      "tests/test_reconcile_apply.bats",
+      "26f3a4f9c49d017598f9b6222f87465a5ca2052b04372cbd2c975a14dba34734"
+    ],
+    [
+      "tests/test_reconcile_defaults.py",
+      "9d03cd039d4509bb7c1dd855776f010397620b664ed52a639dca357576be87dc"
+    ],
+    [
+      "tests/test_reconcile_publication.py",
+      "000fb7fe4e83fe3f64962d159d7bfd539e54e7ebd3f3cfad2386a585b42a8d2b"
+    ],
+    [
+      "tests/test_refresh.py",
+      "e062e08cd3be21fc6d64b4ca328cbeaff59b4e23bb83060e3ab5ab1fbac17298"
+    ],
+    [
+      "tests/test_render_packaging.py",
+      "a7255e2b69d05f2e02f6a36fb7e1a57ceebb572e5b20db5426c3300adab30852"
+    ],
+    [
+      "tests/test_repo_sweep.bats",
+      "08b8cc4a229c4af406b6bb99b6db1df5eba7aaa4d816911de7aa856d6cf86b11"
+    ],
+    [
+      "tests/test_setup_audit.py",
+      "43a4798870afe5a98637983e9eb20f0750a334bf45d75fc2edd79caa6a3c4809"
+    ],
+    [
+      "tests/test_skill_delivery.py",
+      "bc3e9b54e2ad72b8b867a8d9aceed4696ddc76630d2c419f58c7bcb3dae6c2cd"
+    ],
+    [
+      "tests/test_skill_upstreams.py",
+      "c9bf886aa5c8d85870631fa7a84b14a5a208bc6637e3b443a1b7c477eafdac22"
+    ],
+    [
+      "tests/test_statusline.py",
+      "d1c2b35c3ae583001b4571551b3d270129d9b5420440065d187774dcb179ba54"
+    ],
+    [
+      "tests/test_statusline_reconcile.py",
+      "7df1d88e3d92998b4b22cada045dae644167b70d960c43caee6e5883347bb197"
+    ],
+    [
+      "tests/test_tuneup_fanout.py",
+      "257aa21e6b1a029ea02b8ab70ec7ea2f9697cb64fda0dee5aac3a2b6566f808e"
+    ]
+  ],
+  "selected_input_manifest": [
+    [
+      "agy:SKILL.md",
+      "37e10ffc28c51ed11fb9fe09a07bd496d983f8b51b05165206d6007085ce9d2f"
+    ],
+    [
+      "agy:agents/openai.yaml",
+      "5989014d4f285310cf98df67d3e05520722be8aa7c78505723d17153022badad"
+    ],
+    [
+      "agy:scripts/codebase_stats.py",
+      "63f46c4ca449bdbff3773adb2f1bb29e70627cc37f04b6dfd1a165630f1d7f88"
+    ],
+    [
+      "claude:SKILL.md",
+      "37e10ffc28c51ed11fb9fe09a07bd496d983f8b51b05165206d6007085ce9d2f"
+    ],
+    [
+      "claude:agents/openai.yaml",
+      "5989014d4f285310cf98df67d3e05520722be8aa7c78505723d17153022badad"
+    ],
+    [
+      "claude:scripts/codebase_stats.py",
+      "63f46c4ca449bdbff3773adb2f1bb29e70627cc37f04b6dfd1a165630f1d7f88"
+    ],
+    [
+      "codex:SKILL.md",
+      "37e10ffc28c51ed11fb9fe09a07bd496d983f8b51b05165206d6007085ce9d2f"
+    ],
+    [
+      "codex:agents/openai.yaml",
+      "5989014d4f285310cf98df67d3e05520722be8aa7c78505723d17153022badad"
+    ],
+    [
+      "codex:scripts/codebase_stats.py",
+      "63f46c4ca449bdbff3773adb2f1bb29e70627cc37f04b6dfd1a165630f1d7f88"
+    ]
+  ],
+  "selected_input_hash": "c10bcd55086735bdfcfab6ea9222f5df57f499d88aca3130eb8146c6c499e2a1",
+  "criteria_hash": "35e15d8e5e9ef3c58bd69e4448dcd9fd0454fae897b823128e55c2fc616f01d9",
+  "instrument_hash": "2ab0f382b057ab5ace99f0b216a6a699b571d3df44a6cf0caa9f7530559cf525",
+  "raw_refs": [
+    {
+      "path": "workspace/iteration-2026102101/benchmark.json",
+      "sha256": "5c2c41832223db40938b0a59495e14bc158eda45280d7f11f4445388322a27f9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/agy.result.txt",
+      "sha256": "368984ae3f68a9831e534307f74cb9f863bc3356250367edbed4c08594f3ebd2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "efd82bdf77b4e2fc8c9fff86df17b2dd94aaa078e7e66d9dd3317d655c143bd7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/answer.md",
+      "sha256": "368984ae3f68a9831e534307f74cb9f863bc3356250367edbed4c08594f3ebd2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/grading.json",
+      "sha256": "0c905885d33df9c4774c968ba9b21e316f1b8b60d84f030f19df08d10a63a545"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/judge/claude.result.txt",
+      "sha256": "f1d18592853bff792f2de6a8b2d1d3a8bd8997268214936c769d85196b2f0044"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "368fb3253a689aa9f7d470e17e850d16e20e0eaf5ee3603aab065a2b2b5ddb66"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/judge/manifest.json",
+      "sha256": "c299c2067a0341695f933ae4d020f411b679659d5fcf93a59c6156221ee3dd04"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/manifest.json",
+      "sha256": "e4e6a25e8aaf76c3116249ff2058061f88b302b947953a1541c84ccd495f0ac3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__with_skill/prompt.txt",
+      "sha256": "d15ad0882cc290409516a8e7f233854aa84eb7b9b406350bad00f0a7a907a85b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/agy.result.txt",
+      "sha256": "d4c1daa78fab763aa6e8283608bb848d4a2678fb24506478d67a01dbf0abc676"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "126d36261898f28aa6ce428d156ff1b82a551efba7a91afd93293d7905af3997"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/answer.md",
+      "sha256": "d4c1daa78fab763aa6e8283608bb848d4a2678fb24506478d67a01dbf0abc676"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/grading.json",
+      "sha256": "09e935f04436e73b45b75cb1b35b8e6512dfdc799e4b7bcaccc92fe9ecf6b3c0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/judge/claude.result.txt",
+      "sha256": "e896a8535fe3df7da3cfa4b707a08627321b2311c22ede4e99c8caf8de402fd4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "80b9549d830a51ca7da8b032b0676a756ae553948b9aa289e070be7599002df8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/judge/manifest.json",
+      "sha256": "4c692191cc160468418d36d33d7caa0246b8c85d6a74d8ceeed8707599b921b5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/manifest.json",
+      "sha256": "3bc3efc537fc4021fb2f035c8da33cfc0ac4f17f11c2fd46fd1320e9ebb6f7b0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/agy__without_skill/prompt.txt",
+      "sha256": "d2a7e93bd080e8685b4e3f40a7d0fffdbb4613ec2a24acd25677eeb112da9ff5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/answer.md",
+      "sha256": "0a950ae2efd582d6e1e01c11b14a350a95df172969262840498dc1032db2c59a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/claude.result.txt",
+      "sha256": "0a950ae2efd582d6e1e01c11b14a350a95df172969262840498dc1032db2c59a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "834e11318d4488e5d66dfb9bd59b0e94fbfafe7ece46b4fda4aaf5a771ce9424"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/grading.json",
+      "sha256": "f5b7cc5cee18e0d1d471b5820b835cee922215f793609a0c136efd70894357d7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/judge/claude.result.txt",
+      "sha256": "c9dcad19289c3a914fbad694b9fba9194a7b467e25aa78e3a4a4ba3ce0b29b80"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9845602e1e9971b9eaf3c81a5c3caa1b8fcd16bd12e76b7dfc34d90f9e241a9b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/judge/manifest.json",
+      "sha256": "08c04f5ab516bc5723f858660722744c7777bda373ce1f66184680dc5d8b9bea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/manifest.json",
+      "sha256": "82e2bf8dfa885a7cb56b29fbf72bb7a892df1a30347674257019ff7131da8bf1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__with_skill/prompt.txt",
+      "sha256": "bdc66cd692b7f2eb84d649644857b21a55777cbd8a76f5130c0d7c4bbfc9bf75"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/answer.md",
+      "sha256": "0ed93eab3088140ac464ad64985cfac6d37dac05ba677399fd330b6e6f3e2c00"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/claude.result.txt",
+      "sha256": "0ed93eab3088140ac464ad64985cfac6d37dac05ba677399fd330b6e6f3e2c00"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "3376b39270e6310c337b25c1fda2f6635ded3dba1809ab1e981a52d373397940"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/grading.json",
+      "sha256": "cbe43b4be922e1163044ddd54b7a52b8d179a644f247731f9b76d92757036ee1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/judge/claude.result.txt",
+      "sha256": "ed4a923bf3e106570cfb08ad53486f6df9de3e8da94c7ae09c02807016363095"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "31e4dd30256f22c29e5b688c440da0658eac90b3a1164a5b43d94ff0921a5dc0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/judge/manifest.json",
+      "sha256": "34b8a487b523cb04255b30880f077f1af55ccf1cfccf5499c37cc60ba024e562"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/manifest.json",
+      "sha256": "5b8f09f8e17ade6a9cabca70234ab61193f2d8a663a57ca184f988ef9268bfac"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/claude__without_skill/prompt.txt",
+      "sha256": "d2a7e93bd080e8685b4e3f40a7d0fffdbb4613ec2a24acd25677eeb112da9ff5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/answer.md",
+      "sha256": "5620b981f6bca7015c58e7954ac9a9a1768e66464b9c990b81e40fc89a685a27"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/codex.result.txt",
+      "sha256": "5620b981f6bca7015c58e7954ac9a9a1768e66464b9c990b81e40fc89a685a27"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "85f3656dd4cf30b0e6d98cf971ad4268be10034bfd0ccca7b528b7b1dea36817"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/grading.json",
+      "sha256": "c5ef8b081083e6239ab7ac63444f81f5b82dc767589846cf5b8750767850d568"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/judge/claude.result.txt",
+      "sha256": "c260347f4dae9b82c9e5a162975854ce1c708bbc2eec39b7297491462f0f7825"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "fe822340f2606f7796130396fd7241d1bbe615b42a65bd46455b3297d3cfa85b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/judge/manifest.json",
+      "sha256": "ec63f4961213850499e229ecd9d9579b014cc7cbb5b23b01384f3f29cc52ff44"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/manifest.json",
+      "sha256": "cbf5bd705e92430dff9dc8eec462c9bf5d22df86e67b9147cf2e5b39fc45ec9d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__with_skill/prompt.txt",
+      "sha256": "668b55bbaebf2e7eb486d828caf4fdbbc273b2d4085ebe98c3dbac6bcc8439b4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/answer.md",
+      "sha256": "80180816e0b8259c0121668ff5942af5d4f3ce3f97e80bb51e3a56e2ea26ef6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/codex.result.txt",
+      "sha256": "80180816e0b8259c0121668ff5942af5d4f3ce3f97e80bb51e3a56e2ea26ef6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "0ed13f2409c15727d504af78879b916f08956db9f701439234db0fc0e094984b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/grading.json",
+      "sha256": "0be54a597b68866fbd9add6f345d3b95f08ebd1dad3edc5141515a5a14a50e0e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/judge/claude.result.txt",
+      "sha256": "c738e1a5da14a42871f83d896c10d6a5b472436b0cfceb84f9fad68d8b729dc4"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "cee4706a964844f78c0dc2c01d6430a975ef90c6068f030859ae61c63a492418"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/judge/manifest.json",
+      "sha256": "94e31092243822510e8e2e13f0478000ba30dbdb5eae6d4602b225761408cad6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/manifest.json",
+      "sha256": "870ab775dec7046c914fa70ff0052e7dd50f72916d6b70ab16f0dfc131ea7b0d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/codex__without_skill/prompt.txt",
+      "sha256": "d2a7e93bd080e8685b4e3f40a7d0fffdbb4613ec2a24acd25677eeb112da9ff5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-agy/claude.result.txt",
+      "sha256": "1ab1148d0846afba4ecc636f45fce359e24c3299601e0681278c2fcf3de5f3a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "9e2fea4753efb9cce29aebdde181d56043fe3bfeab42cb737cce22e201f60bf9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-agy/manifest.json",
+      "sha256": "320838d8935091faa235da3a1b6b96ab546db73315b898e1ab21375e9fe9c5ad"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-claude/claude.result.txt",
+      "sha256": "b2ec1f5373e9dc2aff663eb1d115e690149f6eff242a7ed926dc888315646600"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "6c484ea926fe063b7310572ad9d8c1042902a060df8fab6f0e6309d05580db25"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-claude/manifest.json",
+      "sha256": "7045ec2344abbcb034b86d393df2555676db1ea8cc8281f4b371df5156b47dc3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-codex/claude.result.txt",
+      "sha256": "f1d1928a8aad0ec5ace7fe73dc4ae8ef969ea99efd0162dff346cec229c2de6a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "2465e01e07a44b0b3e041e58d4d00da0173b757856ca8160a68b7bc9715e7ee3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/compare-codex/manifest.json",
+      "sha256": "587d36059742f69f1c76d015b0319bc8e2fdd7b0ac45cc67cc11a7b3a7b74bbb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/comparison.agy.json",
+      "sha256": "0fcb224c1dea763e90f836355ba3435b004020ac2c13e55fa58f8d9cc070d256"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/comparison.claude.json",
+      "sha256": "67d1b4679a7ab10cad8b9749bbffa36c98f86c17ea7c840c2d7269c157fe04e3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-0-size-by-reasoning-not-linecount/comparison.codex.json",
+      "sha256": "b6c3950f84075ab579a2d181355da96c8c1db75285e00953081aba20baab9c86"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/agy.result.txt",
+      "sha256": "d6bd9d09e4b72f1c2c543d5de5e30bd9286a6202ac534ce8914c90f110be5065"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "529b79061d49485ba2fc2bab5d088139c5a59f90c0a101638385de63d943536f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/answer.md",
+      "sha256": "d6bd9d09e4b72f1c2c543d5de5e30bd9286a6202ac534ce8914c90f110be5065"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/grading.json",
+      "sha256": "16a962b84eb118e2e456d796176665007b703be03ecbaf7733f4ef7c139e0c36"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/judge/claude.result.txt",
+      "sha256": "940d98948404b2ae682f21ef23a41e0fb4a65207b36cdefdca502a160d7eae0d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "60c1c0c5c91210f9784805d6d73d785cc3918ed307003a959128445319e97f82"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/judge/manifest.json",
+      "sha256": "df7f87906050a31c39978825d62a8049e854c17c5159a5cdbe48ebdffdf32f63"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/manifest.json",
+      "sha256": "eae1bc773c5380134be5934224ef24a3af2afabdf2eb68eb9073d3f7c4bfd44e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__with_skill/prompt.txt",
+      "sha256": "bec7c6af331d7c4e5a1018ad696e5d0cb49484edbe5eeaea5dce5ca8ee872200"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/agy.result.txt",
+      "sha256": "60c215dc7355ca98eb29c21378fbda58151debd6b798e254951a4b50764439e0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "a8f8fb5db8cb5e1f261f4c443208fb18c87d3591cfe330925be1f942836ff930"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/answer.md",
+      "sha256": "60c215dc7355ca98eb29c21378fbda58151debd6b798e254951a4b50764439e0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/grading.json",
+      "sha256": "39aa16d969761a81aafdc181ee994355cf353fa07338e3212620b094e092a2d3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/judge/claude.result.txt",
+      "sha256": "ba2f5f99f95ea5e72fe17c0ffb6ec4c447d11dff95eff663e051be16c4c7b983"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "477e368437ab26e03932b065d7f51714f72e7abdc2b2eb2101b28b0cfafb8bcb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/judge/manifest.json",
+      "sha256": "b573cdd5abb13a6768f3d1e7dbd42ac66da056e02c3de1f7f276c4f460a2bddc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/manifest.json",
+      "sha256": "fcfcc15ac2199e08e863d0425ecb576eb20fab696a3785835dc12a927f04ea2c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/agy__without_skill/prompt.txt",
+      "sha256": "5d74e4dfbfb19bb2a368a7dc8afe50eb50ce32a13d7fce04c5be767a2151155f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/answer.md",
+      "sha256": "dd4f9650ee263d21d3c84444588304e0a186f8260a599bbf0de3dd2a1e4c1e38"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/claude.result.txt",
+      "sha256": "dd4f9650ee263d21d3c84444588304e0a186f8260a599bbf0de3dd2a1e4c1e38"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "05ffdb453a5f72fdc8fa4ddec6d444460715f2c3bf8018e5e79e2e64b8fc99c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/grading.json",
+      "sha256": "bb859f241901b4f77d7a8e3302d2fd701d19d28f79d165ebb8b245a05fa6eef7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/judge/claude.result.txt",
+      "sha256": "54084bc35cfd88e7a423c9e8d5dd24dd045636e8c663af17390018ff97b9798b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "449f3104505b43b37e35682b61a501f831c1237979b851416fd45f2c199e9912"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/judge/manifest.json",
+      "sha256": "91550eaf56f9e2cc840f0651f4e65731103c79c5f96becd495a8c405a8d5bc0c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/manifest.json",
+      "sha256": "22587afe84e2b6c203876b3dd2a505dfa79b57a5bba2d2f7dba600959ecf722a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__with_skill/prompt.txt",
+      "sha256": "039b836f9b4851f993930c4a98c996be4608edd8436b7b9c8e878756c92bc627"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/answer.md",
+      "sha256": "e47a0597e07b9063b1d268dca0528c5720f8005909b8cc8277ed6ae4cfa9fbaf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/claude.result.txt",
+      "sha256": "e47a0597e07b9063b1d268dca0528c5720f8005909b8cc8277ed6ae4cfa9fbaf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "30aa68979b9d9b7c021c892e9c232bfbdd3c6850229a46cad33ea4ea7206cb42"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/grading.json",
+      "sha256": "be84bdca8e34ae2431c4f444a6f785efdd541898eb1205ad269db87ffca7a72e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/judge/claude.result.txt",
+      "sha256": "0a09b0ff74a1a3d88676381daeb6cee589bca0ac106622036c46f4a828a0b200"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6b1987749ab20412b773ccf1b1b3fecd79d3759db97bcc4950db36d145b8108b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/judge/manifest.json",
+      "sha256": "e0e823dcd7a9b18f7f8522ab893ee8933fb573394982727adaecaf97de53d584"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/manifest.json",
+      "sha256": "8f06b3250ddeab8662f9907e7da890e9ff5cc256623bf655588b70fb0e945b2b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/claude__without_skill/prompt.txt",
+      "sha256": "5d74e4dfbfb19bb2a368a7dc8afe50eb50ce32a13d7fce04c5be767a2151155f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/answer.md",
+      "sha256": "5d334d0c579570b53ac25398dd3325850072467673e0089271fd4a30b5780885"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/codex.result.txt",
+      "sha256": "5d334d0c579570b53ac25398dd3325850072467673e0089271fd4a30b5780885"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "b48719106d89b158be04451254e09e963c408fff75c7134d5b589ddf4b3b70d6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/grading.json",
+      "sha256": "c0bb2cbbccfb560e14c04b073fa05b1eb5ca86f336c90e51323881db92cccfbd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/judge/claude.result.txt",
+      "sha256": "d6e8776d06308dc4c8d2a3b737c434d2236090e1c56bee22849025f6b7b92d84"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b94ae3cb5d654853daeafde908af8d6c8639080fe06cebbe8f4b1ded96dfad40"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/judge/manifest.json",
+      "sha256": "1a28a997b6f5ddf4e71fc83e74c4ab132e90c22cb2923ac17095ef69acd5d509"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/manifest.json",
+      "sha256": "2cd320912496d318c8c4e6a2f625833371477ce786a4896c729a979137d27176"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__with_skill/prompt.txt",
+      "sha256": "dcf909c29b36e1cc898ce2f0c71379ec775aaafe5633e0afa8cd227723ae4b5b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/answer.md",
+      "sha256": "04211eea4516c376c862a75e9b4493d5b35959098e45552c15f71987ae89902e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/codex.result.txt",
+      "sha256": "04211eea4516c376c862a75e9b4493d5b35959098e45552c15f71987ae89902e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "a2283026553cd26f763f3a0fe1ec745a359f7af27b79f367cde433ad32408050"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/grading.json",
+      "sha256": "596be2955536754ae61230d883300f563796ff69406b50344d0c282db0c16b7d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/judge/claude.result.txt",
+      "sha256": "7310b558a1183820b16f10549746e53bc6bf2cf8693f5da1c0afc82ea5d79017"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "b15b4e5e4aedf969c2c8f00b843bb95a50bfb1ee4086b2e278c0e3b936b79a96"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/judge/manifest.json",
+      "sha256": "8f4ca90ee4ce3462b6967397e49f0b9787355a09e1cf9c12c6f5bc9bf8efadb0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/manifest.json",
+      "sha256": "8bbbf52925ffc4a2f48597b3a37fcfe3e38f779abdf36659280ff9fe772c0f5e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/codex__without_skill/prompt.txt",
+      "sha256": "5d74e4dfbfb19bb2a368a7dc8afe50eb50ce32a13d7fce04c5be767a2151155f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-agy/claude.result.txt",
+      "sha256": "58182f479bbf53914b7f61b2dd4e1f8f3b5ff8fd158781d97648d30d67b98f83"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "1d128498b1e93f8e728ea3302ee836fd38d788900c1d184d63f954faa51b89de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-agy/manifest.json",
+      "sha256": "67a2183b388c652f18e5d354734e1131d45d0a5d5f8580803fafe216aa55ad8c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-claude/claude.result.txt",
+      "sha256": "da5225b03a4599d55be00ce2310092d60849929c35ad69a9892e8287203e2a4e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "ae60fdc15511bbdb52ba1ecf43febdf6a3959e5931ce996cdfacb785f1b9184d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-claude/manifest.json",
+      "sha256": "228af6fb4f0cb7bd1b8724fd007ff3454e7de317cbc0b29e44be9f988d469ab3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-codex/claude.result.txt",
+      "sha256": "b16734a4f93f013721908a02a7f307a503fb0f31c53a57ec82b5c621dde22c64"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "e41c444fb7632b8d1ce62d9747d072e94d5fb07fdfc440a5e15a32cbd0878304"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/compare-codex/manifest.json",
+      "sha256": "5b4e76e2a3892c25d2b559803cb671d5c5d5b69084d770c56a9c0b398151b962"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/comparison.agy.json",
+      "sha256": "7e3c1700e0477c526fa704777a4b8502f963e1a390fdcd615485e9c0cd0c5b83"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/comparison.claude.json",
+      "sha256": "4ff11c9ef7af393d8f35364a30dba3d1dd9280d6837becc8e246f588d5822e69"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-2-lazy-staleness-not-stored-flag/comparison.codex.json",
+      "sha256": "1dd08d37d978d9dc849a1c3235628525964c7fb90196d701f4b5edba4a07b313"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/agy.result.txt",
+      "sha256": "f4e52a4ca02961eb6b30837ed358e4fa679f6f073cdc8c9360f1c1d9b14ea271"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "594a5ff199796e7d4d3045af5954cf35609c98dd81843f77992c1061a95646a9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/answer.md",
+      "sha256": "f4e52a4ca02961eb6b30837ed358e4fa679f6f073cdc8c9360f1c1d9b14ea271"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/grading.json",
+      "sha256": "d22fa92b98586a22ea39235534d216c8a93a15eabd55635b1c861be6de28cad6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/judge/claude.result.txt",
+      "sha256": "8e8f6b3b7dbc0fa8701674bc3a7b60c6735ca1d720db016567c599c8cb611261"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "96fb346452c300e84be0a062035a4e4fc99c2454671702b55739b793a872d445"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/judge/manifest.json",
+      "sha256": "3837f695fc45a6ea68262e0ecba3c117b2b6ee0238eb4d8b9b1a63c596e4c77d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/manifest.json",
+      "sha256": "59926d2b40eb6843f34fb83cefa6871a21101b6f38f3ca513d20394b210e9267"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__with_skill/prompt.txt",
+      "sha256": "49074a5f887cf9ae068822a21f265015952019d75675a0b6138562a4a7583919"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/agy.result.txt",
+      "sha256": "6796143ebf73b981fabc5bebd521bb083f16919bc2401c408aa08b2b64ce49a3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "7eaf8ffbc80d5250d7a715d28b0c46b8721db46c805a6558b4990a5a25913178"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/answer.md",
+      "sha256": "6796143ebf73b981fabc5bebd521bb083f16919bc2401c408aa08b2b64ce49a3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/grading.json",
+      "sha256": "d58eb02bdb4d4203369dfbeec46942e766c250f39e16de8edb43f488ee4b2ebf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/judge/claude.result.txt",
+      "sha256": "350354921d039f0a6c5cc029c26d3eec5509e5328d4b0d9c7e76b9cdb161dabf"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "0c0ed5929de1b6ecacab6b7e48213b5e2b756a378a3c346c82e5b10ef1b010ce"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/judge/manifest.json",
+      "sha256": "07be63ff15bf7a95e9174d9843f1f2f28029b4938b572d3abae3643a0f073820"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/manifest.json",
+      "sha256": "b820ed23e72347070ec01f999bcfec1d8eb247d9b47603525e93d59d8990e016"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/agy__without_skill/prompt.txt",
+      "sha256": "90e5415b1e15d06a42399dc0810f7c5103e3b6e7c6e469e4374ee3fcfd3f20b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/answer.md",
+      "sha256": "359d615a49ed90299ad26f9e93c5b4c1a8a18b4837802f21e4a36c4ea506f2c3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/claude.result.txt",
+      "sha256": "359d615a49ed90299ad26f9e93c5b4c1a8a18b4837802f21e4a36c4ea506f2c3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "76b88551286032ade9bfad9dc65ee3978b36119259003e1f1fd143b91d2563fc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/grading.json",
+      "sha256": "67e88c93f76a3e8850100ab9c3bba5310bff2eb08f7e83ba75b7b1de60bd0812"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/judge/claude.result.txt",
+      "sha256": "500b061ca5730bcb403ed791a65ce6d62720db5bfb55714c379a4906daff3825"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "1fa2de6dc2f624c8dfbf3de0c7f903b08c9b05a1bf90b73369f7d44736cecd3d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/judge/manifest.json",
+      "sha256": "2c770678131d1d61de03a86a47fb6e276578f5790bd11f47c48d00ca76dbed58"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/manifest.json",
+      "sha256": "f971c7bb73d97b5158989ce7e2452a9955af7c9b9e0c9654f64541b5d40b82e0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__with_skill/prompt.txt",
+      "sha256": "4e3d96e9316e1ff18968167cf6f3d08c2c2d2bcf3e03bade69ccbf69b072f127"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/answer.md",
+      "sha256": "4325b16ac939e5bf49900766d55a4a4cc38633e5e0f7727bb589e7d432a96120"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/claude.result.txt",
+      "sha256": "4325b16ac939e5bf49900766d55a4a4cc38633e5e0f7727bb589e7d432a96120"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "95addb08ac1314b1c37f0b68eb35d83cf687a5c4b5a269c21105c7465cf66a2e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/grading.json",
+      "sha256": "5fd68b5cfc7a515552e2c7d603a944820157eaa4468cdec0a3cc747d3b8c4d8f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/judge/claude.result.txt",
+      "sha256": "b140cf6ef21483511d7947e9c6341efcf94bc6a2ca1268b153ee74930363b6ac"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "979fbbe7a9a3d38dd2b83a95831026dafa0ad1bac9a1f77e9ab18628b0012bb3"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/judge/manifest.json",
+      "sha256": "486491d28d6fdee0a00d2d97d6bfe91343fa8b7a977f084352c99049043e5a7e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/manifest.json",
+      "sha256": "5b3c2340770b0d7d5b1ff5c63dfbe4f7bf2777cabce26785c2c9090e4ae698e1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/claude__without_skill/prompt.txt",
+      "sha256": "90e5415b1e15d06a42399dc0810f7c5103e3b6e7c6e469e4374ee3fcfd3f20b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/answer.md",
+      "sha256": "605c07227b549e5e299d1682e792d3f8848aaa7e887fcbbae8f86e0269a67998"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/codex.result.txt",
+      "sha256": "605c07227b549e5e299d1682e792d3f8848aaa7e887fcbbae8f86e0269a67998"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "037de92cac7930c72ec9a67207bf779cb04877cf0788e5b0c37e1ed985da4815"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/grading.json",
+      "sha256": "35a9a1b4a723d6ff62c6f37b38ea20c3084e31d03da4bb3f2639157c6a46b215"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/judge/claude.result.txt",
+      "sha256": "ec4a88398686189a6e5f56d804bdb92056c112ca9c50ff333727aac228a22783"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "62c00228b1f213d17e1d5657d65f16af1d2e2831a2fce23b813221002ff3077a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/judge/manifest.json",
+      "sha256": "e09232d0cffdad9c600570d9335fd657833ba382858e366d6c640281091c2dc8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/manifest.json",
+      "sha256": "af3cc4be16998d50910fb0a04445bba6713d58eb8f04ee025bfb7bb36b0f5e83"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__with_skill/prompt.txt",
+      "sha256": "ecd18167abc768b2ef94420d3bb9eead019882acda0feabf6fd14ddb31e20e83"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/answer.md",
+      "sha256": "f7a132cf9faf4861a634b6dd397b55d366a7d78e854a410ea8957a3a3a3b5500"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/codex.result.txt",
+      "sha256": "f7a132cf9faf4861a634b6dd397b55d366a7d78e854a410ea8957a3a3a3b5500"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "48bce6f6c96c2b50bb106f55da9e49d053b820d9c62161960f4ed099ff27a026"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/grading.json",
+      "sha256": "827cf40e4e41f09e3082d13deb5b22e4be2709f4b51936168190abf6a28418be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/judge/claude.result.txt",
+      "sha256": "6aa871eef5c5670612cb13d343f409d49a23848c2924dbcc547250f548c89d2e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "ca2beecf653cb8f707264cc25adfd7098ca47be9b00f433713720c23961914a6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/judge/manifest.json",
+      "sha256": "67ee6f4c0ee45b4f86a63a9d4f42c6c1a2f36c6d2215d0e2d7bd1d7425647a86"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/manifest.json",
+      "sha256": "b9bddbdbcaeee400bccf9d62e5eed3ce17f1965b91fe94e52f0e5d2d55ab4713"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/codex__without_skill/prompt.txt",
+      "sha256": "90e5415b1e15d06a42399dc0810f7c5103e3b6e7c6e469e4374ee3fcfd3f20b8"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-agy/claude.result.txt",
+      "sha256": "f9d1357841ee49c9b2052fe623b7d290deda5473591f2ba29c76b4d135efe0c1"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "ff3787a2375a211eade3ec989795d51251ee75b1520ec49232a8e75304a69542"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-agy/manifest.json",
+      "sha256": "39356d22c5a4c97cbdb350f3a2b5fe394e03a2323c3af2bdc69244c73ff23290"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-claude/claude.result.txt",
+      "sha256": "b434bee7086b473eb54849999dc30da5a482d7fb19b6b5af2c9235e86f17a49f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "8ad8d5a337c81a5b43ecc6d3740dd33754b3c012cc4076bfd5a81395c157ed76"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-claude/manifest.json",
+      "sha256": "e2984db2c7886fa691aa0bb158ab195e37b4d8d88a90c761bcd3f8a607d8c42a"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-codex/claude.result.txt",
+      "sha256": "12f384bee5c04ed887e404e2e5d3723f6e8edc078643eae7e1c9a4c1a0307f25"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "ac0ec8374ad5a35fbf80fb3d45d097948f5213413d62111be7e9b96c0363491f"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/compare-codex/manifest.json",
+      "sha256": "bab65a366e5f775625ae2d180df7943ae31dddf0bc15272b1322e1e7887657de"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/comparison.agy.json",
+      "sha256": "1a44f79b35751916e5afbea7cbd3e6fac85fa6412cbc482aee1fbe5d583a0ab7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/comparison.claude.json",
+      "sha256": "999968be25166bf3e4d552c79d3cf6372f39c119ee9b2e641f3e4d29cb174a29"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-3-seam-leak-surface-not-widen/comparison.codex.json",
+      "sha256": "63ed63dab9af05aec6b6901e8658b2e62d978c00ac7e257a7f6ef73ab04d65c0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/agy.result.txt",
+      "sha256": "0b2668f285ba9eb8e440d9423e1055f654e7d6cb3f4028be1d6df87838afbeab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/agy.stdout.attempt-1.txt",
+      "sha256": "167dbca21d16f44793566b10c23a456c62079693a5a0d822e3bfc1a96ffccd87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/answer.md",
+      "sha256": "0b2668f285ba9eb8e440d9423e1055f654e7d6cb3f4028be1d6df87838afbeab"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/grading.json",
+      "sha256": "f94264c348b5e61fbe26fc68b3339a11e3f1aa39ab744e99831978191599c6be"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/judge/claude.result.txt",
+      "sha256": "d925b71e6d36ee092e03efba16625576231c027602e8154e80dd4258a6f12b23"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "c3cee4bcc4b1c187c96d13d033e220c3acca242c2dba0078b2e158c3234a4ad5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/judge/manifest.json",
+      "sha256": "769cc125c374d90ce58c490a835bee8bab8178cfcfaac1502037a125b819ecc0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/manifest.json",
+      "sha256": "e7ba719d3d13f9d17161499ca260498f2f91d869245c94bcd1178d1a409417ec"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__with_skill/prompt.txt",
+      "sha256": "aec7fbd421a0eac8c02f86c46e5020124c93954bfc0844a7f56f0ae6c4de9f87"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/agy.result.txt",
+      "sha256": "ea1d357b6a7b15ce786fe93a6502aeb7c7f30eccd0ffb03e6ce0a3598c510b28"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/agy.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/agy.stdout.attempt-1.txt",
+      "sha256": "5c0006926b7798246129d19683131976a08398ccc9b4015e1f5aed75160481a0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/answer.md",
+      "sha256": "ea1d357b6a7b15ce786fe93a6502aeb7c7f30eccd0ffb03e6ce0a3598c510b28"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/grading.json",
+      "sha256": "e0ae0ec4ce5c79c125dced120f2611576f8d4f0aa8fc560810d14c840bae7b80"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/judge/claude.result.txt",
+      "sha256": "3312b5acd7c2ab7935fd0df1e6c0ba7e8da5f9da01734bef115a38ac5814b789"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "6dcc72e1294962dd38083ebde4df88a999642704a5097c0d620d3311644c54e0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/judge/manifest.json",
+      "sha256": "8e1c847da0b31bed1f5bda71bfd0668bd39713ef3b9806e401cb36137ad082ba"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/manifest.json",
+      "sha256": "4ca943b834c7b2ba111fac3a85a440ed3d7489d094bdd2f41fed261b68e85de5"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/agy__without_skill/prompt.txt",
+      "sha256": "f4123845ac89160071bbce460f5a50f0417d431f3b84b98a66814c4b55715c44"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/answer.md",
+      "sha256": "57021f22ed2b36402f0a7413e732e2b926bb2e0b854ad6384ea0389f776cf256"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/claude.result.txt",
+      "sha256": "57021f22ed2b36402f0a7413e732e2b926bb2e0b854ad6384ea0389f776cf256"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/claude.stdout.attempt-1.txt",
+      "sha256": "ce3441cd1c58488f3dbc263097d01ac8e5d4f38ca4878b1276807119928b1905"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/grading.json",
+      "sha256": "c5e96dfd89bc61415711eb9aede336827ba3adcbfcd3925de2029a8deca8a9ff"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/judge/claude.result.txt",
+      "sha256": "1ed12633fe5e867aa5d5f6a8d698f573a88950d6ed0ffae965ad0587437c09a7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "c04b3d214261793a0afeb44adfe8a63f4d0524e7f08940237bf5f8475e260b22"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/judge/manifest.json",
+      "sha256": "636568f9e18879ac9f886df68f36a97ae9265aca5093a7656d3a0564f6e87cfb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/manifest.json",
+      "sha256": "867dc656943d8d49a5f71088c65a3754334a4b91a9e57d65fd6470c3c7c66a77"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__with_skill/prompt.txt",
+      "sha256": "8117e1bf72eee55d59b68c32c7661be1453450965a8fef2137775a776c3397b7"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/answer.md",
+      "sha256": "607f6e9bc3c468509a419aaed794897c698ad7f8945d2e5e0df94a8b20eb245d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/claude.result.txt",
+      "sha256": "607f6e9bc3c468509a419aaed794897c698ad7f8945d2e5e0df94a8b20eb245d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/claude.stdout.attempt-1.txt",
+      "sha256": "cf866fa130175edd26a63aca876a3f65448dd4184fc4166f64396c6f99dd9a71"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/grading.json",
+      "sha256": "19f7b88da935a16b66709f5e2105aebfcde7af5483489da1dc9e6eb88d0d65a2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/judge/claude.result.txt",
+      "sha256": "fc789614c4bcc21259eb7b8a4fec5ede5979339e5a91d22884478da982ca1239"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "8d139ca8a45550cb7215ccd9671abec4777e99ee8721b75d9b6f0e9e59824604"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/judge/manifest.json",
+      "sha256": "5191952f160c23c248c6a5c7ed456d8dbebbc63aa752470dd6997391d7b74d7b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/manifest.json",
+      "sha256": "e18a5d85dd20f975705fc1703703bf439e5a623ca5515cf40b3fc618369b894b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/claude__without_skill/prompt.txt",
+      "sha256": "f4123845ac89160071bbce460f5a50f0417d431f3b84b98a66814c4b55715c44"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/answer.md",
+      "sha256": "7e090246ca32d7d535870706a3454a31c33ceb05a86b1d3d8236091bc15a559d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/codex.result.txt",
+      "sha256": "7e090246ca32d7d535870706a3454a31c33ceb05a86b1d3d8236091bc15a559d"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/codex.stdout.attempt-1.txt",
+      "sha256": "6ea2bb43d64325e4f3af34fc09205d910f9cf0609e4171d542ec72a7baf1ba38"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/grading.json",
+      "sha256": "b683cd191c0dbc63b77ba8bd696dda25b5bf448c4df4ba9ff587963d6ae051ea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/judge/claude.result.txt",
+      "sha256": "096f58ddfc8fd2af1a8ff58d98cc1838168473cd8b2425ff58140980e045b5c6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "47452a426425206fd71a5851d1a351f6ee1a282d8ee96e18f7546c26e5a2284b"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/judge/manifest.json",
+      "sha256": "1d305ffc9eb4b509bd8549d81a59e4a6563c415d5ae9ec1cfdbbb1cc46554ad2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/manifest.json",
+      "sha256": "260520b420896b515122ba31361ff6d902389208bed04501eaf6a001fba8ec09"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__with_skill/prompt.txt",
+      "sha256": "50277780d55c7bc748c205c895d3f82a5ee1ddcd26486bbb603aba88e0349bb0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/answer.md",
+      "sha256": "982f4142accfa262b66779256722cebadda1510898cacfecb5fe9877d126d502"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/codex.result.txt",
+      "sha256": "982f4142accfa262b66779256722cebadda1510898cacfecb5fe9877d126d502"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/codex.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/codex.stdout.attempt-1.txt",
+      "sha256": "52e9a97fdb86f83ffd94b915302f1ec4792ebf00906de1e8163a275e390d33c9"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/grading.json",
+      "sha256": "f8adeffcbeee5440c58617658104d867610fc07c11e6eb6b4c6361a49688811e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/judge/claude.result.txt",
+      "sha256": "97023d2882deb9a95d70c699fb36dd724ed597125173e3066d5653bd7d3aebbe"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/judge/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/judge/claude.stdout.attempt-1.txt",
+      "sha256": "9fe504cd6ec61de9324d3ce379910c4861ff658a41413565cbf43f9ae3c9cdea"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/judge/manifest.json",
+      "sha256": "609239bd8b322479acd965a082e713b0c3c0e6733e780047b054df0f8b225b9c"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/manifest.json",
+      "sha256": "fdc0fa14279cfb28d0029d88dc605737a0b01c3f318614e3c3876357a29efd17"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/codex__without_skill/prompt.txt",
+      "sha256": "f4123845ac89160071bbce460f5a50f0417d431f3b84b98a66814c4b55715c44"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-agy/claude.result.txt",
+      "sha256": "8fcabc454d347dfb86c1ac1e1aeb528ac63d3c8b40e2b78d7980b68fd7ec81c0"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-agy/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-agy/claude.stdout.attempt-1.txt",
+      "sha256": "829a610fb16372a1ca8d56ab8e616a35d10508ebe397711879e58df4a8650ecc"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-agy/manifest.json",
+      "sha256": "d60972ca944d36be56f7b12cc8f92a8126c0b1bfd918cd9c0f720fbc65442869"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-claude/claude.result.txt",
+      "sha256": "6824af58af34df7523c415484a86cf1e8040d4e460523776abff694dce9e3f10"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-claude/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-claude/claude.stdout.attempt-1.txt",
+      "sha256": "7cb5211306ce1862496bee2f50a97ae742698a83637cd3d3d9703f99a6dc0627"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-claude/manifest.json",
+      "sha256": "925e41790990a899e1414c51ed439bf5f5fd24cf693436c8993a42a8f4014959"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-codex/claude.result.txt",
+      "sha256": "a00d9f81ff79bf35c51057dce5134b814be23f7ceefefd75ba44f823b33103fd"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-codex/claude.stderr.attempt-1.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-codex/claude.stdout.attempt-1.txt",
+      "sha256": "6c8b4941f8c0e2081c0a962543ecbf60fe9b90351d0530b3db38b76835a6536e"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/compare-codex/manifest.json",
+      "sha256": "5506770f494be29b56c626c8ab992da0c6d0184d0dba569fa124f769ea2052c6"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/comparison.agy.json",
+      "sha256": "6f01c038daf322b2e8e231e7eb21ad14bf583c520fa325e03332284597b225bb"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/comparison.claude.json",
+      "sha256": "16249e0427716cafdbf5cc629e9ee2abaada6244275bc213563dc4c63beb54c2"
+    },
+    {
+      "path": "workspace/iteration-2026102101/eval-empty-cochange-means-no-commits-not-no-coupling-an empty co-change result is not a finding/comparison.codex.json",
+      "sha256": "6bc218eaa1670fb4da31346925aa02fb1dbb07f5cbbefc8e2819fbbbb97f4548"
+    }
+  ],
+  "native_counts": null,
+  "cli_versions": {
+    "agy": "1.4.2",
+    "claude": "2.1.302",
+    "codex": "0.163.0"
+  },
+  "certified_by": "delta-gate"
 }
